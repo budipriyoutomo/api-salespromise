@@ -1,0 +1,13 @@
+services:
+
+  maharasa-apisales:
+    build: .
+    container_name: maharasa-apisales
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./logs:/app/logs

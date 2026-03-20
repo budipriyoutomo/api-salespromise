@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -11,17 +11,20 @@ router = APIRouter(prefix="/api/sync", tags=["Sync"])
 
 
 @router.post("/sales")
-def sync_sales(payload: SyncRequestSchema, db: Session = Depends(get_db)):
+def sync_sales(request: Request, payload: SyncRequestSchema, db: Session = Depends(get_db)):
+
+    # outlet_code diambil dari API key yang sudah divalidasi middleware
+    outlet = request.state.outlet_code
 
     try:
 
         logger.info(
-            f"SYNC REQUEST outlet={payload.outlet} sales_count={len(payload.sales)}"
+            f"SYNC REQUEST outlet={outlet} sales_count={len(payload.sales)}"
         )
 
         result = SalesService.sync_sales(
             db=db,
-            outlet=payload.outlet,
+            outlet=outlet,
             sales_list=payload.sales
         )
 
@@ -33,7 +36,7 @@ def sync_sales(payload: SyncRequestSchema, db: Session = Depends(get_db)):
 
     except Exception as e:
 
-        logger.error(f"SYNC ROUTE ERROR outlet={payload.outlet} error={str(e)}")
+        logger.error(f"SYNC ROUTE ERROR outlet={outlet} error={str(e)}")
 
         raise HTTPException(
             status_code=500,
