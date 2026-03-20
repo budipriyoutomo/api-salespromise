@@ -19,7 +19,7 @@ def sync_sales(payload: SyncRequestSchema, db: Session = Depends(get_db)):
             f"SYNC REQUEST outlet={payload.outlet} sales_count={len(payload.sales)}"
         )
 
-        inserted = SalesService.sync_sales(
+        result = SalesService.sync_sales(
             db=db,
             outlet=payload.outlet,
             sales_list=payload.sales
@@ -27,10 +27,13 @@ def sync_sales(payload: SyncRequestSchema, db: Session = Depends(get_db)):
 
         return {
             "success": True,
-            "inserted": inserted
+            "inserted_sales": result["sales"],
+            "inserted_items": result["items"]
         }
 
-    except Exception:
+    except Exception as e:
+
+        logger.error(f"SYNC ROUTE ERROR outlet={payload.outlet} error={str(e)}")
 
         raise HTTPException(
             status_code=500,
