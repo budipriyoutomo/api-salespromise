@@ -1,0 +1,68 @@
+/*
+SQLyog Enterprise - MySQL GUI v6.5
+MySQL - 5.1.73-community : Database - promise6
+*********************************************************************
+*/
+
+/*!40101 SET NAMES utf8 */;
+
+/*!40101 SET SQL_MODE=''*/;
+
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+
+/*Table structure for table `ordertransaction` */
+
+DROP TABLE IF EXISTS `ordertransaction`;
+
+CREATE TABLE `ordertransaction` (
+  `TransactionID` int(11) NOT NULL DEFAULT '0',
+  `OpenStaffID` int(11) DEFAULT '0',
+  `PaidTime` datetime DEFAULT NULL,
+  `PaidStaffID` int(11) DEFAULT '0',
+  `CloseTime` datetime DEFAULT NULL,
+  `CommStaffID` int(11) DEFAULT '0',
+  `OtherPercentDiscount` decimal(5,2) NOT NULL DEFAULT '0.00',
+  `OtherAmountDiscount` decimal(10,4) NOT NULL DEFAULT '0.0000',
+  `TransactionStatusID` smallint(6) NOT NULL DEFAULT '1',
+  `SaleMode` tinyint(4) NOT NULL DEFAULT '1', 
+  `QueueName` varchar(50) DEFAULT NULL,
+  `Deleted` tinyint(2) NOT NULL DEFAULT '0',
+  `NoCustomer` smallint(6) DEFAULT '1', 
+  `ReceiptYear` smallint(6) DEFAULT '0',
+  `ReceiptMonth` tinyint(4) DEFAULT '0',
+  `ReceiptID` int(11) NOT NULL DEFAULT '0',
+  `SaleDate` date DEFAULT NULL,
+  `ShopID` int(11) NOT NULL DEFAULT '0', 
+  `TransactionVAT` decimal(18,6) NOT NULL DEFAULT '0.000000',
+  `TransactionExcludeVAT` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `ServiceCharge` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `ServiceChargeVAT` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `OtherIncome` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `OtherIncomeVAT` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `TransactionVATable` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `ReceiptProductRetailPrice` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `ReceiptSalePrice` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `ReceiptPayPrice` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `ReceiptDiscount` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `ReceiptTotalAmount` decimal(18,4) NOT NULL DEFAULT '0.0000',
+  `VATPercent` decimal(5,2) NOT NULL DEFAULT '0.00',
+  `ServiceChargePercent` decimal(5,2) NOT NULL DEFAULT '0.00', 
+  `VoidStaffID` int(11) NOT NULL DEFAULT '0',
+  `VoidReason` text,
+  `VoidTime` datetime DEFAULT NULL,  
+  `NoPrintBillDetail` tinyint(4) NOT NULL DEFAULT '0', 
+  `BillDetailReferenceNo` int(11) NOT NULL DEFAULT '0', 
+  `TransactionNote` varchar(100) DEFAULT NULL, 
+  `IsSplitTransaction` tinyint(4) NOT NULL DEFAULT '0',
+  `IsFromOtherTransaction` tinyint(4) NOT NULL DEFAULT '0',
+  `TransactionAdditionalType` tinyint(4) NOT NULL DEFAULT '0',
+  `ReferenceNo` varchar(20) DEFAULT NULL, 
+  PRIMARY KEY (`TransactionID`,`ComputerID`),
+  KEY `SessionIndex` (`SessionID`,`CloseComputerID`),
+  KEY `MemberIndex` (`MemberDiscountID`),
+  KEY `SaleDateIndex` (`SaleDate`,`DocType`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
