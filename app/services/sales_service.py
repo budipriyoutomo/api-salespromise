@@ -1,4 +1,4 @@
-from sqlalchemy.dialects.mysql import insert
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -57,19 +57,22 @@ class SalesService:
                     updated_at=datetime.utcnow()
                 )
 
-                sales_stmt = sales_stmt.on_duplicate_key_update(
-                    ShopID=sale.shop_id,
-                    SaleDate=sale.sale_date,
-                    PaidTime=sale.paid_time,
-                    CloseTime=sale.close_time,
-                    ReceiptTotalAmount=sale.receipt_total_amount,
-                    ReceiptPayPrice=sale.receipt_pay_price,
-                    ReceiptDiscount=sale.receipt_discount,
-                    TransactionStatusID=sale.transaction_status_id,
-                    VoidStaffID=sale.void_staff_id,
-                    VoidReason=sale.void_reason,
-                    VoidTime=sale.void_time,
-                    updated_at=datetime.utcnow()
+                sales_stmt = sales_stmt.on_conflict_do_update(
+                    index_elements=["TransactionID"],
+                    set_={
+                        "ShopID": sale.shop_id,
+                        "SaleDate": sale.sale_date,
+                        "PaidTime": sale.paid_time,
+                        "CloseTime": sale.close_time,
+                        "ReceiptTotalAmount": sale.receipt_total_amount,
+                        "ReceiptPayPrice": sale.receipt_pay_price,
+                        "ReceiptDiscount": sale.receipt_discount,
+                        "TransactionStatusID": sale.transaction_status_id,
+                        "VoidStaffID": sale.void_staff_id,
+                        "VoidReason": sale.void_reason,
+                        "VoidTime": sale.void_time,
+                        "updated_at": datetime.utcnow()
+                    }
                 )
 
                 db.execute(sales_stmt)
@@ -95,13 +98,16 @@ class SalesService:
                         VoidStaffID=item.void_staff_id
                     )
 
-                    item_stmt = item_stmt.on_duplicate_key_update(
-                        Amount=item.qty,
-                        Price=item.price,
-                        RetailPrice=item.retail_price,
-                        subtotal=item.subtotal,
-                        OrderStatusID=item.order_status_id,
-                        VoidStaffID=item.void_staff_id
+                    item_stmt = item_stmt.on_conflict_do_update(
+                        index_elements=["OrderDetailID", "TransactionID"],
+                        set_={
+                            "Amount": item.qty,
+                            "Price": item.price,
+                            "RetailPrice": item.retail_price,
+                            "subtotal": item.subtotal,
+                            "OrderStatusID": item.order_status_id,
+                            "VoidStaffID": item.void_staff_id
+                        }
                     )
 
                     db.execute(item_stmt)

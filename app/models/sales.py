@@ -1,5 +1,5 @@
-from sqlalchemy import Column, String, DateTime, Numeric, Date, Integer, SmallInteger, Text, TinyInteger
-from sqlalchemy.dialects.mysql import TINYINT, SMALLINT, DECIMAL
+from sqlalchemy import Column, String, DateTime, Date, Integer, Text, Numeric, SmallInteger
+from sqlalchemy.dialects.postgresql import SMALLINT
 from app.database import Base
 
 
@@ -14,8 +14,8 @@ class Sales(Base):
     shop_id = Column("ShopID", Integer, nullable=False, default=0)
 
     # Receipt info
-    receipt_year = Column("ReceiptYear", SMALLINT, default=0)
-    receipt_month = Column("ReceiptMonth", TINYINT, default=0)
+    receipt_year = Column("ReceiptYear", SmallInteger, default=0)
+    receipt_month = Column("ReceiptMonth", SmallInteger, default=0)
     receipt_id = Column("ReceiptID", Integer, nullable=False, default=0)
     reference_no = Column("ReferenceNo", String(20), nullable=True)
     queue_name = Column("QueueName", String(50), nullable=True)
@@ -34,43 +34,43 @@ class Sales(Base):
     void_time = Column("VoidTime", DateTime, nullable=True)
 
     # Status & mode
-    transaction_status_id = Column("TransactionStatusID", SMALLINT, nullable=False, default=1)
-    sale_mode = Column("SaleMode", TINYINT, nullable=False, default=1)
-    deleted = Column("Deleted", TINYINT, nullable=False, default=0)
-    no_customer = Column("NoCustomer", SMALLINT, default=1)
+    transaction_status_id = Column("TransactionStatusID", SmallInteger, nullable=False, default=1)
+    sale_mode = Column("SaleMode", SmallInteger, nullable=False, default=1)
+    deleted = Column("Deleted", SmallInteger, nullable=False, default=0)
+    no_customer = Column("NoCustomer", SmallInteger, default=1)
 
     # Discount
-    other_percent_discount = Column("OtherPercentDiscount", DECIMAL(5, 2), nullable=False, default=0)
-    other_amount_discount = Column("OtherAmountDiscount", DECIMAL(10, 4), nullable=False, default=0)
+    other_percent_discount = Column("OtherPercentDiscount", Numeric(5, 2), nullable=False, default=0)
+    other_amount_discount = Column("OtherAmountDiscount", Numeric(10, 4), nullable=False, default=0)
 
     # Pricing
-    receipt_product_retail_price = Column("ReceiptProductRetailPrice", DECIMAL(18, 4), nullable=False, default=0)
-    receipt_sale_price = Column("ReceiptSalePrice", DECIMAL(18, 4), nullable=False, default=0)
-    receipt_pay_price = Column("ReceiptPayPrice", DECIMAL(18, 4), nullable=False, default=0)
-    receipt_discount = Column("ReceiptDiscount", DECIMAL(18, 4), nullable=False, default=0)
-    receipt_total_amount = Column("ReceiptTotalAmount", DECIMAL(18, 4), nullable=False, default=0)
+    receipt_product_retail_price = Column("ReceiptProductRetailPrice", Numeric(18, 4), nullable=False, default=0)
+    receipt_sale_price = Column("ReceiptSalePrice", Numeric(18, 4), nullable=False, default=0)
+    receipt_pay_price = Column("ReceiptPayPrice", Numeric(18, 4), nullable=False, default=0)
+    receipt_discount = Column("ReceiptDiscount", Numeric(18, 4), nullable=False, default=0)
+    receipt_total_amount = Column("ReceiptTotalAmount", Numeric(18, 4), nullable=False, default=0)
 
     # Tax
-    vat_percent = Column("VATPercent", DECIMAL(5, 2), nullable=False, default=0)
-    transaction_vat = Column("TransactionVAT", DECIMAL(18, 6), nullable=False, default=0)
-    transaction_exclude_vat = Column("TransactionExcludeVAT", DECIMAL(18, 4), nullable=False, default=0)
-    transaction_vatable = Column("TransactionVATable", DECIMAL(18, 4), nullable=False, default=0)
+    vat_percent = Column("VATPercent", Numeric(5, 2), nullable=False, default=0)
+    transaction_vat = Column("TransactionVAT", Numeric(18, 6), nullable=False, default=0)
+    transaction_exclude_vat = Column("TransactionExcludeVAT", Numeric(18, 4), nullable=False, default=0)
+    transaction_vatable = Column("TransactionVATable", Numeric(18, 4), nullable=False, default=0)
 
     # Service charge
-    service_charge_percent = Column("ServiceChargePercent", DECIMAL(5, 2), nullable=False, default=0)
-    service_charge = Column("ServiceCharge", DECIMAL(18, 4), nullable=False, default=0)
-    service_charge_vat = Column("ServiceChargeVAT", DECIMAL(18, 4), nullable=False, default=0)
+    service_charge_percent = Column("ServiceChargePercent", Numeric(5, 2), nullable=False, default=0)
+    service_charge = Column("ServiceCharge", Numeric(18, 4), nullable=False, default=0)
+    service_charge_vat = Column("ServiceChargeVAT", Numeric(18, 4), nullable=False, default=0)
 
     # Other income
-    other_income = Column("OtherIncome", DECIMAL(18, 4), nullable=False, default=0)
-    other_income_vat = Column("OtherIncomeVAT", DECIMAL(18, 4), nullable=False, default=0)
+    other_income = Column("OtherIncome", Numeric(18, 4), nullable=False, default=0)
+    other_income_vat = Column("OtherIncomeVAT", Numeric(18, 4), nullable=False, default=0)
 
     # Misc
     transaction_note = Column("TransactionNote", String(100), nullable=True)
-    is_split_transaction = Column("IsSplitTransaction", TINYINT, nullable=False, default=0)
-    is_from_other_transaction = Column("IsFromOtherTransaction", TINYINT, nullable=False, default=0)
-    transaction_additional_type = Column("TransactionAdditionalType", TINYINT, nullable=False, default=0)
-    no_print_bill_detail = Column("NoPrintBillDetail", TINYINT, nullable=False, default=0)
+    is_split_transaction = Column("IsSplitTransaction", SmallInteger, nullable=False, default=0)
+    is_from_other_transaction = Column("IsFromOtherTransaction", SmallInteger, nullable=False, default=0)
+    transaction_additional_type = Column("TransactionAdditionalType", SmallInteger, nullable=False, default=0)
+    no_print_bill_detail = Column("NoPrintBillDetail", SmallInteger, nullable=False, default=0)
     bill_detail_reference_no = Column("BillDetailReferenceNo", Integer, nullable=False, default=0)
 
     # Outlet (tambahan dari arsitektur sync)
