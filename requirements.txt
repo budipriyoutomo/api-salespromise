@@ -1,17 +1,27 @@
 # Web Framework
 fastapi==0.111.0
 uvicorn[standard]==0.29.0
- 
+gunicorn==22.0.0
+
 # Database
 sqlalchemy==2.0.30
 psycopg2-binary==2.9.9
- 
+
+# Optional async (future scaling)
+asyncpg==0.29.0
+
 # Validation
 pydantic==2.7.1
- 
+
 # Config
 python-dotenv==1.0.1
- 
-# Compression middleware (built-in fastapi, but needs starlette explicitly)
+
+# HTTP Client & Retry
+httpx==0.27.0
+tenacity==8.3.0
+
+# Logging
+loguru==0.7.2
+
+# Core
 starlette==0.37.2
- 
