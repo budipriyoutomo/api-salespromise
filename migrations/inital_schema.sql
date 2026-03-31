@@ -93,10 +93,14 @@ CREATE INDEX IF NOT EXISTS idx_ordertransaction_outlet
 -- TABLE: orderdetail
 -- ============================================================
 CREATE TABLE IF NOT EXISTS orderdetail (
+    "SaleDate"          DATE            NOT NULL,
     "OrderDetailID"     INTEGER         NOT NULL,
     "TransactionID"     INTEGER         NOT NULL REFERENCES ordertransaction ("TransactionID"),
 
     "ProductID"         INTEGER         NOT NULL DEFAULT 0,
+    "Group"             VARCHAR(255)     DEFAULT null,
+    "Dept"              VARCHAR(255)     DEFAULT null,
+    "Name"              VARCHAR(255)    DEFAULT null,
     "ProductSetType"    INTEGER         NOT NULL DEFAULT 0,
     "OrderStatusID"     SMALLINT        NOT NULL DEFAULT 2,
     "SaleMode"          SMALLINT        NOT NULL DEFAULT 1,
@@ -104,8 +108,7 @@ CREATE TABLE IF NOT EXISTS orderdetail (
     "Amount"            NUMERIC(18,4)   NOT NULL DEFAULT 0.0000,
     "Price"             NUMERIC(18,4)   NOT NULL DEFAULT 0.0000,
     "RetailPrice"       NUMERIC(18,4)   NOT NULL DEFAULT 0.0000,
-    "MinimumPrice"      NUMERIC(18,4)   NOT NULL DEFAULT 0.0000,
-    subtotal            NUMERIC(18,4)   DEFAULT NULL,
+    "MinimumPrice"      NUMERIC(18,4)   NOT NULL DEFAULT 0.0000, 
 
     "Comment"           VARCHAR(255)    DEFAULT NULL,
     "OrderStaffID"      INTEGER         NOT NULL DEFAULT 0,

@@ -1,5 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Date, Integer, Text, Numeric, SmallInteger
-from sqlalchemy.dialects.postgresql import SMALLINT
+from sqlalchemy import Column, String, DateTime, Date, Integer, Text, Numeric, SmallInteger 
 from app.database import Base
 
 
@@ -10,7 +9,7 @@ class Sales(Base):
 
     __tablename__ = "ordertransaction"
 
-    id = Column("TransactionID", Integer, primary_key=True)
+    transaction_id = Column("TransactionID", Integer, primary_key=True)
     shop_id = Column("ShopID", Integer, nullable=False, default=0)
 
     # Receipt info

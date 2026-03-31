@@ -1,18 +1,3 @@
-/*
-SQLyog Enterprise - MySQL GUI v6.5
-MySQL - 5.1.73-community : Database - promise6
-*********************************************************************
-*/
-
-/*!40101 SET NAMES utf8 */;
-
-/*!40101 SET SQL_MODE=''*/;
-
-/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
-/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
-
-/*Table structure for table `ordertransaction` */
-
 DROP TABLE IF EXISTS `ordertransaction`;
 
 CREATE TABLE `ordertransaction` (
@@ -63,6 +48,3 @@ CREATE TABLE `ordertransaction` (
   KEY `MemberIndex` (`MemberDiscountID`),
   KEY `SaleDateIndex` (`SaleDate`,`DocType`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
-
-/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
-/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
