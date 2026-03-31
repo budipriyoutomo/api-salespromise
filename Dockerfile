@@ -24,14 +24,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app
 COPY . .
 
-# Create logs directory
-RUN mkdir -p logs
-
 # 🔒 Create non-root user
 RUN useradd -m appuser
+
+# ✅ FIX permission
+RUN mkdir -p logs && chown -R appuser:appuser /app
+
 USER appuser
 
 EXPOSE 8000
 
-# 🚀 Gunicorn + Uvicorn worker (BEST PRACTICE)
+# 🚀 Gunicorn + Uvicorn worker
 CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "app.main:app", "--bind", "0.0.0.0:8000", "--workers", "4"]
