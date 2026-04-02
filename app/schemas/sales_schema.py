@@ -1,9 +1,6 @@
-from pydantic import BaseModel, UUID4
+from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime, date
-from pydantic import BaseModel
-from typing import Optional
-from datetime import date
+from datetime import datetime, date   
  
 
 class SalesItemSchema(BaseModel):
@@ -38,8 +35,7 @@ class SalesItemSchema(BaseModel):
 class SalesSchema(BaseModel):
     id: int
 
-    outlet_code: Optional[str] = None  
-
+    outlet_code: Optional[str] = None   
     invoice_number: Optional[str] = None
     sale_date: Optional[date] = None
     paid_time: Optional[datetime] = None
@@ -86,7 +82,7 @@ class SalesSchema(BaseModel):
     is_from_other_transaction: int = 0
 
     # 🔥 RELATION
-    items: List[SalesItemSchema] = []
+    items: List[SalesItemSchema] = Field(default_factory=list)
 
     @property
     def total(self) -> float:
