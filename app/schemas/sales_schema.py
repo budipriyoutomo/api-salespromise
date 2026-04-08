@@ -102,6 +102,5 @@ class SalesSchema(BaseModel):
     class Config:
         from_attributes = True
 
-class SyncRequestSchema(BaseModel):
-    outlet: str
+class SyncRequestSchema(BaseModel): 
     sales: List[SalesSchema]

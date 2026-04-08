@@ -1,3 +1,5 @@
+import traceback
+
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -20,7 +22,7 @@ class SalesService:
 
                 # 🔥 SALES UPSERT
                 sales_stmt = insert(Sales).values(
-                    TransactionID=sale.id,
+                    TransactionID=sale.transaction_id,
                     outlet_code=outlet,
                     ShopID=sale.shop_id,
                     ReferenceNo=sale.reference_no,
@@ -71,7 +73,7 @@ class SalesService:
 
                 # 🔥 UPSERT FIX (multi outlet safe)
                 sales_stmt = sales_stmt.on_conflict_do_update(
-                    index_elements=["TransactionID","outlet_code"],  # 👉 ideally + outlet_code
+                    index_elements=["TransactionID", "outlet_code"],
                     set_={
                         "ShopID": sale.shop_id,
                         "SaleDate": sale.sale_date,
@@ -93,13 +95,11 @@ class SalesService:
 
                 # 🔥 ITEMS
                 for item in sale.items:
-
-                    # 🔥 FIX subtotal (karena tidak ada di DB)
-                    subtotal = item.subtotal or (item.qty * item.price)
+ 
 
                     item_stmt = insert(SalesItems).values(
-                        OrderDetailID=item.id,
-                        TransactionID=sale.id,
+                        OrderDetailID=item.order_detail_id,
+                        TransactionID=sale.transaction_id,
 
                         # 🔥 NEW
                         SaleDate=item.sale_date,
@@ -152,6 +152,9 @@ class SalesService:
 
             db.rollback()
 
-            logger.error(f"SYNC ERROR outlet={outlet} error={str(e)}")
+            
+            logger.error(
+                f"SYNC ERROR outlet={outlet} error={str(e)}\n{traceback.format_exc()}"
+            )
 
             raise
