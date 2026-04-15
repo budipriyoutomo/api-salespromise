@@ -2,6 +2,7 @@ import traceback
 
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import datetime
 
 from app.models.sales import Sales
@@ -158,3 +159,47 @@ class SalesService:
             )
 
             raise
+
+    @staticmethod
+    def get_sales(db, outlet=None, start_date=None, end_date=None):
+        query = db.query(Sales)
+
+        if outlet:
+            query = query.filter(Sales.outlet == outlet)
+
+        if start_date:
+            query = query.filter(Sales.sales_date >= start_date)
+
+        if end_date:
+            query = query.filter(Sales.sales_date <= end_date)
+
+        return query.all()
+    
+    @staticmethod
+    def get_sales_colorplate(db, outlet=None, start_date=None, end_date=None):
+        query = (
+                db.query(
+                    SalesItems.product_name,
+                    Sales.outlet_code,
+                    Sales.sale_date,
+                    func.sum(SalesItems.qty).label("sold")
+                )
+                .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
+                .filter(SalesItems.product_group == "COLORPLATE")
+            )
+        if outlet:
+                query = query.filter(Sales.outlet_code == outlet)
+
+        if start_date:
+                query = query.filter(Sales.sale_date >= start_date)
+
+        if end_date:
+                query = query.filter(Sales.sale_date <= end_date)
+
+        query = query.group_by(
+            SalesItems.product_name,
+            Sales.outlet_code,
+            Sales.sale_date
+        )
+
+        return query.all()
