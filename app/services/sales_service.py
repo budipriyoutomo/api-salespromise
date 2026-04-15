@@ -41,6 +41,10 @@ class SalesService:
                     OtherPercentDiscount=sale.other_percent_discount,
                     OtherAmountDiscount=sale.other_amount_discount,
 
+                    ReceiptID=sale.receipt_id,
+                    ReceiptMonth=sale.receipt_month,
+                    ReceiptYear=sale.receipt_year,
+
                     ReceiptProductRetailPrice=sale.receipt_product_retail_price,
                     ReceiptSalePrice=sale.receipt_sale_price,
                     ReceiptPayPrice=sale.receipt_pay_price,
@@ -80,6 +84,9 @@ class SalesService:
                         "SaleDate": sale.sale_date,
                         "PaidTime": sale.paid_time,
                         "CloseTime": sale.close_time,
+                        "ReceiptID": sale.receipt_id,
+                        "ReceiptMonth": sale.receipt_month,
+                        "ReceiptYear": sale.receipt_year,
                         "ReceiptTotalAmount": sale.receipt_total_amount,
                         "ReceiptPayPrice": sale.receipt_pay_price,
                         "ReceiptDiscount": sale.receipt_discount,
