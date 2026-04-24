@@ -1,4 +1,6 @@
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -110,6 +112,8 @@ def publish_sales(
                     "version": "1.0"
                 }
             }
+ 
+            logger.info(f"EVENT TO PUBLISH: {json.dumps(event)}")
 
             rabbitmq_client.publish(
                 exchange=body.exchange,
