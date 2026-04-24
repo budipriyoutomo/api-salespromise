@@ -42,6 +42,7 @@ class RabbitMQClient:
             routing_key=routing_key,
             body=json.dumps(payload),
             properties=pika.BasicProperties(
+                content_type='application/json',
                 delivery_mode=2 
             )
         )
