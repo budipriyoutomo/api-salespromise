@@ -9,6 +9,12 @@ services:
 
     env_file:
       - .env
+    networks:
+      - rabbitmq_default
 
     volumes:
       - ./logs:/app/logs
+networks:
+  rabbitmq_net:
+    external: true
+    name: rabbitmq_default
