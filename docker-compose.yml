@@ -21,4 +21,4 @@ networks:
     name: rabbitmq_default
   postgres_net:
     external: true
-    name: postgres_default
+    name: posgresql_default
