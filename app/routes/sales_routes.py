@@ -80,8 +80,7 @@ def publish_sales(
         sales = SalesService.get_sales_colorplate(
             db=db,
             outlet=outlet,
-            start_date=body.date,
-            end_date=body.date
+            date=body.date 
         ) 
             
         if not sales:

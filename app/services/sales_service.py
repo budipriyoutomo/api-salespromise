@@ -183,7 +183,7 @@ class SalesService:
         return query.all()
     
     @staticmethod
-    def get_sales_colorplate(db, outlet=None, start_date=None, end_date=None):
+    def get_sales_colorplate(db, outlet=None, date=None):
         query = (
                 db.query(
                     SalesItems.product_name,
@@ -197,11 +197,8 @@ class SalesService:
         if outlet:
                 query = query.filter(Sales.outlet_code == outlet)
 
-        if start_date:
-                query = query.filter(Sales.sale_date >= start_date)
-
-        if end_date:
-                query = query.filter(Sales.sale_date <= end_date)
+        if date:
+                query = query.filter(Sales.sale_date == date)
 
         query = query.group_by(
             SalesItems.product_name,
