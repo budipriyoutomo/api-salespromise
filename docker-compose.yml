@@ -11,6 +11,7 @@ services:
       - .env
     networks:
       - rabbitmq_net
+      - postgres_net
 
     volumes:
       - ./logs:/app/logs
@@ -18,3 +19,6 @@ networks:
   rabbitmq_net:
     external: true
     name: rabbitmq_default
+  postgres_net:
+    external: true
+    name: postgres_default
