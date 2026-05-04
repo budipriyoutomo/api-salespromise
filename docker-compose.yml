@@ -5,12 +5,12 @@ services:
     container_name: maharasa-apisales
     restart: unless-stopped 
     ports:
-      - "8001:8000"  # beda port dari backend lama
+      - "8001:8000"   
 
     env_file:
       - .env
     networks:
-      - rabbitmq_default
+      - rabbitmq_net
 
     volumes:
       - ./logs:/app/logs
