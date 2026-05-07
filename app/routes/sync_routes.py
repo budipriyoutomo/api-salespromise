@@ -1,3 +1,5 @@
+import traceback
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -38,10 +40,12 @@ def sync_sales(request: Request, payload: SyncRequestSchema, db: Session = Depen
 
         logger.error(f"SYNC ROUTE ERROR outlet={outlet} error={str(e)}")
 
+        traceback.print_exc()
+
         raise HTTPException(
             status_code=500,
             detail={
                 "success": False,
-                "message": "Database error"
+                "message": str(e)
             }
         )

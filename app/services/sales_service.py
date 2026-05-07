@@ -134,7 +134,7 @@ class SalesService:
                     )
 
                     item_stmt = item_stmt.on_conflict_do_update(
-                        index_elements=["OrderDetailID", "TransactionID"],
+                        index_elements=["OrderDetailID", "TransactionID","ProductID"],
                         set_={
                             "Amount": item.qty,
                             "Price": item.price,
