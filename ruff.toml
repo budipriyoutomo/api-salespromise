@@ -1,0 +1,27 @@
+# Konfigurasi lint. Sengaja sempit: yang dijaga adalah kesalahan nyata
+# (import tak terpakai, variabel tak terpakai, nama tak dikenal), bukan selera
+# format. Gaya penulisan yang sudah ada di repo tidak diubah massal.
+
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = [
+    "E",   # pycodestyle error
+    "F",   # pyflakes — import/variabel tak terpakai, nama tak dikenal
+    "W",   # pycodestyle warning
+    "I",   # urutan import
+]
+
+ignore = [
+    "E501",  # panjang baris — sudah diatur lewat line-length formatter
+]
+
+[lint.per-file-ignores]
+# Fixture pytest memang di-import untuk efeknya, bukan dipakai langsung.
+"tests/*" = ["F811"]
+# conftest sengaja menyetel env sebelum import modul aplikasi.
+"tests/conftest.py" = ["E402"]
+
+[lint.isort]
+known-first-party = ["app", "manage_keys", "manage_users"]

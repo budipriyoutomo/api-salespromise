@@ -1,0 +1,64 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: sync
+          POSTGRES_PASSWORD: sync
+          POSTGRES_DB: sync_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependency
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check app tests manage_keys.py manage_users.py consumer.py init_db.py
+
+      - name: Unit test
+        # Env dummy: conftest.py menimpanya, tapi app/config.py memvalidasi
+        # saat import sehingga variabel wajib tetap harus ada.
+        env:
+          DB_USER: sync
+          DB_PASS: sync
+          DB_NAME: sync_test
+          JWT_SECRET: secret-ci-bukan-untuk-produksi
+        run: pytest -q --cov=app --cov=manage_keys --cov=manage_users --cov-report=term-missing
+
+      - name: Integration test (PostgreSQL sungguhan)
+        # Di sinilah klausa ON CONFLICT benar-benar dieksekusi — satu-satunya
+        # tempat ketidakcocokan antara kode dan skema akan ketahuan.
+        env:
+          DB_USER: sync
+          DB_PASS: sync
+          DB_NAME: sync_test
+          JWT_SECRET: secret-ci-bukan-untuk-produksi
+          TEST_DATABASE_URL: postgresql+psycopg2://sync:sync@localhost:5432/sync_test
+        run: pytest tests/integration -v

@@ -4,18 +4,24 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.auth import require_api_key
+from app.schemas.sales_response import SyncResponse
 from app.schemas.sales_schema import SyncRequestSchema
 from app.services.sales_service import SalesService
 from app.utils.logger import logger
 
+# Seluruh router ini hanya untuk mesin POS — API key outlet, bukan JWT user.
+router = APIRouter(
+    prefix="/api/sync",
+    tags=["Sync"],
+    dependencies=[Depends(require_api_key)],
+)
 
-router = APIRouter(prefix="/api/sync", tags=["Sync"])
 
-
-@router.post("/sales")
+@router.post("/sales", response_model=SyncResponse)
 def sync_sales(request: Request, payload: SyncRequestSchema, db: Session = Depends(get_db)):
 
-    # outlet_code diambil dari API key yang sudah divalidasi middleware
+    # outlet_code diambil dari API key yang sudah divalidasi dependency
     outlet = request.state.outlet_code
 
     try:
@@ -30,11 +36,10 @@ def sync_sales(request: Request, payload: SyncRequestSchema, db: Session = Depen
             sales_list=payload.sales
         )
 
-        return {
-            "success": True,
-            "inserted_sales": result["sales"],
-            "inserted_items": result["items"]
-        }
+        return SyncResponse(
+            inserted_sales=result["sales"],
+            inserted_items=result["items"]
+        )
 
     except Exception as e:
 

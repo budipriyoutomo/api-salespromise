@@ -1,6 +1,13 @@
-from pydantic import BaseModel, Field
+from datetime import date, datetime
 from typing import List, Optional
-from datetime import datetime, date
+
+from pydantic import BaseModel, Field
+
+from app.config import settings
+
+# Satu request sync tidak boleh membawa payload tak terbatas: seluruh batch
+# ditahan di memori lalu di-upsert dalam satu transaksi.
+MAX_SALES_PER_REQUEST = settings.MAX_SALES_PER_REQUEST
 
 class SalesItemSchema(BaseModel):
     order_detail_id: int
@@ -94,7 +101,7 @@ class SalesSchema(BaseModel):
     transaction_note: Optional[str] = None
     is_split_transaction: int = 0
     is_from_other_transaction: int = 0
- 
+
 
     # 🔥 RELATION
     items: List[SalesItemSchema] = Field(default_factory=list)
@@ -102,5 +109,8 @@ class SalesSchema(BaseModel):
     class Config:
         from_attributes = True
 
-class SyncRequestSchema(BaseModel): 
-    sales: List[SalesSchema]
+class SyncRequestSchema(BaseModel):
+    sales: List[SalesSchema] = Field(
+        max_length=MAX_SALES_PER_REQUEST,
+        description=f"Maksimal {MAX_SALES_PER_REQUEST} transaksi per request",
+    )

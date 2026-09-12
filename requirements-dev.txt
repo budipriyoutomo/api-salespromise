@@ -1,0 +1,10 @@
+# Dependency khusus pengembangan & testing.
+# Install: pip install -r requirements.txt -r requirements-dev.txt
+
+pytest==9.1.1
+pytest-cov==7.1.0
+freezegun==1.5.5
+ruff==0.16.7
+
+# Untuk test integrasi Postgres (opsional):
+# testcontainers[postgresql]==4.9.0

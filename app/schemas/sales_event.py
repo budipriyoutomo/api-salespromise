@@ -1,5 +1,7 @@
-from pydantic import BaseModel
 from datetime import date
+
+from pydantic import BaseModel
+
 
 class PublishSalesRequest(BaseModel):
     exchange: str = "posdata_exchange"

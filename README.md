@@ -1,6 +1,7 @@
 # Sales Sync API
 
-FastAPI service untuk menerima dan menyimpan data transaksi penjualan dari outlet ke database PostgreSQL.
+FastAPI service untuk menerima data transaksi penjualan dari outlet, menyimpannya
+ke PostgreSQL, dan menyediakan endpoint baca untuk dashboard frontend terpisah.
 
 ---
 
@@ -11,49 +12,109 @@ FastAPI service untuk menerima dan menyimpan data transaksi penjualan dari outle
 - **SQLAlchemy** (PostgreSQL dialect)
 - **Pydantic v2**
 - **PostgreSQL 14+**
+- **RabbitMQ** (publish event colorplate)
+- **PyJWT + bcrypt** (auth user dashboard)
+
+---
+
+## Dua jalur autentikasi
+
+Ini pembeda paling penting dari versi sebelumnya. Endpoint dibagi berdasarkan
+**siapa** yang memanggilnya:
+
+| Jalur | Dipakai oleh | Kredensial | Endpoint |
+|---|---|---|---|
+| API key outlet | Mesin POS | `Authorization: Bearer <API_KEY>` | `POST /api/sync/sales`, `POST /api/sales/publish` |
+| JWT user | Frontend dashboard | `Authorization: Bearer <ACCESS_TOKEN>` | `GET /api/sales/`, `/colorplate`, `/api/outlets`, `/api/auth/*` |
+
+Keduanya tidak bisa saling menggantikan: API key outlet ditolak di endpoint
+dashboard, dan JWT user ditolak di endpoint sync.
+
+**API key disimpan sebagai hash SHA-256** — key mentah hanya ditampilkan sekali
+saat dibuat, dan tidak tersimpan di mana pun.
+
+**Outlet ditentukan identitas, bukan query param.** User dengan role `outlet`
+yang mengirim `?outlet=OUTLET_LAIN` mendapat 403, bukan data outlet lain.
 
 ---
 
 ## Setup
 
-### 1. Clone & install dependency
+### 1. Install dependency
 
 ```bash
 cp .env.example .env
-# Edit .env sesuai konfigurasi
-
 pip install -r requirements.txt
+
+# untuk menjalankan test
+pip install -r requirements-dev.txt
 ```
 
 ### 2. Konfigurasi `.env`
 
 ```env
-DATABASE_URL=postgresql+psycopg2://user:password@host:5432/dbname
+DB_USER=xxx
+DB_PASS=xxx
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=xxx
 LOG_LEVEL=INFO
+
+RABBITMQ_HOST=xxx
+RABBITMQ_USER=xxx
+RABBITMQ_PASSWORD=xxx
+
+# WAJIB — aplikasi menolak start tanpa ini
+JWT_SECRET=<secret acak panjang>
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# Origin frontend, dipisah koma. Jangan pakai "*".
+CORS_ORIGINS=http://localhost:3000
+
+# Pembatasan percobaan login (0 = mematikan)
+LOGIN_MAX_ATTEMPTS=10
+LOGIN_WINDOW_SECONDS=300
+
+# Batas transaksi per request sync
+MAX_SALES_PER_REQUEST=1000
 ```
 
-> `API_KEY` tidak lagi disimpan di `.env` — key dikelola per outlet langsung di database.
+Generate `JWT_SECRET`:
 
-### 3. Jalankan migrasi database
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+### 3. Jalankan migrasi
+
+Urut, satu per satu:
 
 ```bash
 psql -U postgres -d nama_database -f migrations/001_initial_schema.sql
+psql -U postgres -d nama_database -f migrations/002_unique_indexes.sql
+psql -U postgres -d nama_database -f migrations/003_hash_api_keys.sql
+psql -U postgres -d nama_database -f migrations/004_users.sql
 ```
 
-### 4. Generate API key untuk setiap outlet
+Semua migrasi aman dijalankan berulang. `002` memeriksa **kolom** index yang
+ada, bukan namanya — jadi index yang sudah ada dengan nama berbeda terdeteksi
+dan dilewati, bukan diduplikasi. (`CREATE INDEX IF NOT EXISTS` hanya
+membandingkan nama, dan itu tidak cukup di sini.)
+
+> **Urutan deploy untuk database yang sudah berisi data:** jalankan migrasi 003
+> bersamaan dengan deploy kode baru. Di antara keduanya, API key lama tidak akan
+> cocok — kode mencari hash sementara database masih menyimpan plaintext.
+
+### 4. Buat kredensial
 
 ```bash
+# API key untuk mesin POS
 python manage_keys.py generate --outlet OUTLET_001
-```
 
-Output:
+# User admin untuk login dashboard
+python manage_users.py create --email admin@maharasa.id --role admin
 ```
-[+] API key berhasil dibuat untuk outlet 'OUTLET_001'
-    Key: xK9mP2vQnR8sL4wT7uY1eA6hJ3bN0cF5dGpIqZmEs
-    Simpan key ini — tidak bisa dilihat lagi!
-```
-
-> Simpan key ini baik-baik dan berikan ke outlet yang bersangkutan.
 
 ### 5. Jalankan server
 
@@ -61,77 +122,215 @@ Output:
 uvicorn app.main:app --reload
 ```
 
+Dokumentasi interaktif: <http://localhost:8000/docs>
+
 ---
 
-## Manage API Key
-
-API key dikelola via script `manage_keys.py` dari terminal.
-
-### Generate key untuk outlet baru
+## Manage API key outlet
 
 ```bash
-python manage_keys.py generate --outlet OUTLET_001
+python manage_keys.py generate --outlet OUTLET_001   # buat key baru
+python manage_keys.py list                           # daftar key (prefix saja)
+python manage_keys.py rotate --outlet OUTLET_001     # ganti key; yang lama mati
+python manage_keys.py revoke --outlet OUTLET_001     # nonaktifkan
 ```
 
-### Lihat semua key yang terdaftar
+> CLI dan endpoint `/api/api-keys` memakai service yang sama
+> (`app/services/api_key_service.py`), jadi aturannya persis sama di keduanya.
 
-```bash
-python manage_keys.py list
+Output `generate`:
+
+```
+[+] API key berhasil dibuat untuk outlet 'OUTLET_001'
+    Key: xK9mP2vQnR8sL4wT7uY1eA6hJ3bN0cF5dGpIqZmEs
+    Simpan key ini — tidak bisa dilihat lagi!
 ```
 
-Output:
+`list` hanya menampilkan prefix, karena database memang tidak menyimpan key
+mentahnya:
+
 ```
 Outlet               Status     Created At                Key
-------------------------------------------------------------------------------------------
-OUTLET_001           aktif      2024-01-15 08:00:00       xK9mP2vQnR8sL4wT...
-OUTLET_002           aktif      2024-01-16 09:00:00       pZ3nQ7rYkM2vX5wA...
-OUTLET_003           nonaktif   2024-01-10 07:00:00       bJ8cT1uWsN6eL9hD...
+------------------------------------------------------------------------------
+OUTLET_001           aktif      2026-01-15 08:00:00       xK9mP2vQ...
+OUTLET_002           aktif      2026-01-16 09:00:00       pZ3nQ7rY...
+OUTLET_003           nonaktif   2026-01-10 07:00:00       bJ8cT1uW...
 ```
 
-### Nonaktifkan key outlet
+> Key yang hilang tidak bisa dipulihkan — revoke, lalu buat baru.
+
+---
+
+## Manage user dashboard
 
 ```bash
-python manage_keys.py revoke --outlet OUTLET_001
+python manage_users.py create --email admin@maharasa.id --role admin
+python manage_users.py create --email budi@maharasa.id --role manager
+python manage_users.py create --email kasir@maharasa.id --role outlet --outlet OUTLET_001
+
+python manage_users.py list
+python manage_users.py password --email admin@maharasa.id
+python manage_users.py deactivate --email budi@maharasa.id
+python manage_users.py activate --email budi@maharasa.id
 ```
 
-> Key yang direvoke tidak bisa digunakan lagi. Untuk mengaktifkan kembali, generate key baru.
+Password ditanyakan lewat prompt (tidak masuk shell history). Untuk otomatisasi,
+pakai `--password`.
+
+| Role | Kewenangan |
+|---|---|
+| `admin` | Akses penuh semua outlet |
+| `manager` | Baca data semua outlet |
+| `outlet` | Baca data outletnya sendiri saja (wajib `--outlet`) |
 
 ---
 
 ## Endpoint
 
-### `POST /api/sync/sales`
+### Auth
 
-Sync data transaksi dari outlet.
+#### `POST /api/auth/login`
 
-**Header:**
+```json
+{ "email": "admin@maharasa.id", "password": "rahasia123" }
+```
+
+```json
+{
+  "access_token": "eyJhbGciOi...",
+  "refresh_token": "eyJhbGciOi...",
+  "token_type": "bearer",
+  "expires_in": 1800,
+  "user": {
+    "id": 1,
+    "email": "admin@maharasa.id",
+    "full_name": "Budi",
+    "role": "admin",
+    "outlet_code": null,
+    "is_active": true
+  }
+}
+```
+
+#### `POST /api/auth/refresh`
+
+```json
+{ "refresh_token": "eyJhbGciOi..." }
+```
+
+Access token baru dibuat dari data user **terkini** — perubahan role langsung berlaku.
+
+#### `GET /api/auth/me`
+
+Data user yang sedang login.
+
+#### `POST /api/auth/logout`
+
+JWT bersifat stateless; token sesungguhnya dibuang di sisi klien. Endpoint ini
+hanya penanda supaya frontend punya tempat memanggil.
+
+#### `POST /api/auth/change-password`
+
+Ganti password sendiri — tersedia untuk semua role.
+
+```json
+{ "current_password": "lama123456", "new_password": "baru123456" }
+```
+
+Password lama tetap diminta walaupun pemanggil sudah membawa token valid:
+tanpa itu, token yang dicuri bisa dipakai mengunci pemilik akun yang sah.
+
+> `POST /api/auth/login` dibatasi `LOGIN_MAX_ATTEMPTS` percobaan (default 10)
+> per `LOGIN_WINDOW_SECONDS` (default 300 detik) per alamat pemanggil.
+> Melewati batas menghasilkan 429 dengan header `Retry-After`.
+> Login yang berhasil mengosongkan hitungan.
+
+---
+
+### Administrasi (khusus role admin)
+
+Manager sengaja tidak diberi akses ke sini: manager boleh membaca data semua
+outlet, tapi tidak mengelola kredensial.
+
+#### API key outlet
+
+| Endpoint | Isi |
+|---|---|
+| `GET /api/api-keys` | Daftar key — hanya prefix, tidak pernah key mentah |
+| `POST /api/api-keys` | Buat key untuk outlet baru |
+| `POST /api/api-keys/{outlet_code}/rotate` | Ganti key; yang lama langsung mati |
+| `POST /api/api-keys/{outlet_code}/revoke` | Nonaktifkan key |
+
+`POST /api/api-keys` dan `/rotate` adalah **satu-satunya** response yang memuat
+key mentah:
+
+```json
+{
+  "success": true,
+  "data": { "outlet_code": "OUTLET_009", "key_prefix": "xK9mP2vQ", "is_active": true },
+  "api_key": "xK9mP2vQnR8sL4wT7uY1eA6hJ3bN0cF5dGpIqZmEs",
+  "message": "Simpan key ini sekarang — tidak bisa dilihat lagi."
+}
+```
+
+Outlet yang sudah punya key ditolak `409`, bukan ditimpa — menimpa berarti mesin
+POS di lapangan langsung kehilangan akses tanpa peringatan. Untuk mengganti key
+yang bocor, pakai `rotate`. `rotate` juga satu-satunya cara memulihkan outlet
+yang key-nya sudah direvoke, karena key lamanya tidak diketahui siapa pun lagi.
+
+#### User dashboard
+
+| Endpoint | Isi |
+|---|---|
+| `GET /api/users` | Daftar user |
+| `POST /api/users` | Buat user |
+| `GET /api/users/{id}` | Detail user |
+| `PATCH /api/users/{id}` | Ubah nama, role, outlet, status aktif |
+| `POST /api/users/{id}/password` | Reset password user lain |
+
+Pagar yang berlaku, supaya admin tidak mengunci dirinya sendiri keluar:
+
+- Tidak bisa menonaktifkan atau menurunkan role akun sendiri → `400`
+- Admin aktif terakhir tidak bisa diturunkan atau dinonaktifkan → `400`
+- `email` tidak bisa diubah — email adalah subject JWT, mengubahnya membuat
+  token yang sedang berjalan menunjuk user yang tidak ada lagi
+- Role `outlet` wajib punya `outlet_code` → `422`
+
+---
+
+### Sync (API key outlet)
+
+#### `POST /api/sync/sales`
+
 ```
 Authorization: Bearer <API_KEY_OUTLET>
 ```
 
 > `outlet_code` otomatis dikenali dari API key — tidak perlu dikirim di body.
 
-**Request Body:**
 ```json
 {
   "sales": [
     {
-      "id": 10001,
+      "transaction_id": 10001,
       "shop_id": 1,
-      "sale_date": "2024-01-15",
-      "paid_time": "2024-01-15T10:30:00",
+      "sale_date": "2026-01-15",
+      "paid_time": "2026-01-15T10:30:00",
       "receipt_total_amount": 150000.00,
       "receipt_pay_price": 150000.00,
       "vat_percent": 11.00,
       "transaction_vat": 14850.00,
       "items": [
         {
-          "id": 1,
+          "order_detail_id": 1,
+          "transaction_id": 10001,
+          "sale_date": "2026-01-15",
           "product_id": 101,
+          "product_group": "COLORPLATE",
+          "product_name": "RED",
           "qty": 2,
           "price": 75000.00,
-          "retail_price": 75000.00,
-          "subtotal": 150000.00
+          "retail_price": 75000.00
         }
       ]
     }
@@ -139,31 +338,139 @@ Authorization: Bearer <API_KEY_OUTLET>
 }
 ```
 
-**Response sukses:**
+```json
+{ "success": true, "inserted_sales": 1, "inserted_items": 1 }
+```
+
+---
+
+### Baca (JWT user)
+
+#### `GET /api/sales/`
+
+Query param: `outlet`, `start_date`, `end_date`, `limit` (1–500, default 50), `offset`.
+
 ```json
 {
   "success": true,
-  "inserted_sales": 1,
-  "inserted_items": 1
+  "data": [ { "transaction_id": 10001, "outlet_code": "OUTLET_001", "...": "..." } ],
+  "pagination": { "limit": 50, "offset": 0, "total": 1284, "has_more": true }
 }
 ```
 
-**Response error auth:**
+#### `GET /api/sales/colorplate`
+
+Rekap penjualan produk bergrup `COLORPLATE`, dikelompokkan per produk/outlet/tanggal.
+
+#### `GET /api/outlets`
+
+Daftar outlet untuk dropdown filter. Khusus role `admin` dan `manager`.
+
+#### `GET /api/outlets/sync-status`
+
+Kapan tiap outlet terakhir mengirim data — untuk mendeteksi outlet yang berhenti
+sync. Ter-scope: user role `outlet` hanya melihat outletnya sendiri.
+
 ```json
 {
-  "detail": "Invalid or inactive API key"
+  "success": true,
+  "data": [
+    {
+      "outlet_code": "OUTLET_001",
+      "last_sale_date": "2026-01-15",
+      "last_synced_at": "2026-01-15T18:03:11",
+      "total_transactions": 1284
+    }
+  ]
 }
 ```
 
-**Response error server:**
+---
+
+### Laporan dashboard (JWT user)
+
+Semua endpoint di bawah ini menerima `outlet`, `start_date`, dan `end_date`,
+dan **mengecualikan transaksi yang dibatalkan** (`Deleted=1`).
+
+| Endpoint | Isi |
+|---|---|
+| `GET /api/sales/summary` | Jumlah transaksi, omzet, diskon, rata-rata per struk |
+| `GET /api/sales/daily` | Time series harian untuk grafik |
+| `GET /api/sales/by-outlet` | Perbandingan antar outlet (admin & manager saja) |
+| `GET /api/sales/top-products` | Ranking produk (`product_group`, `limit` 1–100) |
+| `GET /api/sales/export` | Unduh CSV seluruh hasil filter |
+| `GET /api/sales/{transaction_id}` | Detail satu transaksi beserta itemnya |
+
+`GET /api/sales/summary`:
+
 ```json
 {
-  "detail": {
-    "success": false,
-    "message": "Database error"
+  "success": true,
+  "data": {
+    "total_transactions": 128,
+    "total_amount": 19250000.0,
+    "total_discount": 350000.0,
+    "average_per_transaction": 150390.63
   }
 }
 ```
+
+> **Catatan konsistensi.** `GET /api/sales/` dan `/colorplate` masih IKUT
+> menghitung transaksi `Deleted=1`, sedangkan endpoint laporan tidak.
+> Perbedaan ini disengaja: mengubah endpoint lama akan mengubah angka yang
+> sudah dipublish ke RabbitMQ. Lihat TODO 4.5.
+
+`GET /api/sales/{transaction_id}` mengembalikan 404 untuk transaksi milik outlet
+lain — bukan 403 — supaya nomor transaksi outlet lain tidak bisa dipetakan lewat
+perbedaan status code.
+
+---
+
+### Publish event (API key outlet)
+
+#### `POST /api/sales/publish`
+
+```json
+{ "date": "2026-01-15", "exchange": "posdata_exchange", "routing_key": "posdata.created" }
+```
+
+Mempublish satu event per baris colorplate:
+
+```json
+{
+  "event": "posdata.created",
+  "data": { "platecolor": "RED", "outlet": "OUTLET_001", "date": "2026-01-15", "sold": 4 },
+  "meta": { "timestamp": "...", "source": "sync-sales-service", "version": "1.0" }
+}
+```
+
+> Belum idempoten — memanggil dua kali untuk tanggal yang sama mengirim event
+> dobel. Lihat TODO 3.4.
+
+---
+
+### Health
+
+| Endpoint | Untuk | Menyentuh DB |
+|---|---|---|
+| `GET /` | Cek cepat | Tidak |
+| `GET /health` | Liveness probe | Tidak |
+| `GET /health/ready` | Readiness probe — 503 kalau DB bermasalah | Ya |
+
+Semuanya terbuka tanpa autentikasi. `/health` sengaja tidak menyentuh database:
+kalau probe liveness ikut gagal saat database bermasalah, orchestrator akan
+me-restart container yang sebenarnya sehat.
+
+---
+
+## Bentuk error
+
+| Status | Kapan |
+|---|---|
+| 401 | Kredensial tidak ada, salah, nonaktif, atau token kedaluwarsa |
+| 403 | Kredensial sah tapi tidak berhak atas outlet / endpoint tersebut |
+| 422 | Body atau query param tidak lolos validasi |
+| 500 | Kegagalan database / broker |
 
 ---
 
@@ -172,108 +479,108 @@ Authorization: Bearer <API_KEY_OUTLET>
 ```
 sync-api/
 ├── app/
-│   ├── main.py                  # Entry point FastAPI
-│   ├── config.py                # Konfigurasi env
-│   ├── database.py              # SQLAlchemy engine & session
-│   ├── middleware/
-│   │   └── api_key_auth.py      # Validasi Bearer token dari DB
+│   ├── main.py                     # Entry point + CORS + wiring router
+│   ├── config.py                   # Konfigurasi env (validasi saat import)
+│   ├── database.py                 # SQLAlchemy engine & session
+│   ├── core/
+│   │   ├── security.py             # Hash API key, hash password, JWT
+│   │   ├── rate_limit.py           # Penahan penebakan password
+│   │   └── time.py                 # utcnow() naive-UTC
+│   ├── dependencies/
+│   │   └── auth.py                 # require_api_key, get_current_user, scoping
 │   ├── models/
-│   │   ├── api_key.py           # Model tabel api_keys
-│   │   ├── sales.py             # Model tabel ordertransaction
-│   │   └── sales_items.py       # Model tabel orderdetail
+│   │   ├── api_key.py              # api_keys (kolom `key` berisi hash)
+│   │   ├── user.py                 # users + definisi role
+│   │   ├── sales.py                # ordertransaction
+│   │   └── sales_items.py          # orderdetail
 │   ├── routes/
-│   │   └── sync_routes.py       # Route POST /api/sync/sales
+│   │   ├── auth_routes.py          # /api/auth/*
+│   │   ├── admin_routes.py         # /api/api-keys, /api/users  (admin)
+│   │   ├── sync_routes.py          # /api/sync/*      (API key)
+│   │   ├── sales_routes.py         # /api/sales/*     (JWT + publish API key)
+│   │   └── outlet_routes.py        # /api/outlets
 │   ├── schemas/
-│   │   ├── sales_schema.py      # Pydantic request schema
-│   │   ├── ordertransaction.sql # DDL referensi tabel transaksi
-│   │   └── orderdetail.sql      # DDL referensi tabel detail
+│   │   ├── auth_schema.py
+│   │   ├── admin_schema.py
+│   │   ├── sales_schema.py         # request sync
+│   │   ├── sales_response.py       # response model
+│   │   └── sales_event.py
 │   ├── services/
-│   │   └── sales_service.py     # Business logic upsert
+│   │   ├── sales_service.py        # upsert + query baca + laporan
+│   │   ├── api_key_service.py      # dipakai route DAN CLI
+│   │   ├── user_service.py         # dipakai route DAN CLI
+│   │   └── rabbitmq.py
 │   └── utils/
-│       └── logger.py            # File logger
+│       └── logger.py
 ├── migrations/
-│   └── 001_initial_schema.sql   # DDL PostgreSQL (ordertransaction, orderdetail, api_keys)
-├── manage_keys.py               # CLI manage API key per outlet
+│   ├── 001_initial_schema.sql
+│   ├── 002_unique_indexes.sql      # index pendukung ON CONFLICT
+│   ├── 003_hash_api_keys.sql       # hash key di tempat + updated_at
+│   ├── 004_users.sql               # tabel users
+│   └── checks/
+│       └── orderdetail_outlet_collision.sql
+├── .github/workflows/tests.yml     # CI: lint + unit + integrasi Postgres
+├── tests/                          # lihat tests/README.md
+├── manage_keys.py                  # CLI API key outlet
+├── manage_users.py                 # CLI user dashboard
+├── consumer.py                     # contoh consumer RabbitMQ
 ├── requirements.txt
-├── .env
-└── .gitignore
+├── requirements-dev.txt
+├── pytest.ini
+├── ruff.toml
+└── TODO.md                         # rencana pengembangan berikutnya
 ```
+
+---
+
+## Test
+
+```bash
+pytest                                  # unit test
+pytest --cov=app --cov-report=term-missing
+ruff check app tests                    # lint
+TEST_DATABASE_URL=postgresql+psycopg2://... pytest tests/integration -v
+```
+
+CI menjalankan ketiganya pada tiap push dan pull request —
+lihat `.github/workflows/tests.yml`.
+
+Detail dan konvensinya di [tests/README.md](tests/README.md).
 
 ---
 
 ## Catatan Penting
 
-- API key disimpan di tabel `api_keys` dalam database, bukan di `.env`
-- Setiap outlet memiliki key unik — jika satu key bocor, hanya outlet tersebut yang terdampak
-- `outlet_code` diambil otomatis dari key saat request masuk, tidak perlu dikirim ulang di body
-- Service menggunakan `on_conflict_do_update` (PostgreSQL upsert)
-- Log disimpan di folder `logs/api.log`, level dikontrol via `LOG_LEVEL` di `.env`
+- API key disimpan sebagai **hash** di tabel `api_keys`, bukan plaintext
+- Setiap outlet punya key unik — kalau satu bocor, hanya outlet itu yang terdampak
+- `outlet_code` diambil dari key/identitas, tidak pernah dari body atau query param
+- Upsert memakai `on_conflict_do_update` dengan kunci `(TransactionID, outlet_code)`
+- Log ada di `logs/api.log`, level dikontrol `LOG_LEVEL`
+- Endpoint baru **wajib** punya dependency auth — dijaga oleh
+  `tests/unit/test_app_wiring.py::test_semua_endpoint_api_punya_autentikasi`
+- Satu request sync dibatasi `MAX_SALES_PER_REQUEST` (default 1000) transaksi
+- `init_db.py` tidak lagi menghapus tabel kecuali `INIT_DB_CONFIRM=DROP-ALL`
+  diisi — untuk perubahan skema di produksi, pakai `migrations/`
 
 ---
 
 ## Docker
 
-### Persiapan
-
 ```bash
 cp .env.example .env
-# Edit .env sesuai konfigurasi database kamu
-```
+# isi .env, termasuk JWT_SECRET dan CORS_ORIGINS
 
-Isi `.env`:
-```env
-DATABASE_URL=postgresql+psycopg2://user:password@host:5432/dbname
-LOG_LEVEL=INFO
-```
-
-> Pastikan migrasi sudah dijalankan terlebih dahulu ke PostgreSQL kamu:
-> ```bash
-> psql -U postgres -d nama_database -f migrations/001_initial_schema.sql
-> ```
-
-### Jalankan
-
-```bash
 docker compose up -d
 ```
 
-Docker akan otomatis:
-1. Build image FastAPI
-2. Menjalankan API di port `8000`
-
-### Generate API key setelah container jalan
+Setelah container jalan:
 
 ```bash
 docker compose exec api python manage_keys.py generate --outlet OUTLET_001
-```
+docker compose exec api python manage_users.py create --email admin@maharasa.id --role admin
 
-### Lihat semua key
-
-```bash
-docker compose exec api python manage_keys.py list
-```
-
-### Nonaktifkan key
-
-```bash
-docker compose exec api python manage_keys.py revoke --outlet OUTLET_001
-```
-
-### Lihat log
-
-```bash
-# Log container
 docker compose logs -f api
-
-# Log file
 tail -f logs/api.log
-```
 
-### Stop
-
-```bash
 docker compose down
-
-# Stop + hapus data database
-docker compose down -v
 ```

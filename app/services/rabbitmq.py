@@ -1,21 +1,25 @@
-import pika
 import json
-import os
+
+import pika
+
+from app.config import settings
 
 
 class RabbitMQClient:
     def __init__(self):
-        self.host = os.getenv("RABBITMQ_HOST", "rabbitmq")
-        self.user = os.getenv("RABBITMQ_USER", "maharasa")
-        self.password = os.getenv("RABBITMQ_PASSWORD", "maharasa123")
+        # Konfigurasi dibaca dari settings, bukan os.getenv yang tersebar —
+        # supaya semua env aplikasi terdaftar di satu tempat.
+        self.host = settings.RABBITMQ_HOST
+        self.user = settings.RABBITMQ_USER
+        self.password = settings.RABBITMQ_PASSWORD
 
         self.connection = None
         self.channel = None
-        
+
     def _connect(self):
         if self.connection and not self.connection.is_closed:
             return
-        
+
         credentials = pika.PlainCredentials(self.user, self.password)
 
         parameters = pika.ConnectionParameters(
@@ -43,7 +47,7 @@ class RabbitMQClient:
             body=json.dumps(payload),
             properties=pika.BasicProperties(
                 content_type='application/json',
-                delivery_mode=2 
+                delivery_mode=2
             )
         )
     def close(self):
