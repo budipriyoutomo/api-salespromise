@@ -113,6 +113,8 @@ def create_user(db, email: str, password: str, role: str, outlet_code=None, full
         role=role,
         outlet_code=_outlet_untuk(role, outlet_code),
         is_active=True,
+        # Password ini ditentukan orang lain, jadi wajib diganti pemiliknya.
+        must_change_password=True,
         created_at=utcnow(),
     )
 
@@ -173,7 +175,7 @@ def update_user(db, user_id: int, actor: User = None, **perubahan):
     return user
 
 
-def set_password(db, user_id: int, password: str):
+def _tulis_password(db, user_id: int, password: str, wajib_ganti: bool):
     validasi_password(password)
 
     user = get_by_id(db, user_id)
@@ -182,12 +184,33 @@ def set_password(db, user_id: int, password: str):
         raise UserTidakDitemukan(user_id)
 
     user.password_hash = security.hash_password(password)
+    user.must_change_password = wajib_ganti
     user.updated_at = utcnow()
 
     db.commit()
     db.refresh(user)
 
     return user
+
+
+def set_password(db, user_id: int, password: str):
+    """Reset paksa oleh admin (atau CLI).
+
+    Password hasil reset selalu diketahui orang lain, jadi penanda
+    `must_change_password` dinyalakan — termasuk untuk akun yang sebelumnya
+    sudah pernah mengganti sendiri.
+    """
+    return _tulis_password(db, user_id, password, wajib_ganti=True)
+
+
+def ganti_password_sendiri(db, user_id: int, password: str):
+    """Penggantian oleh pemilik akun.
+
+    Hanya jalur ini yang memadamkan `must_change_password`: yang membuat
+    password jadi rahasia lagi adalah pemiliknya yang memilih sendiri, bukan
+    sekadar nilainya berubah.
+    """
+    return _tulis_password(db, user_id, password, wajib_ganti=False)
 
 
 def set_active(db, email: str, is_active: bool):

@@ -35,6 +35,14 @@ class User(Base):
 
     is_active = Column(Boolean, nullable=False, default=True)
 
+    # Menyala selama password akun ini ditentukan orang lain — saat dibuat,
+    # dan setiap kali admin mereset paksa. Padam begitu pemiliknya mengganti
+    # sendiri. Frontend memakainya untuk memaksa penggantian di login pertama.
+    #
+    # Default False, bukan True: baris yang sudah ada sebelum kolom ini lahir
+    # tidak boleh tiba-tiba terkunci saat login berikutnya.
+    must_change_password = Column(Boolean, nullable=False, default=False)
+
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

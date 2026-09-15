@@ -217,7 +217,12 @@ class TestMe:
 
         response = client.get("/api/auth/me", headers=bearer(token_for(user)))
 
-        assert "password" not in response.text.lower()
+        # Diperiksa spesifik, bukan lewat substring "password": ada field sah
+        # yang memuat kata itu (`must_change_password`), dan pencarian tumpul
+        # akan menuduhnya bocor. Yang benar-benar berbahaya adalah hash-nya.
+        assert "password_hash" not in response.json()
+        assert user.password_hash not in response.text
+        assert "$2b$" not in response.text  # awalan hash bcrypt
 
     def test_memuat_outlet_code_untuk_user_outlet(self, client, make_user, token_for):
         user = make_user(email="kasir@maharasa.id", role="outlet", outlet_code="OUTLET_001")

@@ -24,6 +24,10 @@ class UserResponse(BaseModel):
     outlet_code: Optional[str] = None
     is_active: bool
 
+    # True berarti password akun ini masih ditentukan orang lain dan harus
+    # diganti pemiliknya. Default False supaya user lama tidak ikut terkunci.
+    must_change_password: bool = False
+
 
 class TokenResponse(BaseModel):
     access_token: str

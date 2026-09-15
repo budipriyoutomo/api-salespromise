@@ -148,7 +148,9 @@ def change_password(
         logger.warning(f"GANTI PASSWORD GAGAL (password lama salah) email={user.email}")
         raise _unauthorized("Password lama salah")
 
-    user_service.set_password(db, user.id, payload.new_password)
+    # Jalur "ganti sendiri": ini yang memadamkan `must_change_password`.
+    # `set_password` justru menyalakannya — itu untuk reset paksa oleh admin.
+    user_service.ganti_password_sendiri(db, user.id, payload.new_password)
 
     logger.info(f"PASSWORD DIGANTI email={user.email}")
 

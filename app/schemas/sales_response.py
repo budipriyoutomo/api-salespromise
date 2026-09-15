@@ -33,6 +33,14 @@ class SaleResponse(BaseModel):
     transaction_status_id: int
     void_staff_id: int
 
+    # Penanda struk dibatalkan. Dikirim supaya frontend bisa menandainya
+    # secara visual tanpa menebak lewat `void_staff_id` — kolom lain, arti
+    # lain, dan tidak dijamin sejalan.
+    #
+    # Default 0: baris yang belum tersimpan belum punya default dari database,
+    # dan response tidak boleh gagal hanya karena itu.
+    deleted: int = 0
+
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

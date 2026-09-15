@@ -124,6 +124,36 @@ akan mengubah angka yang sudah dipublish ke RabbitMQ. Keputusannya ada di
 item 4.5, dan sekarang jadi lebih mendesak karena dua endpoint menampilkan
 angka yang berbeda untuk data yang sama.
 
+Sejak dashboard dibangun, `SaleResponse` **mengekspos kolom `deleted`**
+(`tests/unit/test_sales_response_deleted.py`). Aditif, tanpa migrasi — kolomnya
+sudah ada di tabel. Frontend memakainya untuk menandai struk yang dibatalkan.
+
+Itu membuat inkonsistensi di atas jadi kelihatan oleh pengguna, bukan lagi
+hanya di catatan ini: tabel transaksi menampilkan baris bertanda "Void" yang
+tidak ikut terhitung di kartu ringkasan. Sampai item 4.5 diputuskan, selisih
+itu memang akan terlihat.
+
+### Kolom `must_change_password` pada `users`
+
+Ditambahkan untuk dashboard (item 2.8 di `TODO.md` sync-frontend). Migrasi
+`005_must_change_password.sql`, dikunci `tests/unit/test_must_change_password.py`.
+
+Siklus hidupnya ada di `app/services/user_service.py`:
+
+| jalur | penanda |
+|---|---|
+| `create_user` | TRUE — password ditentukan orang lain |
+| `set_password` (reset oleh admin) | TRUE |
+| `ganti_password_sendiri` | FALSE — pemiliknya memilih sendiri |
+
+`set_password` dan `ganti_password_sendiri` sengaja dipisah walau keduanya
+menulis hash: yang membedakan bukan nilainya, melainkan **siapa** yang memilih.
+`POST /api/auth/change-password` memakai yang kedua.
+
+DEFAULT-nya FALSE, bukan TRUE. Baris yang sudah ada dibuat sebelum kolom ini
+lahir; memberi TRUE pada mereka akan memaksa setiap user yang sedang berjalan
+mengganti password pada login berikutnya — mengunci orang demi kerapian.
+
 ---
 
 ## Fase 3 — Kualitas Kode & Infrastruktur (sebagian selesai)
