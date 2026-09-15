@@ -24,4 +24,4 @@ ignore = [
 "tests/conftest.py" = ["E402"]
 
 [lint.isort]
-known-first-party = ["app", "manage_keys", "manage_users"]
+known-first-party = ["app", "manage_keys", "manage_users", "migrate"]

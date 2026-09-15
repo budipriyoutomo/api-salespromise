@@ -34,5 +34,7 @@ USER appuser
 
 EXPOSE 8000
 
-# 🚀 Gunicorn + Uvicorn worker
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "app.main:app", "--bind", "0.0.0.0:8000", "--workers", "4"]
+# 🗄️ Migrasi dulu (sekali, sebelum worker lahir), baru Gunicorn + Uvicorn worker.
+# Kalau migrasi gagal, container berhenti — tidak melayani request di atas skema setengah jadi.
+# Dijalankan saat start, bukan build: saat build database tidak terjangkau.
+CMD ["sh", "-c", "python migrate.py && exec gunicorn -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:8000 --workers 4"]

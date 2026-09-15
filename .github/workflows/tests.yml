@@ -40,7 +40,7 @@ jobs:
       - name: Lint
         run: |
           pip install ruff
-          ruff check app tests manage_keys.py manage_users.py consumer.py init_db.py
+          ruff check app tests manage_keys.py manage_users.py migrate.py consumer.py init_db.py
 
       - name: Unit test
         # Env dummy: conftest.py menimpanya, tapi app/config.py memvalidasi

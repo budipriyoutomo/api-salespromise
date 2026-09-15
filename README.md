@@ -88,16 +88,23 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 ### 3. Jalankan migrasi
 
-Urut, satu per satu:
-
 ```bash
-psql -U postgres -d nama_database -f migrations/001_initial_schema.sql
-psql -U postgres -d nama_database -f migrations/002_unique_indexes.sql
-psql -U postgres -d nama_database -f migrations/003_hash_api_keys.sql
-psql -U postgres -d nama_database -f migrations/004_users.sql
+python migrate.py            # jalankan semua migrasi yang belum tercatat, urut
+python migrate.py --status   # lihat mana yang sudah / belum jalan
 ```
 
-Semua migrasi aman dijalankan berulang. `002` memeriksa **kolom** index yang
+`migrate.py` menjalankan file berpola `NNN_nama.sql` di `migrations/` secara
+urut dan mencatatnya di tabel `schema_migrations`, jadi yang sudah jalan
+dilewati. Di Docker, ini dijalankan **otomatis** setiap container start (lihat
+bagian [Docker](#docker)).
+
+`orderdetail.sql` dan `ordertransaction.sql` di folder yang sama adalah dump
+MySQL lama dan **tidak** ikut dijalankan, begitu juga isi `checks/`.
+
+Semua migrasi aman dijalankan berulang — dan wajib tetap begitu untuk migrasi
+baru. Database yang dulu dimigrasi manual lewat `psql` belum punya catatan di
+`schema_migrations`, sehingga 001–005 dijalankan ulang sekali saat pertama kali
+memakai `migrate.py`. `002` memeriksa **kolom** index yang
 ada, bukan namanya — jadi index yang sudah ada dengan nama berbeda terdeteksi
 dan dilewati, bukan diduplikasi. (`CREATE INDEX IF NOT EXISTS` hanya
 membandingkan nama, dan itu tidak cukup di sini.)
@@ -517,10 +524,12 @@ sync-api/
 │   ├── 002_unique_indexes.sql      # index pendukung ON CONFLICT
 │   ├── 003_hash_api_keys.sql       # hash key di tempat + updated_at
 │   ├── 004_users.sql               # tabel users
+│   ├── 005_must_change_password.sql
 │   └── checks/
 │       └── orderdetail_outlet_collision.sql
 ├── .github/workflows/tests.yml     # CI: lint + unit + integrasi Postgres
 ├── tests/                          # lihat tests/README.md
+├── migrate.py                      # runner migrasi (otomatis saat container start)
 ├── manage_keys.py                  # CLI API key outlet
 ├── manage_users.py                 # CLI user dashboard
 ├── consumer.py                     # contoh consumer RabbitMQ
@@ -570,16 +579,22 @@ Detail dan konvensinya di [tests/README.md](tests/README.md).
 cp .env.example .env
 # isi .env, termasuk JWT_SECRET dan CORS_ORIGINS
 
-docker compose up -d
+docker compose up -d --build
 ```
+
+Migrasi jalan **otomatis saat container start**, sebelum gunicorn — bukan saat
+build, karena saat build database belum terjangkau. Kalau migrasi gagal,
+container berhenti dan penyebabnya ada di `docker compose logs`. Kalau database
+belum siap, `migrate.py` mencoba ulang beberapa kali dulu.
 
 Setelah container jalan:
 
 ```bash
-docker compose exec api python manage_keys.py generate --outlet OUTLET_001
-docker compose exec api python manage_users.py create --email admin@maharasa.id --role admin
+docker compose exec maharasa-apisales python migrate.py --status
+docker compose exec maharasa-apisales python manage_keys.py generate --outlet OUTLET_001
+docker compose exec maharasa-apisales python manage_users.py create --email admin@maharasa.id --role admin
 
-docker compose logs -f api
+docker compose logs -f maharasa-apisales
 tail -f logs/api.log
 
 docker compose down
