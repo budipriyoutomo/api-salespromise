@@ -36,7 +36,9 @@ polos tetap hijau di mesin mana pun.
 | `unit/test_routes_auth.py` | `login`, `refresh`, `me`, `logout` |
 | `unit/test_app_wiring.py` | CORS, endpoint publik, penjaga auth, OpenAPI |
 | `unit/test_sales_service_sync.py` | `sync_sales` — pemetaan kolom & klausa upsert |
-| `unit/test_sales_service_queries.py` | `get_sales`, `count_sales`, `get_sales_colorplate`, pagination |
+| `unit/test_sales_service_queries.py` | `get_sales`, `count_sales`, rekap per product group, `get_sales_colorplate`, pagination |
+| `unit/test_product_group_service.py` | Mapping product group — normalisasi nama, tanpa penghapusan |
+| `unit/test_routes_product_groups.py` | `/api/product-groups` (admin), `/api/sales/by-group`, `/api/sales/product-groups` |
 | `unit/test_routes_sync.py` | `POST /api/sync/sales` |
 | `unit/test_routes_sales.py` | `GET /api/sales`, `/colorplate`, `POST /publish` |
 | `unit/test_rabbitmq.py` | `RabbitMQClient` (pika di-mock) |
@@ -47,6 +49,7 @@ polos tetap hijau di mesin mana pun.
 | `unit/test_routes_reports.py` | Endpoint laporan dashboard |
 | `unit/test_sales_service_reports.py` | Query agregat laporan |
 | `unit/test_rate_limit.py` | Penahan penebakan password |
+| `unit/test_structured_logging.py` | Log JSON/teks, `request_id`, middleware `X-Request-ID`, access log |
 | `unit/test_infrastructure.py` | utcnow, koneksi broker, batas payload, health |
 | `integration/test_sync_postgres.py` | Upsert sungguhan, transaksi, performa |
 

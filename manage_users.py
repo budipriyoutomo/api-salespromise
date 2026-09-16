@@ -8,6 +8,7 @@ Usage:
     python manage_users.py password --email admin@maharasa.id
     python manage_users.py deactivate --email admin@maharasa.id
     python manage_users.py activate --email admin@maharasa.id
+    python manage_users.py delete --email seed@maharasa.id [--yes]
 
 Password dimasukkan lewat prompt (tidak terlihat di shell history) atau
 lewat --password untuk keperluan otomatisasi.
@@ -137,14 +138,43 @@ def set_active(email: str, is_active: bool):
         db.close()
 
 
+def delete_user(email: str, konfirmasi: bool = False):
+    email = user_service.normalize_email(email)
+
+    # Hapus tidak bisa dibatalkan, jadi "y" saja tidak cukup — email harus
+    # diketik ulang, supaya salah sasaran ketahuan sebelum terlambat.
+    if not konfirmasi:
+        ketikan = input(f"Hapus permanen '{email}'? Ketik ulang emailnya untuk konfirmasi: ")
+        if user_service.normalize_email(ketikan) != email:
+            print("[!] Dibatalkan — email yang diketik tidak sama.")
+            return
+
+    db = SessionLocal()
+    try:
+        try:
+            user_service.delete_user(db, email)
+        except user_service.UserTidakDitemukan:
+            print(f"[!] User '{email}' tidak ditemukan.")
+            return
+        except user_service.MenguncilDiriSendiri as exc:
+            print(f"[!] {exc}")
+            return
+
+        print(f"[+] User '{email}' dihapus.")
+
+    finally:
+        db.close()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Manage user dashboard")
-    parser.add_argument("action", choices=["create", "list", "password", "activate", "deactivate"])
+    parser.add_argument("action", choices=["create", "list", "password", "activate", "deactivate", "delete"])
     parser.add_argument("--email", type=str)
     parser.add_argument("--role", type=str, default=ROLE_OUTLET)
     parser.add_argument("--outlet", type=str)
     parser.add_argument("--password", type=str, help="Isi langsung; kalau kosong akan ditanya lewat prompt")
     parser.add_argument("--name", type=str)
+    parser.add_argument("--yes", action="store_true", help="Lewati konfirmasi delete")
 
     args = parser.parse_args(argv)
 
@@ -170,6 +200,8 @@ def main(argv=None):
         set_active(args.email, True)
     elif args.action == "deactivate":
         set_active(args.email, False)
+    elif args.action == "delete":
+        delete_user(args.email, konfirmasi=args.yes)
 
 
 if __name__ == "__main__":

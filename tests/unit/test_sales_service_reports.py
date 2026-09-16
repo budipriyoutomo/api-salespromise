@@ -258,6 +258,36 @@ class TestGetTopProducts:
 
         assert hasil[0].product_id == 201
 
+    def test_filter_product_group_tidak_peka_kapitalisasi_dan_spasi(self, seeded, item_factory):
+        """Sama dengan `/by-group` (Fase 6 A4) — dropdown mengirim nama ter-normalisasi,
+        sedangkan POS bisa menyimpan ` Food` apa adanya."""
+        seeded.add(
+            item_factory(order_detail_id=4, transaction_id=2, product_id=202, product_group=" Food", product_name="MIE", qty=1)
+        )
+        seeded.commit()
+
+        hasil = SalesService.get_top_products(db=seeded, product_group="food ")
+
+        assert {row.product_name for row in hasil} == {"NASI", "MIE"}
+
+    def test_varian_nama_group_produk_yang_sama_digabung_satu_baris(self, seeded, item_factory):
+        """Tanpa ini NASI muncul dua kali di ranking: sekali sebagai FOOD, sekali sebagai `food `."""
+        seeded.add(
+            item_factory(order_detail_id=2, transaction_id=3, product_id=201, product_group="food ", product_name="NASI", qty=2)
+        )
+        seeded.commit()
+
+        nasi = [row for row in SalesService.get_top_products(db=seeded) if row.product_name == "NASI"]
+
+        assert len(nasi) == 1
+        assert nasi[0].product_group == "FOOD"
+        assert float(nasi[0].total_qty) == 6
+
+    def test_product_group_spasi_saja_dianggap_tanpa_filter(self, seeded):
+        semua = SalesService.get_top_products(db=seeded)
+
+        assert SalesService.get_top_products(db=seeded, product_group="   ") == semua
+
     def test_tanpa_data_mengembalikan_list_kosong(self, db_session):
         assert SalesService.get_top_products(db=db_session) == []
 

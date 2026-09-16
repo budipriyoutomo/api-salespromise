@@ -219,6 +219,81 @@ class TestSetActive:
         assert "tidak ditemukan" in capsys.readouterr().out
 
 
+class TestDelete:
+    """Untuk akun sekali pakai — mis. user seed pertama yang dibuang setelah
+    admin sungguhan dibuat. Menonaktifkan saja meninggalkan email yang tetap
+    terpakai, jadi dibutuhkan hapus yang sebenarnya."""
+
+    def test_menghapus_user(self, user_store):
+        manage_users.create_user(email="admin@maharasa.id", role="admin", password="rahasia123")
+        manage_users.create_user(email="seed@maharasa.id", role="admin", password="rahasia123")
+
+        manage_users.delete_user("seed@maharasa.id", konfirmasi=True)
+
+        assert user_store.get("seed@maharasa.id") is None
+        assert user_store.get("admin@maharasa.id") is not None
+
+    def test_email_bisa_dipakai_lagi_setelah_dihapus(self, user_store):
+        manage_users.create_user(email="budi@maharasa.id", role="manager", password="rahasia123")
+        manage_users.delete_user("budi@maharasa.id", konfirmasi=True)
+
+        manage_users.create_user(email="budi@maharasa.id", role="manager", password="rahasia123")
+
+        assert user_store.get("budi@maharasa.id") is not None
+
+    def test_admin_aktif_terakhir_tidak_bisa_dihapus(self, user_store, capsys):
+        """Kalau lolos, sistem kehilangan admin dan hanya bisa dipulihkan lewat DB."""
+        manage_users.create_user(email="seed@maharasa.id", role="admin", password="rahasia123")
+        capsys.readouterr()
+
+        manage_users.delete_user("seed@maharasa.id", konfirmasi=True)
+
+        assert user_store.get("seed@maharasa.id") is not None
+        assert "minimal satu admin" in capsys.readouterr().out
+
+    def test_admin_nonaktif_bisa_dihapus_walau_tinggal_satu_admin_aktif(self, user_store):
+        manage_users.create_user(email="admin@maharasa.id", role="admin", password="rahasia123")
+        manage_users.create_user(email="lama@maharasa.id", role="admin", password="rahasia123")
+        manage_users.set_active("lama@maharasa.id", False)
+
+        manage_users.delete_user("lama@maharasa.id", konfirmasi=True)
+
+        assert user_store.get("lama@maharasa.id") is None
+
+    def test_user_tidak_ada_tidak_melempar_exception(self, user_store, capsys):
+        manage_users.delete_user("hantu@maharasa.id", konfirmasi=True)
+
+        assert "tidak ditemukan" in capsys.readouterr().out
+
+    def test_tanpa_konfirmasi_menanyakan_ulang_email(self, user_store, monkeypatch):
+        """Hapus tidak bisa dibatalkan — satu salah ketik email tidak boleh cukup."""
+        manage_users.create_user(email="admin@maharasa.id", role="admin", password="rahasia123")
+        manage_users.create_user(email="seed@maharasa.id", role="admin", password="rahasia123")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "seed@maharasa.id")
+
+        manage_users.delete_user("seed@maharasa.id")
+
+        assert user_store.get("seed@maharasa.id") is None
+
+    def test_konfirmasi_salah_membatalkan(self, user_store, monkeypatch, capsys):
+        manage_users.create_user(email="admin@maharasa.id", role="admin", password="rahasia123")
+        manage_users.create_user(email="seed@maharasa.id", role="admin", password="rahasia123")
+        monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+        manage_users.delete_user("seed@maharasa.id")
+
+        assert user_store.get("seed@maharasa.id") is not None
+        assert "dibatalkan" in capsys.readouterr().out.lower()
+
+    def test_delete_lewat_cli_dengan_yes(self, user_store):
+        manage_users.create_user(email="admin@maharasa.id", role="admin", password="rahasia123")
+        manage_users.create_user(email="seed@maharasa.id", role="admin", password="rahasia123")
+
+        manage_users.main(["delete", "--email", "seed@maharasa.id", "--yes"])
+
+        assert user_store.get("seed@maharasa.id") is None
+
+
 class TestList:
 
     def test_pesan_saat_belum_ada_user(self, user_store, capsys):

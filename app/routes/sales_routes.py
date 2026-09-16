@@ -3,7 +3,7 @@ import io
 import json
 from datetime import date as date_type
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -26,6 +26,9 @@ from app.schemas.sales_response import (
     OutletSalesListResponse,
     OutletSalesRow,
     PaginationMeta,
+    ProductGroupListResponse,
+    ProductGroupSalesListResponse,
+    ProductGroupSalesRow,
     PublishResponse,
     SaleDetail,
     SaleDetailResponse,
@@ -37,6 +40,7 @@ from app.schemas.sales_response import (
     TopProductListResponse,
     TopProductRow,
 )
+from app.services import product_group_service
 from app.services.rabbitmq import RabbitMQClient
 from app.services.sales_service import SalesService
 from app.utils.logger import logger
@@ -133,6 +137,54 @@ def get_sales_colorplate(
         raise HTTPException(status_code=500, detail="Failed to fetch colorplate sales")
 
     return ColorplateListResponse(data=[ColorplateRow.model_validate(row) for row in rows])
+
+
+@router.get("/by-group", response_model=ProductGroupSalesListResponse)
+def get_sales_by_group(
+    product_group: List[str] = Query(
+        ...,
+        description="Nama product group; ulangi param untuk beberapa group. Tidak peka huruf besar/kecil dan spasi di ujung.",
+    ),
+    outlet: Optional[str] = Query(None, description="Kode outlet; diabaikan untuk role 'outlet'"),
+    start_date: Optional[date_type] = Query(None, description="Tanggal awal (inklusif)"),
+    end_date: Optional[date_type] = Query(None, description="Tanggal akhir (inklusif)"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Rekap qty terjual per product group — versi dinamis dari `/colorplate`."""
+    outlet = resolve_outlet_scope(user, outlet)
+
+    if not any(product_group_service.normalize_product_group(g) for g in product_group):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="product_group tidak boleh kosong",
+        )
+
+    rows = SalesService.get_sales_by_product_groups(
+        db=db,
+        product_groups=product_group,
+        outlet=outlet,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    return ProductGroupSalesListResponse(data=[ProductGroupSalesRow.model_validate(row) for row in rows])
+
+
+@router.get("/product-groups", response_model=ProductGroupListResponse)
+def list_product_groups(
+    outlet: Optional[str] = Query(None, description="Kode outlet; diabaikan untuk role 'outlet'"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Group yang pernah muncul di data penjualan, untuk dropdown.
+
+    Berbeda dari `/api/product-groups` (admin): itu daftar group yang
+    DIPUBLISH, ini daftar group yang ADA di data.
+    """
+    outlet = resolve_outlet_scope(user, outlet)
+
+    return ProductGroupListResponse(data=SalesService.list_product_groups(db=db, outlet=outlet))
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +348,33 @@ def get_sale_detail(
     return SaleDetailResponse(data=detail)
 
 
+# Group yang dikirim dengan bentuk payload lama, demi consumer yang sudah
+# berjalan sebelum Fase 6. Group lain memakai bentuk generik
+# {"group": ..., "product": ...}.
+#
+# Sengaja di kode, bukan kolom di tabel mapping: kontrak dengan consumer tidak
+# boleh bisa berubah hanya karena admin mengedit sesuatu di dashboard.
+LEGACY_EVENT_FIELDS = {SalesService.COLORPLATE: "platecolor"}
+
+
+def build_event_data(row) -> dict:
+    field = LEGACY_EVENT_FIELDS.get(row.product_group)
+
+    if field:
+        data = {field: row.product_name}
+    else:
+        data = {"group": row.product_group, "product": row.product_name}
+
+    data.update(
+        {
+            "outlet": row.outlet_code,
+            "date": row.sale_date.strftime("%Y-%m-%d"),
+            "sold": int(row.sold),
+        }
+    )
+    return data
+
+
 @router.post("/publish", response_model=PublishResponse)
 def publish_sales(
     request: Request,
@@ -304,12 +383,29 @@ def publish_sales(
     rabbitmq_client: RabbitMQClient = Depends(get_rabbitmq_client),
     _api_key=Depends(require_api_key),
 ):
-    """Dipicu mesin POS, bukan dashboard — karena itu tetap pakai API key outlet."""
+    """Dipicu mesin POS, bukan dashboard — karena itu tetap pakai API key outlet.
+
+    Group yang dipublish dibaca dari `product_group_mappings` yang aktif.
+    Gagal di tengah tetap seperti sebelumnya: 500, event yang sudah terkirim
+    tidak ditarik kembali (TODO 3.4).
+    """
     outlet = request.state.outlet_code
 
     try:
-        sales = SalesService.get_sales_colorplate(
+        groups = product_group_service.get_active_groups(db)
+
+        if not groups:
+            logger.warning(f"[PUBLISH] outlet={outlet} date={body.date} tidak ada product group aktif")
+            return PublishResponse(
+                message="No active product groups to publish",
+                outlet=outlet,
+                date=body.date,
+                published=0,
+            )
+
+        sales = SalesService.get_sales_by_product_groups(
             db=db,
+            product_groups=groups,
             outlet=outlet,
             start_date=body.date,
             end_date=body.date,
@@ -323,18 +419,13 @@ def publish_sales(
                 published=0,
             )
 
-        logger.info(f"[PUBLISH] outlet={outlet} date={body.date} total={len(sales)}")
+        logger.info(f"[PUBLISH] outlet={outlet} date={body.date} groups={','.join(groups)} total={len(sales)}")
 
         total = 0
         for sale in sales:
             event = {
                 "event": body.routing_key,
-                "data": {
-                    "platecolor": sale.product_name,
-                    "outlet": sale.outlet_code,
-                    "date": sale.sale_date.strftime("%Y-%m-%d"),
-                    "sold": int(sale.sold),
-                },
+                "data": build_event_data(sale),
                 "meta": {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "source": "sync-sales-service",

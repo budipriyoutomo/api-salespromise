@@ -1,7 +1,7 @@
-"""Test query baca SalesService — get_sales & get_sales_colorplate.
+"""Test query baca SalesService — get_sales, rekap per product group, colorplate.
 
-Dijalankan di atas SQLite in-memory: kedua fungsi hanya memakai konstruksi
-SQL standar (filter / join / group_by), tidak ada dialek PostgreSQL.
+Dijalankan di atas SQLite in-memory: fungsi-fungsi ini hanya memakai konstruksi
+SQL standar (filter / join / group_by / upper / trim), tanpa dialek PostgreSQL.
 """
 
 from datetime import date
@@ -261,3 +261,154 @@ class TestGetSalesColorplate:
         result = SalesService.get_sales_colorplate(db=db_session)
 
         assert result == []
+
+    def test_nama_group_dari_pos_yang_berspasi_atau_huruf_kecil_ikut_terhitung(
+        self, db_session, sale_factory, item_factory
+    ):
+        """Fase 6 A4 — POS bisa mengirim `Colorplate ` dan itu tetap colorplate."""
+        db_session.add(sale_factory(transaction_id=1))
+        db_session.add_all(
+            [
+                item_factory(order_detail_id=1, transaction_id=1, product_group="COLORPLATE", qty=1),
+                item_factory(order_detail_id=2, transaction_id=1, product_group="Colorplate ", qty=2),
+            ]
+        )
+        db_session.commit()
+
+        result = SalesService.get_sales_colorplate(db=db_session)
+
+        assert len(result) == 1
+        assert result[0].sold == 3
+
+
+class TestGetSalesByProductGroups:
+    """Fase 6 — pengganti filter hardcode `COLORPLATE`."""
+
+    def test_filter_satu_group(self, seeded):
+        result = SalesService.get_sales_by_product_groups(db=seeded, product_groups=["FOOD"])
+
+        assert [(r.product_group, r.product_name, int(r.sold)) for r in result] == [("FOOD", "NASI GORENG", 99)]
+
+    def test_helper_satu_group(self, seeded):
+        result = SalesService.get_sales_by_product_group(db=seeded, product_group="DRINK")
+
+        assert [r.product_name for r in result] == ["ES TEH"]
+
+    def test_beberapa_group_tidak_tercampur_meski_nama_produk_sama(self, seeded, item_factory):
+        """Produk bernama RED di dua group harus tetap dua baris, bukan dijumlahkan."""
+        seeded.add(
+            item_factory(
+                order_detail_id=5,
+                transaction_id=2,
+                product_group="FOOD",
+                product_name="RED",
+                qty=10,
+                sale_date=date(2026, 1, 15),
+            )
+        )
+        seeded.commit()
+
+        result = SalesService.get_sales_by_product_groups(
+            db=seeded,
+            product_groups=["COLORPLATE", "FOOD"],
+            outlet="OUTLET_001",
+            start_date=date(2026, 1, 15),
+            end_date=date(2026, 1, 15),
+        )
+
+        grouped = {(r.product_group, r.product_name): r.sold for r in result}
+        assert grouped[("COLORPLATE", "RED")] == 4
+        assert grouped[("FOOD", "RED")] == 10
+
+    def test_nama_group_dicocokkan_tanpa_peduli_kapitalisasi_dan_spasi(
+        self, db_session, sale_factory, item_factory
+    ):
+        """Data lokal terbukti berisi ' PROMO BANDUNG' — berspasi di depan."""
+        db_session.add(sale_factory(transaction_id=1))
+        db_session.add_all(
+            [
+                item_factory(order_detail_id=1, transaction_id=1, product_group=" PROMO BANDUNG", qty=1),
+                item_factory(order_detail_id=2, transaction_id=1, product_group="Promo Bandung", qty=2),
+                item_factory(order_detail_id=3, transaction_id=1, product_group="PROMO BANDUNG ", qty=3),
+            ]
+        )
+        db_session.commit()
+
+        result = SalesService.get_sales_by_product_groups(db=db_session, product_groups=["  promo bandung "])
+
+        assert len(result) == 1
+        assert result[0].product_group == "PROMO BANDUNG"
+        assert result[0].sold == 6
+
+    def test_daftar_group_kosong_mengembalikan_kosong(self, seeded):
+        """Bukan berarti "semua group" — itu akan mempublish seluruh penjualan."""
+        assert SalesService.get_sales_by_product_groups(db=seeded, product_groups=[]) == []
+
+    def test_nama_kosong_atau_spasi_saja_diabaikan(self, seeded):
+        assert SalesService.get_sales_by_product_groups(db=seeded, product_groups=["", "   ", None]) == []
+
+    def test_group_duplikat_tidak_menggandakan_hitungan(self, seeded):
+        sekali = SalesService.get_sales_by_product_groups(db=seeded, product_groups=["COLORPLATE"])
+        dobel = SalesService.get_sales_by_product_groups(db=seeded, product_groups=["COLORPLATE", "colorplate "])
+
+        assert [(r.product_name, r.outlet_code, r.sale_date, r.sold) for r in dobel] == [
+            (r.product_name, r.outlet_code, r.sale_date, r.sold) for r in sekali
+        ]
+
+    def test_filter_outlet_dan_tanggal(self, seeded):
+        result = SalesService.get_sales_by_product_groups(
+            db=seeded,
+            product_groups=["COLORPLATE"],
+            outlet="OUTLET_001",
+            start_date=date(2026, 1, 15),
+            end_date=date(2026, 1, 15),
+        )
+
+        assert {r.product_name: r.sold for r in result} == {"RED": 4, "BLUE": 5}
+
+    def test_group_tidak_dikenal_mengembalikan_kosong(self, seeded):
+        assert SalesService.get_sales_by_product_groups(db=seeded, product_groups=["TIDAK_ADA"]) == []
+
+    def test_baris_hasil_punya_kolom_yang_dipakai_publish(self, seeded):
+        row = SalesService.get_sales_by_product_groups(db=seeded, product_groups=["DRINK"])[0]
+
+        assert row.product_group == "DRINK"
+        assert row.product_name == "ES TEH"
+        assert row.outlet_code == "OUTLET_002"
+        assert row.sale_date == date(2026, 1, 20)
+        assert int(row.sold) == 50
+
+
+class TestListProductGroups:
+    """Sumber dropdown dan cara menemukan group baru yang belum dipetakan."""
+
+    def test_daftar_unik_dinormalisasi_dan_terurut(self, seeded, item_factory):
+        seeded.add_all(
+            [
+                item_factory(order_detail_id=6, transaction_id=2, product_group=" food", product_name="MIE"),
+                item_factory(order_detail_id=7, transaction_id=2, product_group="Colorplate", product_name="RED"),
+            ]
+        )
+        seeded.commit()
+
+        assert SalesService.list_product_groups(db=seeded) == ["COLORPLATE", "DRINK", "FOOD"]
+
+    def test_group_null_dan_kosong_tidak_muncul(self, db_session, sale_factory, item_factory):
+        db_session.add(sale_factory(transaction_id=1))
+        db_session.add_all(
+            [
+                item_factory(order_detail_id=1, transaction_id=1, product_group=None),
+                item_factory(order_detail_id=2, transaction_id=1, product_group="   "),
+                item_factory(order_detail_id=3, transaction_id=1, product_group="FOOD"),
+            ]
+        )
+        db_session.commit()
+
+        assert SalesService.list_product_groups(db=db_session) == ["FOOD"]
+
+    def test_scope_outlet(self, seeded):
+        assert SalesService.list_product_groups(db=seeded, outlet="OUTLET_001") == ["COLORPLATE", "FOOD"]
+        assert SalesService.list_product_groups(db=seeded, outlet="OUTLET_002") == ["COLORPLATE", "DRINK"]
+
+    def test_database_kosong(self, db_session):
+        assert SalesService.list_product_groups(db=db_session) == []

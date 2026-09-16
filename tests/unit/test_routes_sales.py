@@ -15,9 +15,21 @@ from app.routes.sales_routes import get_rabbitmq_client
 from tests.conftest import bearer
 
 
-def colorplate_row(product_name="RED", outlet_code="OUTLET_001", sale_date=date(2026, 1, 15), sold=4):
+def colorplate_row(
+    product_name="RED",
+    outlet_code="OUTLET_001",
+    sale_date=date(2026, 1, 15),
+    sold=4,
+    product_group="COLORPLATE",
+):
     """Meniru bentuk baris hasil query agregat (Row dengan atribut bernama)."""
-    return SimpleNamespace(product_name=product_name, outlet_code=outlet_code, sale_date=sale_date, sold=sold)
+    return SimpleNamespace(
+        product_group=product_group,
+        product_name=product_name,
+        outlet_code=outlet_code,
+        sale_date=sale_date,
+        sold=sold,
+    )
 
 
 class FakeRabbitMQ:
@@ -34,9 +46,11 @@ class FakeRabbitMQ:
 @pytest.fixture()
 def mock_service(monkeypatch):
     """Ganti method SalesService yang dipakai sales_routes, rekam pemanggilannya."""
-    calls = {"get_sales": [], "count_sales": [], "get_sales_colorplate": []}
+    calls = {"get_sales": [], "count_sales": [], "get_sales_colorplate": [], "get_sales_by_product_groups": []}
 
     def _install(get_sales=None, colorplate=None, total=None, get_sales_error=None, colorplate_error=None):
+        """`colorplate` / `colorplate_error` dipakai dua query yang sama bentuknya:
+        `/colorplate` (get_sales_colorplate) dan publish (get_sales_by_product_groups)."""
         def fake_get_sales(db, outlet=None, start_date=None, end_date=None, limit=None, offset=0):
             calls["get_sales"].append(
                 {"outlet": outlet, "start_date": start_date, "end_date": end_date, "limit": limit, "offset": offset}
@@ -59,6 +73,17 @@ def mock_service(monkeypatch):
                 raise colorplate_error
             return colorplate if colorplate is not None else []
 
+        def fake_by_groups(db, product_groups, outlet=None, start_date=None, end_date=None):
+            calls["get_sales_by_product_groups"].append(
+                {"product_groups": list(product_groups), "outlet": outlet, "start_date": start_date, "end_date": end_date}
+            )
+            if colorplate_error:
+                raise colorplate_error
+            return colorplate if colorplate is not None else []
+
+        monkeypatch.setattr(
+            "app.routes.sales_routes.SalesService.get_sales_by_product_groups", staticmethod(fake_by_groups)
+        )
         monkeypatch.setattr("app.routes.sales_routes.SalesService.get_sales", staticmethod(fake_get_sales))
         monkeypatch.setattr("app.routes.sales_routes.SalesService.count_sales", staticmethod(fake_count))
         monkeypatch.setattr(
@@ -246,7 +271,15 @@ class TestGetSalesColorplate:
 
 
 class TestPublishSales:
-    """Tetap memakai API key outlet — dipicu mesin POS, bukan dashboard."""
+    """Tetap memakai API key outlet — dipicu mesin POS, bukan dashboard.
+
+    Sejak Fase 6 group yang dipublish dibaca dari `product_group_mappings`.
+    DB test tidak menjalankan migrasi, jadi seed COLORPLATE dibuat di sini.
+    """
+
+    @pytest.fixture(autouse=True)
+    def colorplate_aktif(self, make_product_group):
+        return make_product_group("COLORPLATE")
 
     def test_tanpa_data_tidak_mempublish_apa_pun(self, client, api_key_headers, mock_service, rabbit):
         mock_service(colorplate=[])
@@ -286,7 +319,7 @@ class TestPublishSales:
 
         client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=bearer(raw))
 
-        assert calls["get_sales_colorplate"][0]["outlet"] == "OUTLET_003"
+        assert calls["get_sales_by_product_groups"][0]["outlet"] == "OUTLET_003"
 
     def test_tanggal_diteruskan_sebagai_rentang_satu_hari(self, client, api_key_headers, mock_service, rabbit):
         calls = mock_service(colorplate=[])
@@ -294,8 +327,8 @@ class TestPublishSales:
 
         client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
 
-        assert calls["get_sales_colorplate"][0]["start_date"] == date(2026, 1, 15)
-        assert calls["get_sales_colorplate"][0]["end_date"] == date(2026, 1, 15)
+        assert calls["get_sales_by_product_groups"][0]["start_date"] == date(2026, 1, 15)
+        assert calls["get_sales_by_product_groups"][0]["end_date"] == date(2026, 1, 15)
 
     def test_struktur_event_yang_dipublish(self, client, api_key_headers, mock_service, rabbit):
         """Kontrak dengan consumer — kalau berubah, consumer ikut rusak."""
@@ -407,3 +440,77 @@ class TestPublishSales:
         client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
 
         assert len(fake.published) == 6  # duplikat — belum ada penjagaan idempotensi
+
+    # ------------------------------------------------------------------
+    # Fase 6 — group dari tabel mapping
+    # ------------------------------------------------------------------
+
+    def test_hanya_group_aktif_yang_diminta(self, client, api_key_headers, mock_service, rabbit, make_product_group):
+        make_product_group("FOOD")
+        make_product_group("BEVERAGE", is_active=False)
+        calls = mock_service(colorplate=[])
+        rabbit()
+
+        client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
+
+        assert calls["get_sales_by_product_groups"][0]["product_groups"] == ["COLORPLATE", "FOOD"]
+
+    def test_tanpa_group_aktif_tidak_mempublish_apa_pun(
+        self, client, api_key_headers, mock_service, rabbit, colorplate_aktif, app_db
+    ):
+        """Semua group dimatikan admin = sengaja berhenti publish, bukan "publish semua"."""
+        colorplate_aktif.is_active = False
+        app_db.commit()
+        calls = mock_service(colorplate=[colorplate_row()])
+        fake = rabbit()
+
+        response = client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
+
+        assert response.status_code == 200
+        assert response.json()["published"] == 0
+        assert response.json()["message"] == "No active product groups to publish"
+        assert calls["get_sales_by_product_groups"] == []
+        assert fake.published == []
+
+    def test_event_group_lain_memakai_bentuk_generik(self, client, api_key_headers, mock_service, rabbit):
+        mock_service(colorplate=[colorplate_row(product_group="FOOD", product_name="NASI GORENG", sold=3)])
+        fake = rabbit()
+
+        client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
+        event = fake.published[0]["payload"]
+
+        assert event["data"] == {
+            "group": "FOOD",
+            "product": "NASI GORENG",
+            "outlet": "OUTLET_001",
+            "date": "2026-01-15",
+            "sold": 3,
+        }
+        assert event["meta"]["source"] == "sync-sales-service"
+
+    def test_event_colorplate_tidak_ikut_berubah_ke_bentuk_generik(self, client, api_key_headers, mock_service, rabbit):
+        """Consumer lama membaca `platecolor` — field generik tidak boleh ikut menempel."""
+        mock_service(colorplate=[colorplate_row()])
+        fake = rabbit()
+
+        client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
+
+        assert set(fake.published[0]["payload"]["data"]) == {"platecolor", "outlet", "date", "sold"}
+
+    def test_campuran_group_dipublish_semua_dengan_bentuk_masing_masing(
+        self, client, api_key_headers, mock_service, rabbit
+    ):
+        mock_service(
+            colorplate=[
+                colorplate_row(product_name="RED"),
+                colorplate_row(product_group="FOOD", product_name="NASI GORENG"),
+            ]
+        )
+        fake = rabbit()
+
+        response = client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
+
+        assert response.json()["published"] == 2
+        data = [e["payload"]["data"] for e in fake.published]
+        assert data[0]["platecolor"] == "RED"
+        assert data[1]["product"] == "NASI GORENG"

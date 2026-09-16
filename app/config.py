@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+LOG_FORMATS = ("json", "text")
+
 
 def _split_csv(raw: str):
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -28,6 +30,9 @@ class Settings:
         self.DB_NAME: str = os.getenv("DB_NAME", "")
 
         self.LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+        # json: satu objek per baris untuk agregator log; text: untuk dibaca manusia.
+        self.LOG_FORMAT: str = os.getenv("LOG_FORMAT", "json").strip().lower()
+        self.LOG_FILE: str = os.getenv("LOG_FILE", "logs/api.log")
 
         # --- Auth user (dashboard / frontend terpisah) ---
         self.JWT_SECRET: str = os.getenv("JWT_SECRET", "")
@@ -75,6 +80,9 @@ class Settings:
 
         if missing:
             raise ValueError(f"Missing env: {', '.join(missing)}")
+
+        if self.LOG_FORMAT not in LOG_FORMATS:
+            raise ValueError(f"LOG_FORMAT harus salah satu dari: {', '.join(LOG_FORMATS)}")
 
 
 settings = Settings()

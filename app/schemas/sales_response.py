@@ -72,6 +72,28 @@ class ColorplateListResponse(BaseModel):
     data: List[ColorplateRow]
 
 
+class ProductGroupSalesRow(BaseModel):
+    """Versi generik `ColorplateRow` — membawa nama group (bentuk normal)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    product_group: str
+    product_name: Optional[str] = None
+    outlet_code: Optional[str] = None
+    sale_date: Optional[date_type] = None
+    sold: float
+
+
+class ProductGroupSalesListResponse(BaseModel):
+    success: bool = True
+    data: List[ProductGroupSalesRow]
+
+
+class ProductGroupListResponse(BaseModel):
+    success: bool = True
+    data: List[str]
+
+
 class SyncResponse(BaseModel):
     success: bool = True
     inserted_sales: int

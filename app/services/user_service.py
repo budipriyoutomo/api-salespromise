@@ -231,3 +231,27 @@ def set_active(db, email: str, is_active: bool):
     db.refresh(user)
 
     return user
+
+
+def delete_user(db, email: str):
+    """Hapus permanen. Dipakai CLI, mis. membuang user seed setelah admin
+    sungguhan dibuat.
+
+    Aman dihapus: tidak ada tabel yang merujuk `users`, dan token milik user
+    yang sudah tidak ada langsung tertolak di `get_current_user` maupun
+    `/api/auth/refresh`. Pagar admin-terakhir tetap berlaku; admin yang sudah
+    nonaktif tidak dihitung, jadi boleh dihapus.
+    """
+    user = get_by_email(db, email)
+
+    if not user:
+        raise UserTidakDitemukan(email)
+
+    if user.is_active and user.role == ROLE_ADMIN:
+        if hitung_admin_aktif(db, kecuali_id=user.id) == 0:
+            raise MenguncilDiriSendiri("Sistem harus punya minimal satu admin aktif")
+
+    db.delete(user)
+    db.commit()
+
+    return user.email

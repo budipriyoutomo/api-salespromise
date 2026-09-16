@@ -76,6 +76,34 @@ def test_folder_asli_tidak_memuat_dump_mysql_lama():
     assert "ordertransaction.sql" not in nama
 
 
+def _tanpa_komentar(sql: str) -> str:
+    return "\n".join(baris for baris in sql.splitlines() if not baris.strip().startswith("--")).upper()
+
+
+@pytest.mark.parametrize("path", migrate.daftar_migrasi(), ids=lambda p: p.name)
+def test_migrasi_tidak_pernah_menghapus_data(path):
+    """Migrasi jalan otomatis saat container start, langsung ke database produksi.
+
+    Menghapus data adalah keputusan manusia yang dijalankan sadar dan terpisah,
+    bukan efek samping deploy. DROP CONSTRAINT / DROP INDEX tidak dilarang —
+    keduanya tidak menghapus baris.
+    """
+    sql = _tanpa_komentar(path.read_text(encoding="utf-8-sig"))
+
+    for terlarang in ("DELETE FROM", "TRUNCATE", "DROP TABLE", "DROP COLUMN", "DROP SCHEMA", "DROP DATABASE"):
+        assert terlarang not in sql, f"{path.name} memuat {terlarang}"
+
+
+def test_migrasi_006_idempoten_dan_seed_colorplate():
+    """Tanpa seed, publish di produksi berhenti mengirim event colorplate begitu dideploy."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "006_product_group_mappings.sql").read_text(encoding="utf-8"))
+
+    assert "CREATE TABLE IF NOT EXISTS PRODUCT_GROUP_MAPPINGS" in sql
+    assert "'COLORPLATE'" in sql
+    assert "ON CONFLICT" in sql
+    assert "DO NOTHING" in sql
+
+
 def test_jalankan_melewati_yang_sudah_tercatat(folder):
     conn = KoneksiPalsu(tercatat=["001_pertama.sql"])
 

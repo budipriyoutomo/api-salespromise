@@ -1,22 +1,56 @@
 -- ============================================================
--- Pemeriksaan TODO 0.5 — apakah OrderDetailID bertabrakan antar outlet?
+-- Pemeriksaan TODO 0.5 — apakah data item/transaksi bertabrakan antar outlet?
 -- ============================================================
 --
--- Tabel `orderdetail` tidak punya kolom `outlet_code`. Kunci konflik upsert-nya
--- adalah ("OrderDetailID", "TransactionID", "ProductID") saja.
+-- SEMUA QUERY DI FILE INI READ-ONLY. Untuk jaminan tambahan, jalankan di
+-- dalam transaksi read-only supaya PostgreSQL sendiri menolak penulisan:
 --
--- Kalau nomor OrderDetailID digenerate per outlet (bukan global), dua outlet
--- bisa mengirim kombinasi yang sama, dan yang datang belakangan MENIMPA baris
--- outlet lain tanpa error apa pun — kerusakan diam.
+--   BEGIN TRANSACTION READ ONLY;
+--   \i migrations/checks/orderdetail_outlet_collision.sql
+--   ROLLBACK;
 --
--- Jalankan ketiga query ini di PRODUKSI sebelum memutuskan apakah perlu
--- menambah `outlet_code` ke `orderdetail`. Semuanya read-only.
+-- File ini TIDAK dijalankan migrate.py (hanya pola NNN_nama.sql yang dianggap migrasi).
+--
+-- ------------------------------------------------------------
+-- TEMUAN 2026-09-15 (database lokal maharasa_pos, 1 outlet, 14 transaksi)
+-- ------------------------------------------------------------
+-- 1. `ordertransaction` punya PRIMARY KEY ("TransactionID") — TANPA outlet.
+--    Index unik ("TransactionID", outlet_code) memang ada, tapi PK yang lebih
+--    sempit tetap berlaku. Akibatnya outlet kedua yang mengirim TransactionID
+--    yang sudah dipakai outlet lain TIDAK menimpa diam-diam, melainkan GAGAL
+--    (UniqueViolation pada ordertransaction_pkey) dan seluruh batch sync-nya
+--    di-rollback. Outlet itu tidak akan pernah bisa sync.
+--
+--    Karena PK itu, query 1 di bawah SELALU kosong — hasil kosong BUKAN bukti
+--    aman. Jalankan query 0 dulu untuk melihat constraint yang berlaku.
+--
+--    TERVERIFIKASI pada salinan `maharasa_pos_uji`: sync OUTLET_UJI dengan
+--    TransactionID 6057 (milik STTSM) -> UniqueViolation ordertransaction_pkey.
+--
+-- 2. `OrderDetailID` adalah nomor baris PER TRANSAKSI (selalu mulai dari 1),
+--    bukan nomor global. Begitu dua outlet berbagi TransactionID, kunci item
+--    (OrderDetailID, TransactionID, ProductID) hampir pasti ikut bertabrakan.
+--
+-- 3. FK orderdetail("TransactionID") -> ordertransaction("TransactionID")
+--    bergantung pada PK sempit itu, jadi PK tidak bisa diubah tanpa FK ikut diubah.
 -- ============================================================
+
+
+-- 0. Constraint & index yang benar-benar berlaku.
+--    Kalau ordertransaction_pkey = PRIMARY KEY ("TransactionID"), temuan 1 berlaku.
+SELECT conrelid::regclass AS tabel, conname, pg_get_constraintdef(oid) AS definisi
+FROM pg_constraint
+WHERE conrelid IN ('ordertransaction'::regclass, 'orderdetail'::regclass)
+ORDER BY 1, 2;
+
+SELECT tablename, indexname, indexdef
+FROM pg_indexes
+WHERE tablename IN ('ordertransaction', 'orderdetail')
+ORDER BY 1, 2;
 
 
 -- 1. Apakah ada TransactionID yang dipakai lebih dari satu outlet?
---    Kalau hasilnya kosong, item tidak mungkin bertabrakan dan TODO 0.5
---    bisa ditutup tanpa perubahan apa pun.
+--    Hanya bermakna kalau PK ordertransaction SUDAH memuat outlet_code (lihat 0).
 SELECT
     "TransactionID",
     COUNT(DISTINCT outlet_code) AS jumlah_outlet,
@@ -40,14 +74,16 @@ WHERE d."TransactionID" IN (
 );
 
 
--- 3. Rentang OrderDetailID per outlet.
---    Rentang yang tumpang tindih = penomoran per outlet (berisiko).
---    Rentang yang terpisah rapi = penomoran global (aman).
+-- 3. Rentang OrderDetailID & TransactionID per outlet.
+--    Rentang TransactionID yang tumpang tindih antar outlet = penomoran per POS
+--    (berisiko). OrderDetailID yang mulai dari 1 = nomor baris per transaksi.
 SELECT
     t.outlet_code,
-    MIN(d."OrderDetailID") AS id_terkecil,
-    MAX(d."OrderDetailID") AS id_terbesar,
-    COUNT(*)               AS jumlah_baris
+    MIN(d."OrderDetailID") AS detail_min,
+    MAX(d."OrderDetailID") AS detail_max,
+    MIN(t."TransactionID") AS txn_min,
+    MAX(t."TransactionID") AS txn_max,
+    COUNT(*)               AS baris_item
 FROM orderdetail d
 JOIN ordertransaction t
   ON t."TransactionID" = d."TransactionID"
@@ -55,23 +91,21 @@ GROUP BY t.outlet_code
 ORDER BY t.outlet_code;
 
 
+-- 4. Prasyarat migrasi perbaikan. SEMUA harus 0 sebelum migrasi boleh jalan.
+SELECT
+    (SELECT COUNT(*) FROM ordertransaction WHERE outlet_code IS NULL) AS transaksi_tanpa_outlet,
+    (SELECT COUNT(*) FROM orderdetail d
+      WHERE NOT EXISTS (SELECT 1 FROM ordertransaction t
+                        WHERE t."TransactionID" = d."TransactionID")) AS item_yatim;
+
+
+-- 5. Log sync yang gagal karena PK (cari di logs/api.log server):
+--      grep 'ordertransaction_pkey' logs/api.log
+--    Kalau ada, outlet yang bersangkutan sudah pernah ditolak.
+
+
 -- ------------------------------------------------------------
--- KALAU TERBUKTI BERTABRAKAN, langkah perbaikannya:
---
---   ALTER TABLE orderdetail ADD COLUMN outlet_code VARCHAR(20);
---
---   UPDATE orderdetail d
---   SET outlet_code = t.outlet_code
---   FROM ordertransaction t
---   WHERE t."TransactionID" = d."TransactionID";
---
---   DROP INDEX IF EXISTS uq_orderdetail_detail_txn_product;
---   CREATE UNIQUE INDEX uq_orderdetail_detail_txn_product_outlet
---       ON orderdetail ("OrderDetailID", "TransactionID", "ProductID", outlet_code);
---
--- Lalu di app/services/sales_service.py tambahkan "outlet_code" ke
--- index_elements milik insert(SalesItems) dan kirim outlet_code di values().
---
--- PERHATIAN: baris yang sudah saling menimpa TIDAK bisa dipulihkan dari sini —
--- datanya sudah hilang. Perlu sync ulang dari POS untuk rentang tanggal terdampak.
+-- Rencana perbaikan (BELUM dibuat, menunggu persetujuan) — lihat TODO 0.5.
+-- Rencana lama di file ini (hanya menambah index unik) TIDAK cukup: PK sempit
+-- dan FK di atas tetap akan menolak outlet kedua.
 -- ------------------------------------------------------------

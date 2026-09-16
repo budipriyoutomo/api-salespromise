@@ -68,7 +68,7 @@ class TestPenjagaAuth:
     def test_endpoint_baca_sales_memakai_jwt_bukan_api_key(self):
         for route in app.routes:
             path = getattr(route, "path", "")
-            if path in ("/api/sales/", "/api/sales/colorplate"):
+            if path in ("/api/sales/", "/api/sales/colorplate", "/api/sales/by-group", "/api/sales/product-groups"):
                 names = _auth_dependency_names(route)
                 assert "get_current_user" in names
                 assert "require_api_key" not in names
@@ -157,7 +157,15 @@ class TestOpenApi:
     def test_endpoint_utama_terdokumentasi(self, client):
         paths = client.get("/openapi.json").json()["paths"]
 
-        for path in ["/api/auth/login", "/api/auth/me", "/api/sales/", "/api/sync/sales", "/api/outlets"]:
+        for path in [
+            "/api/auth/login",
+            "/api/auth/me",
+            "/api/sales/",
+            "/api/sales/by-group",
+            "/api/sync/sales",
+            "/api/outlets",
+            "/api/product-groups",
+        ]:
             assert path in paths, f"{path} tidak ada di OpenAPI"
 
     def test_response_schema_terdefinisi_bukan_objek_bebas(self, client):

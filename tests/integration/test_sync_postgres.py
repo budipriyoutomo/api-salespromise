@@ -249,6 +249,43 @@ class TestQueryBaca:
 
         assert isinstance(result[0].sold, Decimal)
 
+    def test_rekap_per_group_dinormalisasi_di_postgres(self, pg_session):
+        """GROUP BY UPPER(TRIM("Group")) harus diterima PostgreSQL, bukan hanya SQLite."""
+        SalesService.sync_sales(
+            db=pg_session,
+            outlet="OUTLET_001",
+            sales_list=[
+                build_sale(
+                    transaction_id=1,
+                    sale_date=date(2026, 1, 15),
+                    items=[
+                        build_item(order_detail_id=1, transaction_id=1, product_group=" colorplate", qty=2.0),
+                        build_item(order_detail_id=2, transaction_id=1, product_id=102, product_group="COLORPLATE", qty=3.0),
+                        build_item(
+                            order_detail_id=3,
+                            transaction_id=1,
+                            product_id=103,
+                            product_group="Food ",
+                            product_name="NASI",
+                            qty=10.0,
+                        ),
+                    ],
+                )
+            ],
+        )
+
+        result = SalesService.get_sales_by_product_groups(
+            db=pg_session,
+            product_groups=["COLORPLATE", "food"],
+            outlet="OUTLET_001",
+        )
+
+        assert {(r.product_group, r.product_name): float(r.sold) for r in result} == {
+            ("COLORPLATE", "RED"): 5.0,
+            ("FOOD", "NASI"): 10.0,
+        }
+        assert SalesService.list_product_groups(db=pg_session, outlet="OUTLET_001") == ["COLORPLATE", "FOOD"]
+
 
 class TestPerforma:
 

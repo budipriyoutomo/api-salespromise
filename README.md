@@ -12,7 +12,7 @@ ke PostgreSQL, dan menyediakan endpoint baca untuk dashboard frontend terpisah.
 - **SQLAlchemy** (PostgreSQL dialect)
 - **Pydantic v2**
 - **PostgreSQL 14+**
-- **RabbitMQ** (publish event colorplate)
+- **RabbitMQ** (publish event rekap per product group)
 - **PyJWT + bcrypt** (auth user dashboard)
 
 ---
@@ -25,7 +25,7 @@ Ini pembeda paling penting dari versi sebelumnya. Endpoint dibagi berdasarkan
 | Jalur | Dipakai oleh | Kredensial | Endpoint |
 |---|---|---|---|
 | API key outlet | Mesin POS | `Authorization: Bearer <API_KEY>` | `POST /api/sync/sales`, `POST /api/sales/publish` |
-| JWT user | Frontend dashboard | `Authorization: Bearer <ACCESS_TOKEN>` | `GET /api/sales/`, `/colorplate`, `/api/outlets`, `/api/auth/*` |
+| JWT user | Frontend dashboard | `Authorization: Bearer <ACCESS_TOKEN>` | `GET /api/sales/`, `/by-group`, `/colorplate`, `/api/outlets`, `/api/auth/*` |
 
 Keduanya tidak bisa saling menggantikan: API key outlet ditolak di endpoint
 dashboard, dan JWT user ditolak di endpoint sync.
@@ -59,6 +59,8 @@ DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=xxx
 LOG_LEVEL=INFO
+LOG_FORMAT=json          # atau text
+LOG_FILE=logs/api.log
 
 RABBITMQ_HOST=xxx
 RABBITMQ_USER=xxx
@@ -179,7 +181,20 @@ python manage_users.py list
 python manage_users.py password --email admin@maharasa.id
 python manage_users.py deactivate --email budi@maharasa.id
 python manage_users.py activate --email budi@maharasa.id
+python manage_users.py delete --email budi@maharasa.id   # minta email diketik ulang; --yes untuk otomatisasi
 ```
+
+**User seed pertama.** Di database kosong, buat satu admin sementara, login ke
+dashboard, buat admin sungguhan dari halaman Users, lalu hapus seed-nya:
+
+```bash
+python manage_users.py create --email seed@maharasa.id --role admin --name "Seed (hapus)"
+# ...login, buat admin sungguhan, logout...
+python manage_users.py delete --email seed@maharasa.id
+```
+
+Seed tidak bisa dihapus selama ia admin aktif satu-satunya — buat admin
+penggantinya dulu. User baru selalu diminta ganti password saat login pertama.
 
 Password ditanyakan lewat prompt (tidak masuk shell history). Untuk otomatisasi,
 pakai `--password`.
@@ -303,6 +318,25 @@ Pagar yang berlaku, supaya admin tidak mengunci dirinya sendiri keluar:
   token yang sedang berjalan menunjuk user yang tidak ada lagi
 - Role `outlet` wajib punya `outlet_code` → `422`
 
+#### Product group (Fase 6)
+
+Menentukan group mana yang dipublish oleh `POST /api/sales/publish`.
+
+| Endpoint | Isi |
+|---|---|
+| `GET /api/product-groups` | Semua mapping, termasuk yang nonaktif |
+| `POST /api/product-groups` | Tambah group — `{"product_group": "FOOD", "is_active": true}` |
+| `PATCH /api/product-groups/{id}` | Aktifkan / nonaktifkan — `{"is_active": false}` |
+
+- Nama disimpan dalam bentuk normal: spasi di ujung dibuang, huruf besar.
+  `colorplate ` tersimpan sebagai `COLORPLATE` dan cocok dengan item POS
+  bergroup `Colorplate`, ` COLORPLATE`, dan seterusnya. Data item tidak diubah.
+- Duplikat ditolak `409`, termasuk group yang sedang nonaktif — aktifkan lewat `PATCH`.
+- **Tidak ada DELETE.** Group dimatikan, barisnya tetap ada sebagai jejak.
+  Nama juga tidak bisa diubah: salah ketik → buat baru, nonaktifkan yang lama.
+- Migrasi 006 men-seed `COLORPLATE` dalam keadaan aktif, jadi publish setelah
+  deploy berperilaku sama persis dengan sebelumnya.
+
 ---
 
 ### Sync (API key outlet)
@@ -365,9 +399,39 @@ Query param: `outlet`, `start_date`, `end_date`, `limit` (1–500, default 50), 
 }
 ```
 
+#### `GET /api/sales/by-group`
+
+Rekap qty terjual per product group, dikelompokkan per group/produk/outlet/tanggal.
+
+Query param: `product_group` (wajib, boleh diulang —
+`?product_group=COLORPLATE&product_group=FOOD`), `outlet`, `start_date`, `end_date`.
+Nama group tidak peka huruf besar/kecil maupun spasi di ujung.
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "product_group": "FOOD",
+      "product_name": "NASI GORENG",
+      "outlet_code": "OUTLET_001",
+      "sale_date": "2026-01-15",
+      "sold": 5.0
+    }
+  ]
+}
+```
+
 #### `GET /api/sales/colorplate`
 
-Rekap penjualan produk bergrup `COLORPLATE`, dikelompokkan per produk/outlet/tanggal.
+Alias lama untuk `/by-group?product_group=COLORPLATE`, dipertahankan demi
+kompatibilitas. Bentuk response-nya tidak berubah (tanpa field `product_group`).
+
+#### `GET /api/sales/product-groups`
+
+Nama group (bentuk normal) yang pernah muncul di data penjualan — untuk dropdown
+dan untuk menemukan group baru dari POS. Ter-scope outlet. Berbeda dari
+`/api/product-groups` (admin), yang berisi group yang **dipublish**.
 
 #### `GET /api/outlets`
 
@@ -404,7 +468,7 @@ dan **mengecualikan transaksi yang dibatalkan** (`Deleted=1`).
 | `GET /api/sales/summary` | Jumlah transaksi, omzet, diskon, rata-rata per struk |
 | `GET /api/sales/daily` | Time series harian untuk grafik |
 | `GET /api/sales/by-outlet` | Perbandingan antar outlet (admin & manager saja) |
-| `GET /api/sales/top-products` | Ranking produk (`product_group`, `limit` 1–100) |
+| `GET /api/sales/top-products` | Ranking produk (`product_group`, `limit` 1–100). Nama group dinormalisasi seperti `/by-group` |
 | `GET /api/sales/export` | Unduh CSV seluruh hasil filter |
 | `GET /api/sales/{transaction_id}` | Detail satu transaksi beserta itemnya |
 
@@ -422,7 +486,7 @@ dan **mengecualikan transaksi yang dibatalkan** (`Deleted=1`).
 }
 ```
 
-> **Catatan konsistensi.** `GET /api/sales/` dan `/colorplate` masih IKUT
+> **Catatan konsistensi.** `GET /api/sales/`, `/by-group`, dan `/colorplate` masih IKUT
 > menghitung transaksi `Deleted=1`, sedangkan endpoint laporan tidak.
 > Perbedaan ini disengaja: mengubah endpoint lama akan mengubah angka yang
 > sudah dipublish ke RabbitMQ. Lihat TODO 4.5.
@@ -441,7 +505,9 @@ perbedaan status code.
 { "date": "2026-01-15", "exchange": "posdata_exchange", "routing_key": "posdata.created" }
 ```
 
-Mempublish satu event per baris colorplate:
+Mempublish satu event per baris rekap, untuk setiap group yang **aktif** di
+`/api/product-groups`. Group `COLORPLATE` memakai bentuk lama — tidak berubah
+sejak sebelum Fase 6:
 
 ```json
 {
@@ -450,6 +516,22 @@ Mempublish satu event per baris colorplate:
   "meta": { "timestamp": "...", "source": "sync-sales-service", "version": "1.0" }
 }
 ```
+
+Group lain memakai bentuk generik, lewat exchange dan routing key yang sama:
+
+```json
+{
+  "event": "posdata.created",
+  "data": { "group": "FOOD", "product": "NASI GORENG", "outlet": "OUTLET_001", "date": "2026-01-15", "sold": 5 },
+  "meta": { "timestamp": "...", "source": "sync-sales-service", "version": "1.0" }
+}
+```
+
+> Consumer yang hanya mengenal `platecolor` harus sudah mengabaikan event tanpa
+> field itu **sebelum** admin mengaktifkan group lain.
+
+Tidak ada group aktif → `200` dengan `"message": "No active product groups to publish"`
+dan `published: 0`.
 
 > Belum idempoten — memanggil dua kali untuk tanggal yang sama mengirim event
 > dobel. Lihat TODO 3.4.
@@ -497,12 +579,13 @@ sync-api/
 │   │   └── auth.py                 # require_api_key, get_current_user, scoping
 │   ├── models/
 │   │   ├── api_key.py              # api_keys (kolom `key` berisi hash)
+│   │   ├── product_group_mapping.py # product_group_mappings (group yang dipublish)
 │   │   ├── user.py                 # users + definisi role
 │   │   ├── sales.py                # ordertransaction
 │   │   └── sales_items.py          # orderdetail
 │   ├── routes/
 │   │   ├── auth_routes.py          # /api/auth/*
-│   │   ├── admin_routes.py         # /api/api-keys, /api/users  (admin)
+│   │   ├── admin_routes.py         # /api/api-keys, /api/users, /api/product-groups (admin)
 │   │   ├── sync_routes.py          # /api/sync/*      (API key)
 │   │   ├── sales_routes.py         # /api/sales/*     (JWT + publish API key)
 │   │   └── outlet_routes.py        # /api/outlets
@@ -516,6 +599,7 @@ sync-api/
 │   │   ├── sales_service.py        # upsert + query baca + laporan
 │   │   ├── api_key_service.py      # dipakai route DAN CLI
 │   │   ├── user_service.py         # dipakai route DAN CLI
+│   │   ├── product_group_service.py # mapping group yang dipublish (tanpa hapus)
 │   │   └── rabbitmq.py
 │   └── utils/
 │       └── logger.py
@@ -564,7 +648,11 @@ Detail dan konvensinya di [tests/README.md](tests/README.md).
 - Setiap outlet punya key unik — kalau satu bocor, hanya outlet itu yang terdampak
 - `outlet_code` diambil dari key/identitas, tidak pernah dari body atau query param
 - Upsert memakai `on_conflict_do_update` dengan kunci `(TransactionID, outlet_code)`
-- Log ada di `logs/api.log`, level dikontrol `LOG_LEVEL`
+- Log ada di `LOG_FILE` (default `logs/api.log`), level dikontrol `LOG_LEVEL`.
+  Format default **JSON satu baris per log** (`LOG_FORMAT=text` untuk develop).
+  Setiap request mendapat `request_id` — dari header `X-Request-ID` kalau dikirim
+  dan valid, selain itu dibuat baru — dan dikembalikan di header respons yang sama.
+  Cari semua log satu request: `grep '"request_id": "<id>"' logs/api.log`
 - Endpoint baru **wajib** punya dependency auth — dijaga oleh
   `tests/unit/test_app_wiring.py::test_semua_endpoint_api_punya_autentikasi`
 - Satu request sync dibatasi `MAX_SALES_PER_REQUEST` (default 1000) transaksi

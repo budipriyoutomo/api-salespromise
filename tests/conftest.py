@@ -15,6 +15,8 @@ os.environ["DB_HOST"] = "localhost"
 os.environ["DB_PORT"] = "5432"
 os.environ["DB_NAME"] = "test_db"
 os.environ["LOG_LEVEL"] = "WARNING"
+# Test sengaja memicu LOGIN GAGAL dsb. — jangan sampai tercampur ke logs/api.log developer.
+os.environ["LOG_FILE"] = os.devnull
 
 os.environ["JWT_SECRET"] = "secret-khusus-test-jangan-dipakai-di-produksi"
 os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "30"
@@ -35,6 +37,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from app.core import security  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.models.api_key import ApiKey  # noqa: E402
+from app.models.product_group_mapping import ProductGroupMapping  # noqa: E402
 from app.models.sales import Sales  # noqa: E402
 from app.models.sales_items import SalesItems  # noqa: E402
 from app.models.user import User  # noqa: E402
@@ -216,6 +219,29 @@ def make_user(app_db):
         app_db.commit()
         app_db.refresh(user)
         return user
+
+    return _make
+
+
+@pytest.fixture()
+def make_product_group(app_db):
+    """Baris `product_group_mappings` di DB test.
+
+    DB test dibuat lewat `create_all`, bukan migrasi — jadi seed COLORPLATE
+    dari migrasi 006 TIDAK ada di sini. Test yang butuh group aktif (mis.
+    publish) wajib membuatnya sendiri.
+    """
+
+    def _make(product_group="COLORPLATE", is_active=True):
+        row = ProductGroupMapping(
+            product_group=product_group,
+            is_active=is_active,
+            created_at=datetime(2026, 1, 1),
+        )
+        app_db.add(row)
+        app_db.commit()
+        app_db.refresh(row)
+        return row
 
     return _make
 

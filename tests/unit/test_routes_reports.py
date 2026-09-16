@@ -193,6 +193,13 @@ class TestTopProducts:
 
         assert {row["product_name"] for row in data} == {"RED", "BLUE"}
 
+    def test_filter_product_group_memakai_nama_ternormalisasi(self, client, seeded, admin_headers):
+        """Nilai dari `/api/sales/product-groups` harus bisa langsung dipakai di sini."""
+        data = client.get("/api/sales/top-products?product_group=%20colorplate", headers=admin_headers).json()["data"]
+
+        assert {row["product_name"] for row in data} == {"RED", "BLUE"}
+        assert {row["product_group"] for row in data} == {"COLORPLATE"}
+
     def test_di_scope_untuk_role_outlet(self, client, seeded, outlet_headers):
         data = client.get("/api/sales/top-products", headers=outlet_headers).json()["data"]
 

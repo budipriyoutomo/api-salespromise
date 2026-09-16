@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
+from app.services.product_group_service import normalize_product_group
 from app.utils.logger import logger
 
 
@@ -226,17 +227,55 @@ class SalesService:
 
         return query.scalar()
 
+    # ------------------------------------------------------------------
+    # Rekap per product group (Fase 6)
+    # ------------------------------------------------------------------
+
+    COLORPLATE = "COLORPLATE"
+
     @staticmethod
-    def get_sales_colorplate(db, outlet=None, start_date=None, end_date=None):
+    def _normalized_product_group():
+        """`UPPER(TRIM("Group"))` — pasangan SQL dari `normalize_product_group`.
+
+        POS mengirim nama group apa adanya (`Colorplate `, ` PROMO BANDUNG`).
+        Datanya tidak diubah; hanya cara membandingkannya.
+
+        Ekspresi ini tidak bisa memakai index biasa di kolom "Group". Belum
+        masalah di volume sekarang — lihat catatan performa di TODO Fase 6.
+        """
+        return func.upper(func.trim(SalesItems.product_group))
+
+    @staticmethod
+    def get_sales_by_product_groups(db, product_groups, outlet=None, start_date=None, end_date=None):
+        """Qty terjual per group / produk / outlet / tanggal.
+
+        `product_groups` kosong menghasilkan list kosong, BUKAN semua group —
+        publish memakai fungsi ini, dan "tanpa filter" di sana berarti
+        mengirim seluruh penjualan ke consumer.
+
+        `product_group` ikut di GROUP BY supaya produk bernama sama di dua
+        group tidak dijumlahkan jadi satu baris.
+
+        Transaksi `Deleted=1` masih ikut terhitung, sama seperti rekap
+        colorplate sebelum Fase 6 (TODO 4.5).
+        """
+        groups = sorted({normalize_product_group(g) for g in product_groups} - {""})
+
+        if not groups:
+            return []
+
+        group_expr = SalesService._normalized_product_group()
+
         query = (
             db.query(
+                group_expr.label("product_group"),
                 SalesItems.product_name,
                 Sales.outlet_code,
                 Sales.sale_date,
                 func.sum(SalesItems.qty).label("sold")
             )
             .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
-            .filter(SalesItems.product_group == "COLORPLATE")
+            .filter(group_expr.in_(groups))
         )
 
         query = SalesService._filter_sales(
@@ -247,21 +286,67 @@ class SalesService:
         )
 
         query = query.group_by(
+            group_expr,
             SalesItems.product_name,
             Sales.outlet_code,
             Sales.sale_date
         ).order_by(
             Sales.sale_date.desc(),
+            group_expr,
             SalesItems.product_name
         )
 
         return query.all()
 
+    @staticmethod
+    def get_sales_by_product_group(db, product_group, outlet=None, start_date=None, end_date=None):
+        return SalesService.get_sales_by_product_groups(
+            db,
+            [product_group],
+            outlet=outlet,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+    @staticmethod
+    def get_sales_colorplate(db, outlet=None, start_date=None, end_date=None):
+        """Alias `GET /api/sales/colorplate` — dipertahankan (Fase 6 A3)."""
+        return SalesService.get_sales_by_product_group(
+            db,
+            SalesService.COLORPLATE,
+            outlet=outlet,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+    @staticmethod
+    def list_product_groups(db, outlet=None):
+        """Nama group (bentuk normal) yang pernah muncul di data penjualan.
+
+        Untuk dropdown dashboard, dan untuk menemukan group baru dari POS yang
+        belum dipetakan di `product_group_mappings`.
+        """
+        group_expr = SalesService._normalized_product_group()
+
+        query = (
+            db.query(group_expr.label("product_group"))
+            .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
+            # TRIM(NULL) = NULL, dan NULL <> '' tidak bernilai benar —
+            # jadi baris tanpa group ikut tersaring di sini.
+            .filter(group_expr != "")
+        )
+
+        query = SalesService._filter_sales(query, outlet=outlet)
+
+        # Diurutkan di Python: PostgreSQL rewel soal ORDER BY ekspresi pada
+        # hasil GROUP BY / DISTINCT, dan daftarnya kecil.
+        return sorted(row.product_group for row in query.group_by(group_expr).all())
+
     # ------------------------------------------------------------------
     # Query laporan (dashboard)
     # ------------------------------------------------------------------
     #
-    # Berbeda dari `get_sales` / `get_sales_colorplate`, semua query di bawah
+    # Berbeda dari `get_sales` / rekap per product group, semua query di bawah
     # ini MENGECUALIKAN transaksi `Deleted=1` secara default — transaksi yang
     # dibatalkan bukan pendapatan.
     #
@@ -373,26 +458,35 @@ class SalesService:
         limit=None,
         include_deleted=False
     ):
-        """Ranking produk berdasarkan jumlah terjual."""
+        """Ranking produk berdasarkan jumlah terjual.
+
+        Nama group dinormalisasi sama seperti `/by-group` (Fase 6 A4): filter
+        tidak peka kapitalisasi & spasi di ujung, dan varian ` Food` / `FOOD`
+        untuk produk yang sama digabung jadi satu baris ber-group `FOOD`.
+        Tanpa itu, nilai dari `/api/sales/product-groups` tidak cocok di sini.
+        `product_group` yang kosong / spasi saja dianggap tanpa filter.
+        """
         if not limit or limit < 1:
             limit = SalesService.TOP_PRODUCTS_DEFAULT_LIMIT
         limit = min(limit, SalesService.TOP_PRODUCTS_MAX_LIMIT)
 
         total_qty = func.coalesce(func.sum(SalesItems.qty), 0).label("total_qty")
+        group_expr = SalesService._normalized_product_group()
 
         query = (
             db.query(
                 SalesItems.product_id.label("product_id"),
                 SalesItems.product_name.label("product_name"),
-                SalesItems.product_group.label("product_group"),
+                group_expr.label("product_group"),
                 total_qty,
                 func.coalesce(func.sum(SalesItems.qty * SalesItems.price), 0).label("total_amount"),
             )
             .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
         )
 
+        product_group = normalize_product_group(product_group)
         if product_group:
-            query = query.filter(SalesItems.product_group == product_group)
+            query = query.filter(group_expr == product_group)
 
         query = SalesService._report_query(
             query,
@@ -406,7 +500,7 @@ class SalesService:
             query.group_by(
                 SalesItems.product_id,
                 SalesItems.product_name,
-                SalesItems.product_group
+                group_expr
             )
             .order_by(total_qty.desc())
             .limit(limit)

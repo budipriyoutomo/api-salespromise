@@ -1,12 +1,14 @@
 """Endpoint administrasi — khusus role admin.
 
-Dua kelompok:
+Tiga kelompok:
 
-- `/api/api-keys` → kredensial mesin POS
-- `/api/users`    → akun login dashboard
+- `/api/api-keys`       → kredensial mesin POS
+- `/api/users`          → akun login dashboard
+- `/api/product-groups` → group yang dipublish ke RabbitMQ
 
-Keduanya `require_roles(ROLE_ADMIN)`. Manager sengaja tidak diberi akses:
-manager boleh membaca data semua outlet, tapi tidak mengelola kredensial.
+Semuanya `require_roles(ROLE_ADMIN)`. Manager sengaja tidak diberi akses:
+manager boleh membaca data semua outlet, tapi tidak mengelola kredensial
+maupun kontrak event ke consumer.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,14 +23,19 @@ from app.schemas.admin_schema import (
     ApiKeyListResponse,
     ApiKeyResponse,
     CreateApiKeyRequest,
+    CreateProductGroupMappingRequest,
     CreateUserRequest,
+    ProductGroupMappingDetailResponse,
+    ProductGroupMappingListResponse,
+    ProductGroupMappingResponse,
     SetPasswordRequest,
+    UpdateProductGroupMappingRequest,
     UpdateUserRequest,
     UserAdminResponse,
     UserDetailResponse,
     UserListResponse,
 )
-from app.services import api_key_service, user_service
+from app.services import api_key_service, product_group_service, user_service
 from app.utils.logger import logger
 
 require_admin = require_roles(ROLE_ADMIN)
@@ -205,3 +212,65 @@ def reset_password(
     logger.info(f"PASSWORD DIRESET id={user_id} oleh={admin.email}")
 
     return UserDetailResponse(data=UserAdminResponse.model_validate(user))
+
+
+# ---------------------------------------------------------------------------
+# Product group mapping (Fase 6)
+# ---------------------------------------------------------------------------
+#
+# Tidak ada endpoint DELETE, dan itu disengaja: group dimatikan lewat PATCH
+# `is_active`, barisnya tetap ada sebagai jejak apa saja yang pernah dipublish.
+
+product_group_router = APIRouter(prefix="/api/product-groups", tags=["Admin - Product Groups"])
+
+
+@product_group_router.get("", response_model=ProductGroupMappingListResponse)
+def list_product_groups(db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
+    """Semua mapping, termasuk yang nonaktif."""
+    rows = product_group_service.list_mappings(db)
+
+    return ProductGroupMappingListResponse(data=[ProductGroupMappingResponse.model_validate(row) for row in rows])
+
+
+@product_group_router.post("", response_model=ProductGroupMappingDetailResponse, status_code=status.HTTP_201_CREATED)
+def create_product_group(
+    payload: CreateProductGroupMappingRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Tambah group yang ikut dipublish ke RabbitMQ.
+
+    Group yang sudah terdaftar ditolak 409, termasuk yang sedang nonaktif —
+    aktifkan kembali lewat PATCH, jangan dibuat ulang.
+    """
+    try:
+        row = product_group_service.create_mapping(db, payload.product_group, is_active=payload.is_active)
+    except product_group_service.GroupSudahAda as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Product group '{exc}' sudah terdaftar. Aktifkan lewat PATCH kalau sedang nonaktif.",
+        )
+    except product_group_service.DataTidakValid as exc:
+        raise _tidak_valid(exc)
+
+    logger.info(f"PRODUCT GROUP DIBUAT group={row.product_group!r} aktif={row.is_active} oleh={admin.email}")
+
+    return ProductGroupMappingDetailResponse(data=ProductGroupMappingResponse.model_validate(row))
+
+
+@product_group_router.patch("/{mapping_id}", response_model=ProductGroupMappingDetailResponse)
+def update_product_group(
+    mapping_id: int,
+    payload: UpdateProductGroupMappingRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Aktifkan / nonaktifkan group. Berlaku pada publish berikutnya."""
+    try:
+        row = product_group_service.set_active(db, mapping_id, payload.is_active)
+    except product_group_service.GroupTidakDitemukan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product group tidak ditemukan")
+
+    logger.info(f"PRODUCT GROUP DIUBAH group={row.product_group!r} aktif={row.is_active} oleh={admin.email}")
+
+    return ProductGroupMappingDetailResponse(data=ProductGroupMappingResponse.model_validate(row))

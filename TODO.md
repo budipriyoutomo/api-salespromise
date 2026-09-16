@@ -2,9 +2,10 @@
 
 Dibuat: 2026-09-11 · Basis commit: `b66417f`
 
-Status: **Fase 0, 1, 2, dan 4 selesai. Fase 3 sebagian besar selesai.**
-Sisa: Alembic, idempotensi publish, bulk upsert, structured logging,
-rate limiting endpoint sync — semuanya **tidak memblokir frontend**.
+Status: **Fase 0, 1, 2, 4, dan 5 selesai. Fase 3 sebagian besar selesai.
+Fase 6 selesai di backend.**
+Sisa: Alembic, idempotensi publish, bulk upsert, rate limiting endpoint sync,
+halaman product group di frontend — semuanya **tidak memblokir frontend**.
 
 Backend siap dipakai frontend terpisah: CORS aktif, auth user terpisah dari
 API key mesin POS, data ter-scope per outlet, response ter-skema, dan endpoint
@@ -50,8 +51,51 @@ Dikerjakan 2026-09-11 dengan TDD (test dulu, baru kode).
       Query pemeriksaannya sudah disiapkan di
       `migrations/checks/orderdetail_outlet_collision.sql` — tiga query read-only
       untuk memastikan apakah tabrakan antar outlet benar-benar terjadi di data
-      produksi. Kalau query pertama mengembalikan nol baris, item ini bisa ditutup
-      tanpa perubahan apa pun.
+      produksi. ~~Kalau query pertama mengembalikan nol baris, item ini bisa ditutup
+      tanpa perubahan apa pun.~~ **Keliru — lihat temuan di bawah.**
+
+      **Temuan 2026-09-15** — diperiksa read-only (`readonly=True`, rollback) di
+      database lokal `maharasa_pos` (PG 16, `localhost:5433`): 1 outlet (`STTSM`),
+      14 transaksi, 85 item. **Bukan produksi**, jadi belum mewakili banyak outlet.
+
+      1. **`ordertransaction` ber-PK `("TransactionID")` saja.** Index unik
+         `(TransactionID, outlet_code)` ada, tapi PK sempit tetap berlaku. Outlet
+         kedua yang mengirim TransactionID yang sudah dipakai outlet lain **gagal
+         `UniqueViolation`** — seluruh batch sync-nya di-rollback, bukan menimpa.
+         Karena itu query 1 **selalu** kosong; hasil kosong bukan bukti aman.
+         **Terverifikasi** di salinan `maharasa_pos_uji` (pg_dump dari `maharasa_pos`,
+         14/85 baris cocok): `sync_sales` sungguhan untuk `OUTLET_UJI` dengan
+         TransactionID 6057 (milik STTSM) → `UniqueViolation` pada
+         `ordertransaction_pkey`, `Key ("TransactionID")=(6057) already exists`.
+         Data STTSM identik sebelum & sesudah. Database asli hanya dibaca.
+      2. **`OrderDetailID` = nomor baris per transaksi** (selalu 1..N). Begitu
+         TransactionID berbagi antar outlet, kunci item ikut bertabrakan.
+      3. **FK `orderdetail("TransactionID")` → `ordertransaction("TransactionID")`**
+         bergantung pada PK sempit itu.
+      4. Model SQLAlchemy juga PK `transaction_id` saja, sehingga
+         `tests/integration/test_sync_postgres.py::test_transaction_id_sama_dari_dua_outlet_tersimpan_terpisah`
+         kemungkinan besar **gagal** kalau dijalankan — test integrasi belum pernah jalan.
+      5. Query yang men-join item ke transaksi hanya lewat `TransactionID`:
+         `get_sales_colorplate`, `get_top_products`, `get_sale_detail` (item).
+      6. `schema_migrations` belum ada di DB lokal — index outlet dibuat manual.
+
+      Kesimpulan: masalahnya **struktural**, bukan soal data. Selama hanya ada satu
+      outlet belum ada kerusakan; outlet kedua dengan TransactionID yang tumpang
+      tindih akan langsung gagal sync.
+
+      **Rencana (menunggu persetujuan — migrasi otomatis jalan saat container start):**
+      - [ ] Migrasi `007_outlet_code_composite_keys.sql` (006 sudah dipakai Fase 6), **tanpa DELETE**, satu transaksi:
+            pra-cek (abort kalau ada `outlet_code` NULL / item yatim), `orderdetail`
+            tambah `outlet_code` + backfill dari `ordertransaction`, PK kedua tabel
+            menjadi komposit dengan `outlet_code`, FK komposit, index unik upsert item
+            ditambah `outlet_code`. Yang di-drop hanya constraint/index, bukan baris.
+      - [ ] Kode: model, `sync_sales` (kirim `outlet_code` di item + `index_elements`),
+            join 3 query di atas memakai `outlet_code`.
+      - [ ] Test unit (TDD) + test integrasi dua outlet dengan TransactionID &
+            OrderDetailID yang sama.
+      - [ ] Uji migrasi pada **salinan** database (`pg_dump` → DB terpisah), bukan aslinya.
+      - [ ] Jalankan `migrations/checks/orderdetail_outlet_collision.sql` di **produksi**
+            (read-only) sebelum deploy.
 
 ---
 
@@ -186,6 +230,27 @@ mengganti password pada login berikutnya — mengunci orang demi kerapian.
       `/health` sengaja tetap tidak menyentuh DB (liveness probe).
 - [x] **3.13 Nama file migrasi** — `inital_schema.sql` → `001_initial_schema.sql`.
 - [x] **3.14 README disinkronkan** dengan kode.
+- [x] **3.7 Structured logging JSON + `request_id`.** Dikerjakan 2026-09-15, TDD
+      (`tests/unit/test_structured_logging.py`, 56 test).
+      - `LOG_FORMAT=json` (default) / `text`; nilai lain ditolak `validate()` saat start.
+        `LOG_FILE` baru, default `logs/api.log` — test suite mengarahkannya ke
+        `os.devnull` supaya `LOGIN GAGAL` palsu tidak tercampur ke log developer.
+      - `request_id` di contextvar (`app/core/request_context.py`), ikut terbawa ke
+        thread pool endpoint `def`. Semua `logger.*` yang sudah ada otomatis
+        membawanya — tidak ada pemanggilan log yang perlu diubah.
+      - `RequestIdMiddleware` (`app/core/request_logging.py`), ASGI murni, paling luar.
+        Memakai `X-Request-ID` dari klien kalau cocok `[A-Za-z0-9._-]{1,128}`
+        (mencegah log injection), selain itu `uuid4().hex`. Selalu dikembalikan di header.
+      - Access log satu baris per request: `method`, `path` (tanpa query string),
+        `status_code`, `duration_ms`. INFO / WARNING (4xx) / ERROR (5xx + traceback).
+        `/`, `/health`, `/health/ready` tidak dicatat.
+      - Field tambahan cukup lewat `extra={...}`; `extra` tidak bisa menimpa field inti.
+
+      **Perlu diperhatikan saat deploy:** format `logs/api.log` berubah dari teks
+      ke JSON. Kalau ada yang mem-parse file itu, set `LOG_FORMAT=text` dulu.
+      Respons 500 dari exception yang tidak tertangani **tidak** membawa header
+      `X-Request-ID` (dibuat `ServerErrorMiddleware` Starlette di luar middleware
+      ini), tapi log errornya tetap membawa `request_id`.
 - [x] **Guard `init_db.py`.** `drop_all()` hanya jalan kalau
       `INIT_DB_CONFIRM=DROP-ALL` diisi persis.
 - [x] **Konfigurasi dibaca saat instansiasi**, bukan saat class dibuat.
@@ -203,7 +268,6 @@ mengganti password pada login berikutnya — mengunci orang demi kerapian.
 - [ ] **3.5 Bulk upsert.** `sync_sales` masih `execute` per baris. Menyentuh jalur
       sync produksi, jadi sengaja tidak digabung dengan perubahan lain — sebaiknya
       dikerjakan sendiri setelah test integrasi pernah dijalankan sungguhan.
-- [ ] **3.7 Structured logging JSON + `request_id`.**
 - [ ] **3.8b Rate limiting endpoint sync.** Sengaja BELUM dipasang: mesin POS
       yang mengirim backlog besar setelah offline bisa tertahan sendiri.
       Perlu diukur dulu pola sync yang wajar sebelum menentukan batasnya.
@@ -256,7 +320,10 @@ yang tersisa, dan itu bukan bug melainkan keputusan yang belum diambil:
 
 ---
 
-## Fase 5 — Frontend Terpisah (repo sendiri)
+## Fase 5 — Frontend Terpisah (repo sendiri) ✅ SELESAI
+
+> Checkbox di bawah disinkronkan 2026-09-15 dengan `TODO.md` sync-frontend,
+> tempat seluruh fase padanannya sudah dicentang (1.5, 2.x, 4.x–9.x).
 
 **Backend sudah siap.** Semua endpoint yang dibutuhkan halaman di bawah ini
 sudah ada, ter-skema di OpenAPI, dan ter-scope per outlet.
@@ -267,21 +334,22 @@ sudah ada, ter-skema di OpenAPI, dan ter-scope per outlet.
 >
 > Pekerjaan backend yang memblokir frontend:
 > - [x] omzet salah kolom → diperbaiki, omzet kini dari `ReceiptPayPrice`
-> - [ ] **0.6 bentuk response tidak seragam** — `/api/auth/*` mengembalikan
->       objek polos, sisanya dibungkus `{success, data}`. Masih terbuka;
->       menyeragamkan lebih murah sekarang daripada setelah frontend jadi.
+> - [x] **0.6 bentuk response tidak seragam** — `/api/auth/*` mengembalikan
+>       objek polos, sisanya dibungkus `{success, data}`. **Diputuskan di
+>       sync-frontend: backend tidak diubah**, client yang mengenali dua bentuk
+>       (dikunci `src/lib/api/client.test.ts` di repo itu).
 
 - [x] 5.1 Tentukan stack (Next.js / Vite+React / Nuxt) dan repo terpisah.
-- [ ] 5.2 Generate API client dari `/openapi.json`.
-- [ ] 5.3 Halaman login + penyimpanan token.
-- [ ] 5.4 Dashboard: kartu ringkasan, grafik harian, filter outlet & tanggal.
-- [ ] 5.5 Halaman daftar transaksi + detail.
-- [ ] 5.6 Halaman manajemen API key outlet — endpoint `/api/api-keys` **sudah ada**.
-- [ ] 5.7 Halaman manajemen user — endpoint `/api/users` **sudah ada**.
-- [ ] 5.8 Halaman status sync per outlet — `/api/outlets/sync-status`.
-- [ ] 5.9 Auto-refresh token + handling 401 global.
-- [ ] 5.10 Env `API_BASE_URL` per environment.
-- [ ] 5.11 Test frontend (Vitest + Testing Library) dan E2E (Playwright).
+- [x] 5.2 Generate API client dari `/openapi.json` — `src/types/api.ts`, `npm run gen:api`.
+- [x] 5.3 Halaman login + penyimpanan token — BFF, token di cookie httpOnly.
+- [x] 5.4 Dashboard: kartu ringkasan, grafik harian, filter outlet & tanggal.
+- [x] 5.5 Halaman daftar transaksi + detail.
+- [x] 5.6 Halaman manajemen API key outlet.
+- [x] 5.7 Halaman manajemen user.
+- [x] 5.8 Halaman status sync per outlet.
+- [x] 5.9 Auto-refresh token + handling 401 global — reaktif lewat proxy BFF.
+- [x] 5.10 Env `API_BASE_URL` per environment — dibaca saat runtime.
+- [x] 5.11 Test frontend (Vitest + Testing Library) dan E2E (Playwright).
 
 ### Sebelum mulai — langkah di sisi backend
 
@@ -289,6 +357,148 @@ sudah ada, ter-skema di OpenAPI, dan ter-scope per outlet.
 2. Buat user admin: `python manage_users.py create --email ... --role admin`
 3. Sesuaikan `CORS_ORIGINS` dengan origin frontend
    (Next.js `:3000`, Vite `:5173`).
+
+---
+
+## Fase 6 — Product Group Dinamis (pengganti hardcode `COLORPLATE`)
+
+Dibuat: 2026-09-15 · Status: **✅ backend selesai 2026-09-15** · Sisa: halaman frontend (F2)
+
+Sebelumnya `SalesService.get_sales_colorplate` memfilter
+`SalesItems.product_group == "COLORPLATE"` secara hardcode. Sekarang group yang
+dipublish dibaca dari tabel `product_group_mappings` yang dikelola admin.
+
+Hasil: **706 passed, 13 skipped, 1 xfailed** (sebelumnya 623 passed). Ruff bersih.
+
+**Diverifikasi di salinan `maharasa_pos_uji`**, dalam satu transaksi yang
+di-ROLLBACK (salinannya pun tidak berubah):
+
+- migrasi 006 dijalankan 2× → tetap satu baris seed `COLORPLATE` (idempoten);
+- CHECK menolak nama tidak normal (`' food'` → `CheckViolation`);
+- `get_sales_colorplate` baru **identik** dengan query hardcode lama (7 vs 7 baris);
+- query multi-group & `GROUP BY UPPER(TRIM("Group"))` diterima PostgreSQL;
+  ` PROMO BANDUNG` terbaca sebagai `PROMO BANDUNG`;
+- jumlah transaksi/item 14/85 sebelum dan sesudah.
+
+### A. Keputusan (diputuskan 2026-09-15)
+
+- [x] **A1 → Opsi 3:** tabel `product_group_mappings` + CRUD admin.
+- [x] **A2 → `COLORPLATE` tetap `platecolor`, group lain generik**
+      `{"group", "product", "outlet", "date", "sold"}`, exchange & routing key sama.
+      Pemetaannya di kode (`LEGACY_EVENT_FIELDS` di `sales_routes.py`), bukan
+      kolom tabel — kontrak consumer tidak boleh berubah lewat dashboard.
+      **Masih perlu dikabarkan ke tim consumer** sebelum admin mengaktifkan group
+      lain: event tanpa `platecolor` akan mulai muncul (Keputusan terbuka #2).
+- [x] **A3 → alias dipertahankan.** `GET /colorplate` dan payload `platecolor` tetap.
+- [x] **A4 → trim spasi + case-insensitive.** Dicocokkan dengan
+      `UPPER(TRIM("Group"))`; data item tidak diubah. Hanya spasi yang di-trim
+      (sama dengan `TRIM` di PostgreSQL/SQLite), bukan tab/newline.
+- [ ] **A5. Transaksi `Deleted=1`** — tetap menunggu 4.5. Rekap per group masih
+      ikut menghitungnya, sama seperti colorplate sebelum Fase 6.
+
+### B. Database
+
+- [x] B1. `migrations/006_product_group_mappings.sql`: `id`, `product_group`
+      (UNIQUE + CHECK bentuk normal), `is_active`, `created_at`, `updated_at`.
+      Tanpa `event_field`/`routing_key` karena A2 diputuskan di kode.
+      **Hanya CREATE TABLE + INSERT** — `ordertransaction`/`orderdetail` tidak disentuh.
+- [x] B2. Seed `COLORPLATE` aktif, `ON CONFLICT DO NOTHING` (status yang sudah
+      diubah admin tidak ditimpa).
+- [x] B3. Model `app/models/product_group_mapping.py`.
+
+### C. Service
+
+- [x] C1. `SalesService.get_sales_by_product_group`.
+- [x] C2. `SalesService.get_sales_by_product_groups` — `product_group` ikut di
+      `select` & `group_by`. Daftar kosong → `[]`, **bukan** semua group (kalau
+      tidak, publish bisa mengirim seluruh penjualan).
+- [x] C3. `get_sales_colorplate` jadi alias tipis.
+- [x] C4. `product_group_service.get_active_groups` (service terpisah, pola
+      `api_key_service`).
+- [x] C5. `SalesService.list_product_groups` — group ter-normalisasi dari data, ter-scope outlet.
+
+### D. Route
+
+- [x] D1. `GET /api/sales/by-group?product_group=...` — boleh diulang untuk beberapa group.
+- [x] D2. `GET /api/sales/product-groups`.
+- [x] D3. `/colorplate` tetap, lewat alias di service.
+- [x] D4. `POST /publish` membaca group aktif, satu query untuk semuanya.
+      Tanpa group aktif → `200 "No active product groups to publish"` + log warning.
+      Gagal di tengah: perilaku lama dipertahankan (500, event yang sudah terkirim
+      tidak ditarik — TODO 3.4).
+- [x] D5. `/api/product-groups`: `GET`, `POST` (409 untuk duplikat, termasuk yang
+      nonaktif), `PATCH /{id}` untuk `is_active`. **Tidak ada DELETE** (405) dan nama
+      tidak bisa diubah — salah ketik: buat baru, nonaktifkan yang lama.
+- [x] D6. `ProductGroupSalesRow`, `ProductGroupListResponse`, `ProductGroupMapping*`.
+
+### E. Test
+
+- [x] E1. `test_sales_service_queries.py` (per group, multi-group tidak tercampur,
+      normalisasi, daftar kosong), `test_product_group_service.py`.
+- [x] E2. Test lama `get_sales_colorplate` hijau **tanpa diubah**.
+- [x] E3. `test_routes_product_groups.py` — scope outlet, 422, RBAC admin, 405 DELETE.
+- [x] E4. `test_struktur_event_yang_dipublish` hijau tanpa diubah, ditambah test
+      bahwa field generik tidak menempel di event colorplate. Test publish kini
+      me-mock `get_sales_by_product_groups` dan men-seed mapping `COLORPLATE`.
+- [x] E5. `test_app_wiring.py` — endpoint baru di penjaga JWT & OpenAPI.
+- [x] E6. Test integrasi ditulis di `test_sync_postgres.py`, **belum dijalankan**:
+      fixture-nya `drop_all`, jadi hanya boleh diarahkan ke database kosong khusus
+      test. Sebagai gantinya query diverifikasi di salinan (lihat atas).
+- [x] Tambahan: `test_migrate.py` menolak migrasi bernomor yang memuat
+      `DELETE FROM`, `TRUNCATE`, `DROP TABLE/COLUMN/SCHEMA/DATABASE`.
+
+### F. Frontend & dokumentasi
+
+- [x] F1. `src/types/api.ts` di sync-frontend di-generate ulang dari skema OpenAPI
+      terbaru (`openapi-typescript`, hanya penambahan 345 baris); `tsc --noEmit` lolos.
+- [ ] F2. Dropdown group dan halaman kelola mapping. Proxy BFF sudah meneruskan
+      `GET`/`POST`/`PATCH`, jadi tidak perlu diubah; nav admin di
+      `src/lib/auth/access.ts` perlu entri baru.
+- [x] F3. README: `/by-group`, `/product-groups`, `/api/product-groups`, bentuk event generik.
+- [x] F4. **`top-products` ikut dinormalisasi** (pemblokir frontend 10.11).
+      Filter `product_group` sebelumnya mencocokkan nama persis, jadi nilai dari
+      dropdown `/api/sales/product-groups` (`PROMO BANDUNG`) tidak menemukan item
+      yang tersimpan sebagai `' PROMO BANDUNG'`. Sekarang filter memakai
+      `UPPER(TRIM("Group"))`, varian nama untuk produk yang sama digabung jadi satu
+      baris, dan `product_group` di response dalam bentuk normal. Spasi saja =
+      tanpa filter. TDD: 4 test merah dulu (`test_sales_service_reports.py`,
+      `test_routes_reports.py`).
+- [x] F5. **Diverifikasi ke server yang berjalan** (uvicorn `:8001` terhadap salinan
+      `maharasa_pos_uji`, token untuk user yang ada di salinan):
+      - endpoint baru 22/22 sesuai — 200/201, 401 tanpa token, 403 manager & outlet
+        di `/api/product-groups`, 403 outlet meminta outlet lain, 404, 405 `DELETE`,
+        409 duplikat, 422 kosong/spasi; OpenAPI memuat 30 path;
+      - `top-products` 6/6 — filter `' promo bandung'` = qty data mentah, tanpa
+        produk ganda, semua nama group cocok dengan isi dropdown.
+
+      **Salinan `maharasa_pos_uji` sekarang BERUBAH permanen** (bukan lagi identik
+      dengan `maharasa_pos`): migrasi 006 terpasang, mapping `FOOD` nonaktif hasil uji
+      POST/PATCH, dan dua user uji `uji.manager@maharasa.id` / `uji.outlet@maharasa.id`
+      (outlet `STTSM`). Transaksi & item tetap 14/85. `maharasa_pos` tidak disentuh.
+
+### Catatan deploy
+
+1. Migrasi 006 jalan otomatis saat container start, sebelum gunicorn — kode dan
+   tabel datang bersamaan.
+2. Setelah deploy, publish identik dengan sebelumnya (hanya `COLORPLATE` aktif).
+   Group lain baru terkirim setelah admin menambahkannya.
+3. **Perubahan kecil yang disengaja (A4):** `/colorplate` dan publish kini ikut
+   menghitung item bergroup `Colorplate` / `COLORPLATE `. Di data lokal tidak ada
+   varian seperti itu, tapi cek produksi dulu (read-only):
+   `SELECT '[' || "Group" || ']', COUNT(*) FROM orderdetail WHERE UPPER(TRIM("Group")) = 'COLORPLATE' GROUP BY 1;`
+   Lebih dari satu baris = angka colorplate yang dipublish akan naik.
+   Hal yang sama berlaku untuk `top-products`: varian nama group kini digabung,
+   jadi ranking bisa berubah untuk produk yang dulu terpecah jadi dua baris.
+4. **Performa:** `UPPER(TRIM("Group"))` tidak memakai index. Kalau `orderdetail`
+   sudah besar dan query terasa lambat, opsinya index ekspresi di `orderdetail` —
+   DDL di tabel data (tidak menghapus apa pun), tetap minta persetujuan dulu.
+
+### Catatan di luar scope
+
+Join di query ini hanya `Sales.transaction_id == SalesItems.transaction_id`,
+padahal `TransactionID` unik **per outlet**. Item 0.5 sudah membuktikan PK-nya
+masih sempit; perbaikannya menunggu keputusan di sana dan akan ikut memperbaiki
+semua group sekaligus.
 
 ---
 
