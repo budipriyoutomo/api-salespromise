@@ -306,6 +306,7 @@ def list_product_menus(db: Session = Depends(get_db), _admin: User = Depends(req
 
 @product_menu_router.get("/candidates", response_model=ProductMenuCandidateListResponse)
 def list_product_menu_candidates(
+    outlet: Optional[str] = Query(None, description="Batasi ke menu yang pernah terjual di outlet ini"),
     product_group: Optional[str] = Query(None, description="Batasi ke satu group (tidak peka huruf besar/kecil)"),
     q: Optional[str] = Query(None, max_length=255, description="Cari nama menu atau ProductID"),
     limit: int = Query(
@@ -316,8 +317,14 @@ def list_product_menu_candidates(
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
 ):
-    """Menu yang pernah muncul di data penjualan — sumber pilihan mapping menu."""
-    rows = product_menu_service.list_candidates(db, product_group=product_group, q=q, limit=limit)
+    """Menu yang pernah muncul di data penjualan — sumber pilihan mapping menu.
+
+    Filter `outlet` hanya mempersempit daftar pilihan; mapping yang dibuat
+    tetap berlaku untuk semua outlet.
+    """
+    rows = product_menu_service.list_candidates(
+        db, outlet=outlet, product_group=product_group, q=q, limit=limit
+    )
 
     return ProductMenuCandidateListResponse(data=[ProductMenuCandidate.model_validate(row) for row in rows])
 

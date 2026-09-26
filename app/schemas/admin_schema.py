@@ -203,6 +203,9 @@ class ProductMenuCandidate(BaseModel):
     product_id: int
     product_name: Optional[str] = None
     product_group: Optional[str] = None
+    # Outlet tempat menu ini pernah terjual — keterangan saja. Mapping menu
+    # berlaku untuk semua outlet.
+    outlet_codes: List[str] = Field(default_factory=list)
     last_sale_date: Optional[date] = None
 
 

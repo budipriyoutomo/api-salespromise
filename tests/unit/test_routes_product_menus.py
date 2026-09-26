@@ -48,6 +48,34 @@ def data_promo(app_db):
     app_db.commit()
 
 
+@pytest.fixture()
+def data_dua_outlet(app_db, data_promo):
+    """OUTLET_002 menjual menu colorplate yang sama plus satu menu miliknya sendiri."""
+    app_db.add(make_sale_row(transaction_id=2, outlet_code="OUTLET_002", sale_date=date(2026, 1, 20)))
+    app_db.add_all(
+        [
+            make_item_row(
+                order_detail_id=1,
+                transaction_id=2,
+                product_id=200252,
+                product_name="Blue ",
+                qty=1,
+                sale_date=date(2026, 1, 20),
+            ),
+            make_item_row(
+                order_detail_id=2,
+                transaction_id=2,
+                product_id=400100,
+                product_group="FOOD",
+                product_name="Nasi Goreng",
+                qty=2,
+                sale_date=date(2026, 1, 20),
+            ),
+        ]
+    )
+    app_db.commit()
+
+
 class TestCandidates:
 
     def test_daftar_menu_dari_data(self, client, admin_headers, data_promo):
@@ -60,6 +88,43 @@ class TestCandidates:
             (309747, "Chicken Katsu & Medamayaki Don", "PROMO BANDUNG"),
         ]
         assert response.json()["data"][0]["last_sale_date"] == "2026-01-15"
+
+    def test_outlet_tempat_menu_terjual_ikut_dikirim(self, client, admin_headers, data_dua_outlet):
+        response = client.get("/api/product-menus/candidates", headers=admin_headers)
+
+        outlet = {r["product_id"]: r["outlet_codes"] for r in response.json()["data"]}
+        assert outlet[200252] == ["OUTLET_001", "OUTLET_002"]
+        assert outlet[200300] == ["OUTLET_001"]
+        assert outlet[400100] == ["OUTLET_002"]
+
+    def test_menu_yang_terjual_di_dua_outlet_tidak_jadi_dua_baris(self, client, admin_headers, data_dua_outlet):
+        """Mapping berlaku untuk semua outlet — satu menu harus satu baris."""
+        response = client.get("/api/product-menus/candidates", headers=admin_headers)
+
+        data = response.json()["data"]
+        assert [r["product_id"] for r in data].count(200252) == 1
+        # Tanggal terbaru dari kedua outlet, bukan tanggal outlet pertama.
+        assert next(r for r in data if r["product_id"] == 200252)["last_sale_date"] == "2026-01-20"
+
+    def test_filter_outlet(self, client, admin_headers, data_dua_outlet):
+        response = client.get("/api/product-menus/candidates?outlet=OUTLET_002", headers=admin_headers)
+
+        data = response.json()["data"]
+        assert sorted(r["product_id"] for r in data) == [200252, 400100]
+        assert all(r["outlet_codes"] == ["OUTLET_002"] for r in data)
+
+    def test_filter_outlet_digabung_dengan_group(self, client, admin_headers, data_dua_outlet):
+        response = client.get(
+            "/api/product-menus/candidates?outlet=OUTLET_002&product_group=colorplate",
+            headers=admin_headers,
+        )
+
+        assert [r["product_id"] for r in response.json()["data"]] == [200252]
+
+    def test_filter_outlet_tidak_dikenal_kosong(self, client, admin_headers, data_dua_outlet):
+        response = client.get("/api/product-menus/candidates?outlet=OUTLET_999", headers=admin_headers)
+
+        assert response.json()["data"] == []
 
     def test_filter_group_tidak_peka_kapitalisasi(self, client, admin_headers, data_promo):
         response = client.get("/api/product-menus/candidates?product_group=promo%20bandung", headers=admin_headers)
