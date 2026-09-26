@@ -147,3 +147,14 @@ def test_migrasi_007_idempoten_tanpa_seed():
 
     assert "CREATE TABLE IF NOT EXISTS PRODUCT_MENU_MAPPINGS" in sql
     assert "INSERT" not in sql
+
+
+def test_migrasi_008_idempoten_tanpa_seed():
+    """Tanpa seed: menu yang sudah ada tidak dipublish sampai admin memberi konversi warna."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "008_product_menu_colorplates.sql").read_text(encoding="utf-8"))
+
+    assert "CREATE TABLE IF NOT EXISTS PRODUCT_MENU_COLORPLATES" in sql
+    assert "CREATE INDEX IF NOT EXISTS" in sql
+    assert "INSERT" not in sql
+    assert "DROP" not in sql
+    assert "DELETE" not in sql

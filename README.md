@@ -322,6 +322,10 @@ Pagar yang berlaku, supaya admin tidak mengunci dirinya sendiri keluar:
 
 Menentukan group mana yang dipublish oleh `POST /api/sales/publish`.
 
+> Sejak migrasi 008 publish hanya membaca status group **`COLORPLATE`**. Group
+> lain yang aktif di sini tidak dipublish — menu dari group lain masuk lewat
+> konversi warna di [Product menu](#product-menu).
+
 | Endpoint | Isi |
 |---|---|
 | `GET /api/product-groups` | Semua mapping, termasuk yang nonaktif |
@@ -336,6 +340,35 @@ Menentukan group mana yang dipublish oleh `POST /api/sales/publish`.
   Nama juga tidak bisa diubah: salah ketik → buat baru, nonaktifkan yang lama.
 - Migrasi 006 men-seed `COLORPLATE` dalam keadaan aktif, jadi publish setelah
   deploy berperilaku sama persis dengan sebelumnya.
+
+#### Product menu
+
+Menu satuan (dikenali lewat ProductID) yang ikut dihitung ke warna colorplate
+saat publish. Satu menu bisa dikonversi ke beberapa warna, masing-masing
+dengan pengali.
+
+| Endpoint | Isi |
+|---|---|
+| `GET /api/product-menus` | Semua mapping menu + konversi warnanya (`colorplates`) |
+| `GET /api/product-menus/candidates` | Menu dari data penjualan — `?outlet=&product_group=&q=&limit=` |
+| `GET /api/product-menus/platecolors` | Warna COLORPLATE yang ada di data — pilihan tujuan konversi |
+| `POST /api/product-menus` | Tambah menu — `{"product_id": 200300, "is_active": true}` |
+| `PATCH /api/product-menus/{id}` | Aktifkan / nonaktifkan menu — `{"is_active": false}` |
+| `POST /api/product-menus/{id}/colorplates` | Tambah konversi — `{"platecolor": "RED", "multiplier": 2}` |
+| `PATCH /api/product-menus/{id}/colorplates/{cid}` | Ubah — `{"multiplier": 3}` dan/atau `{"is_active": false}` |
+
+Contoh: menu PROMO "Buy 1 Get 2 RED" → konversi `RED × 2`. Terjual 3, dan
+COLORPLATE RED terjual 4 → event RED `sold = 4 + 3 × 2 = 10`.
+
+- **Menu aktif tanpa konversi aktif tidak dipublish.**
+- `platecolor` harus nama menu COLORPLATE yang pernah terjual (tidak peka
+  huruf besar/kecil) — selain itu `422`. Disimpan dengan ejaan dari data.
+- Satu warna per menu: duplikat `409`, termasuk yang nonaktif — ubah lewat `PATCH`.
+- `multiplier` bilangan bulat 1–1000, default 1. Warna tidak bisa diganti:
+  nonaktifkan, lalu tambah warna baru.
+- Menu yang ProductID-nya bergroup COLORPLATE tidak dikonversi lagi selama
+  group COLORPLATE aktif — sudah terhitung langsung.
+- **Tidak ada DELETE**, baik untuk menu maupun konversinya.
 
 ---
 
@@ -505,32 +538,22 @@ perbedaan status code.
 { "date": "2026-01-15", "exchange": "posdata_exchange", "routing_key": "posdata.created" }
 ```
 
-Mempublish satu event per baris rekap, untuk setiap group yang **aktif** di
-`/api/product-groups`. Group `COLORPLATE` memakai bentuk lama — tidak berubah
-sejak sebelum Fase 6:
+Mempublish satu event per **warna / outlet / tanggal**. Hanya ada satu bentuk
+event — bentuk colorplate yang sudah dipakai consumer:
 
 ```json
 {
   "event": "posdata.created",
-  "data": { "platecolor": "RED", "outlet": "OUTLET_001", "date": "2026-01-15", "sold": 4 },
+  "data": { "platecolor": "RED", "outlet": "OUTLET_001", "date": "2026-01-15", "sold": 10 },
   "meta": { "timestamp": "...", "source": "sync-sales-service", "version": "1.0" }
 }
 ```
 
-Group lain memakai bentuk generik, lewat exchange dan routing key yang sama:
+`sold` = qty COLORPLATE warna itu (kalau group `COLORPLATE` aktif) + Σ qty menu ×
+`multiplier` dari [konversi menu](#product-menu) yang aktif. Nama warna yang
+sama dengan kapitalisasi / spasi berbeda (`Blue `, `BLUE`) digabung jadi satu event.
 
-```json
-{
-  "event": "posdata.created",
-  "data": { "group": "FOOD", "product": "NASI GORENG", "outlet": "OUTLET_001", "date": "2026-01-15", "sold": 5 },
-  "meta": { "timestamp": "...", "source": "sync-sales-service", "version": "1.0" }
-}
-```
-
-> Consumer yang hanya mengenal `platecolor` harus sudah mengabaikan event tanpa
-> field itu **sebelum** admin mengaktifkan group lain.
-
-Tidak ada group aktif → `200` dengan `"message": "No active product groups to publish"`
+COLORPLATE nonaktif dan tidak ada konversi menu aktif → `200` dengan `"message": "No active product groups to publish"`
 dan `published: 0`.
 
 > Belum idempoten — memanggil dua kali untuk tanggal yang sama mengirim event
@@ -580,6 +603,7 @@ sync-api/
 │   ├── models/
 │   │   ├── api_key.py              # api_keys (kolom `key` berisi hash)
 │   │   ├── product_group_mapping.py # product_group_mappings (group yang dipublish)
+│   │   ├── product_menu_mapping.py # product_menu_mappings + product_menu_colorplates
 │   │   ├── user.py                 # users + definisi role
 │   │   ├── sales.py                # ordertransaction
 │   │   └── sales_items.py          # orderdetail
@@ -600,6 +624,8 @@ sync-api/
 │   │   ├── api_key_service.py      # dipakai route DAN CLI
 │   │   ├── user_service.py         # dipakai route DAN CLI
 │   │   ├── product_group_service.py # mapping group yang dipublish (tanpa hapus)
+│   │   ├── product_menu_service.py # mapping menu + konversi warna (tanpa hapus)
+│   │   ├── colorplate_publish_service.py # rekap per warna untuk publish
 │   │   └── rabbitmq.py
 │   └── utils/
 │       └── logger.py

@@ -40,7 +40,7 @@ from app.schemas.sales_response import (
     TopProductListResponse,
     TopProductRow,
 )
-from app.services import product_group_service, product_menu_service
+from app.services import colorplate_publish_service, product_group_service
 from app.services.rabbitmq import RabbitMQClient
 from app.services.sales_service import SalesService
 from app.utils.logger import logger
@@ -348,31 +348,14 @@ def get_sale_detail(
     return SaleDetailResponse(data=detail)
 
 
-# Group yang dikirim dengan bentuk payload lama, demi consumer yang sudah
-# berjalan sebelum Fase 6. Group lain memakai bentuk generik
-# {"group": ..., "product": ...}.
-#
-# Sengaja di kode, bukan kolom di tabel mapping: kontrak dengan consumer tidak
-# boleh bisa berubah hanya karena admin mengedit sesuatu di dashboard.
-LEGACY_EVENT_FIELDS = {SalesService.COLORPLATE: "platecolor"}
-
-
 def build_event_data(row) -> dict:
-    field = LEGACY_EVENT_FIELDS.get(row.product_group)
-
-    if field:
-        data = {field: row.product_name}
-    else:
-        data = {"group": row.product_group, "product": row.product_name}
-
-    data.update(
-        {
-            "outlet": row.outlet_code,
-            "date": row.sale_date.strftime("%Y-%m-%d"),
-            "sold": int(row.sold),
-        }
-    )
-    return data
+    """Satu-satunya bentuk event: format colorplate yang sudah dipakai consumer."""
+    return {
+        "platecolor": row.platecolor,
+        "outlet": row.outlet_code,
+        "date": row.sale_date.strftime("%Y-%m-%d"),
+        "sold": int(row.sold),
+    }
 
 
 @router.post("/publish", response_model=PublishResponse)
@@ -385,34 +368,27 @@ def publish_sales(
 ):
     """Dipicu mesin POS, bukan dashboard — karena itu tetap pakai API key outlet.
 
-    Yang dipublish: gabungan group aktif (`product_group_mappings`) dan menu
-    aktif (`product_menu_mappings`).
+    Yang dipublish: rekap per warna colorplate — qty COLORPLATE langsung
+    ditambah menu yang dikonversi lewat `product_menu_colorplates`
+    (lihat `colorplate_publish_service`).
     Gagal di tengah tetap seperti sebelumnya: 500, event yang sudah terkirim
     tidak ditarik kembali (TODO 3.4).
     """
     outlet = request.state.outlet_code
 
     try:
-        groups = product_group_service.get_active_groups(db)
-        menu_ids = product_menu_service.get_active_product_ids(db)
-
-        if not groups and not menu_ids:
-            logger.warning(f"[PUBLISH] outlet={outlet} date={body.date} tidak ada product group / menu aktif")
+        try:
+            sales = colorplate_publish_service.rekap_colorplate(
+                db, outlet=outlet, start_date=body.date, end_date=body.date
+            )
+        except colorplate_publish_service.TidakAdaYangDipublish:
+            logger.warning(f"[PUBLISH] outlet={outlet} date={body.date} COLORPLATE nonaktif & tidak ada konversi menu aktif")
             return PublishResponse(
                 message="No active product groups to publish",
                 outlet=outlet,
                 date=body.date,
                 published=0,
             )
-
-        sales = SalesService.get_sales_by_product_groups(
-            db=db,
-            product_groups=groups,
-            product_ids=menu_ids,
-            outlet=outlet,
-            start_date=body.date,
-            end_date=body.date,
-        )
 
         if not sales:
             return PublishResponse(
@@ -422,7 +398,7 @@ def publish_sales(
                 published=0,
             )
 
-        logger.info(f"[PUBLISH] outlet={outlet} date={body.date} groups={','.join(groups)} menus={','.join(map(str, menu_ids))} total={len(sales)}")
+        logger.info(f"[PUBLISH] outlet={outlet} date={body.date} total={len(sales)}")
 
         total = 0
         for sale in sales:

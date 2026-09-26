@@ -451,15 +451,17 @@ class TestPublishSales:
     # Fase 6 — group dari tabel mapping
     # ------------------------------------------------------------------
 
-    def test_hanya_group_aktif_yang_diminta(self, client, api_key_headers, mock_service, rabbit, make_product_group):
+    def test_group_aktif_selain_colorplate_tidak_dipublish(
+        self, client, api_key_headers, mock_service, rabbit, make_product_group
+    ):
+        """Sejak konversi warna: group lain hanya masuk lewat mapping menu."""
         make_product_group("FOOD")
-        make_product_group("BEVERAGE", is_active=False)
         calls = mock_service(colorplate=[])
         rabbit()
 
         client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
 
-        assert calls["get_sales_by_product_groups"][0]["product_groups"] == ["COLORPLATE", "FOOD"]
+        assert calls["get_sales_by_product_groups"][0]["product_groups"] == ["COLORPLATE"]
 
     def test_tanpa_group_aktif_tidak_mempublish_apa_pun(
         self, client, api_key_headers, mock_service, rabbit, colorplate_aktif, app_db
@@ -478,22 +480,6 @@ class TestPublishSales:
         assert calls["get_sales_by_product_groups"] == []
         assert fake.published == []
 
-    def test_event_group_lain_memakai_bentuk_generik(self, client, api_key_headers, mock_service, rabbit):
-        mock_service(colorplate=[colorplate_row(product_group="FOOD", product_name="NASI GORENG", sold=3)])
-        fake = rabbit()
-
-        client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
-        event = fake.published[0]["payload"]
-
-        assert event["data"] == {
-            "group": "FOOD",
-            "product": "NASI GORENG",
-            "outlet": "OUTLET_001",
-            "date": "2026-01-15",
-            "sold": 3,
-        }
-        assert event["meta"]["source"] == "sync-sales-service"
-
     def test_event_colorplate_tidak_ikut_berubah_ke_bentuk_generik(self, client, api_key_headers, mock_service, rabbit):
         """Consumer lama membaca `platecolor` — field generik tidak boleh ikut menempel."""
         mock_service(colorplate=[colorplate_row()])
@@ -503,20 +489,12 @@ class TestPublishSales:
 
         assert set(fake.published[0]["payload"]["data"]) == {"platecolor", "outlet", "date", "sold"}
 
-    def test_campuran_group_dipublish_semua_dengan_bentuk_masing_masing(
-        self, client, api_key_headers, mock_service, rabbit
-    ):
-        mock_service(
-            colorplate=[
-                colorplate_row(product_name="RED"),
-                colorplate_row(product_group="FOOD", product_name="NASI GORENG"),
-            ]
-        )
+    def test_nama_warna_beda_kapitalisasi_digabung(self, client, api_key_headers, mock_service, rabbit):
+        """"Blue " dan "BLUE" satu warna — dijumlahkan jadi satu event."""
+        mock_service(colorplate=[colorplate_row(product_name="Blue ", sold=2), colorplate_row(product_name="BLUE", sold=3)])
         fake = rabbit()
 
         response = client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
 
-        assert response.json()["published"] == 2
-        data = [e["payload"]["data"] for e in fake.published]
-        assert data[0]["platecolor"] == "RED"
-        assert data[1]["product"] == "NASI GORENG"
+        assert response.json()["published"] == 1
+        assert fake.published[0]["payload"]["data"]["sold"] == 5

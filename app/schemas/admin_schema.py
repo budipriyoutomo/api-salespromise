@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.models.user import ROLE_ADMIN, ROLE_MANAGER, ROLE_OUTLET
 from app.services.product_group_service import MAX_PRODUCT_GROUP_LENGTH
@@ -162,6 +162,17 @@ class UpdateProductGroupMappingRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ProductMenuColorplateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    platecolor: str
+    multiplier: int
+    is_active: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class ProductMenuMappingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -170,6 +181,8 @@ class ProductMenuMappingResponse(BaseModel):
     product_name: Optional[str] = None
     product_group: Optional[str] = None
     is_active: bool
+    # Konversi ke warna colorplate. Menu tanpa konversi aktif tidak dipublish.
+    colorplates: List[ProductMenuColorplateResponse] = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -195,6 +208,37 @@ class UpdateProductMenuMappingRequest(BaseModel):
     """Hanya status aktif — alasannya sama dengan mapping group."""
 
     is_active: bool
+
+
+class CreateProductMenuColorplateRequest(BaseModel):
+    """`platecolor` harus nama menu COLORPLATE yang ada di data penjualan."""
+
+    platecolor: str = Field(min_length=1, max_length=255)
+    multiplier: int = Field(default=1, gt=0, le=1000)
+    is_active: bool = True
+
+
+class UpdateProductMenuColorplateRequest(BaseModel):
+    """Warna tidak bisa diganti — nonaktifkan lalu tambah warna baru."""
+
+    multiplier: Optional[int] = Field(default=None, gt=0, le=1000)
+    is_active: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def minimal_satu_field(self):
+        if self.multiplier is None and self.is_active is None:
+            raise ValueError("Isi multiplier atau is_active")
+        return self
+
+
+class ProductMenuColorplateDetailResponse(BaseModel):
+    success: bool = True
+    data: ProductMenuColorplateResponse
+
+
+class PlatecolorListResponse(BaseModel):
+    success: bool = True
+    data: List[str]
 
 
 class ProductMenuCandidate(BaseModel):

@@ -1,11 +1,11 @@
-"""Logika mapping per menu — menu mana yang dipublish ke RabbitMQ.
+"""Logika mapping per menu — menu mana yang ikut dihitung ke warna colorplate.
 
-Pelengkap `product_group_service`: group aktif mengirim semua menu di dalamnya,
-mapping di sini menambah menu satu per satu dari group mana pun. Publish
-memakai gabungan keduanya.
+Publish hanya mengirim format colorplate. Menu dari group lain ikut terhitung
+lewat konversi di `product_menu_colorplates`: qty menu × multiplier ditambahkan
+ke warna tujuannya. Menu aktif tanpa konversi aktif tidak dipublish.
 
-Sama seperti mapping group, tidak ada fungsi hapus — menu dimatikan lewat
-`is_active`.
+Sama seperti mapping group, tidak ada fungsi hapus — menu dan konversinya
+dimatikan lewat `is_active`.
 """
 
 from dataclasses import dataclass, field
@@ -14,11 +14,11 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utcnow
-from app.models.product_menu_mapping import ProductMenuMapping
+from app.models.product_menu_mapping import ProductMenuColorplate, ProductMenuMapping
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
 from app.services.product_group_service import normalize_product_group
-from app.services.sales_service import SalesService
+from app.services.sales_service import SalesService, color_key
 
 CANDIDATE_DEFAULT_LIMIT = 100
 CANDIDATE_MAX_LIMIT = 500
@@ -52,6 +52,18 @@ class MenuTidakAdaDiData(Exception):
     """ProductID tidak pernah muncul di data penjualan."""
 
 
+class WarnaTidakDikenal(Exception):
+    """Warna tidak pernah muncul sebagai menu COLORPLATE di data penjualan."""
+
+
+class WarnaSudahAda(Exception):
+    """Menu sudah punya konversi ke warna ini — termasuk yang nonaktif."""
+
+
+class KonversiTidakDitemukan(Exception):
+    pass
+
+
 def list_mappings(db):
     return (
         db.query(ProductMenuMapping)
@@ -77,6 +89,89 @@ def get_active_product_ids(db) -> list[int]:
         .all()
     )
     return [row.product_id for row in rows]
+
+
+def get_active_conversions(db) -> dict[int, list[tuple[str, int]]]:
+    """ProductID → [(platecolor, multiplier)] dari menu aktif & konversi aktif.
+
+    Menu aktif yang belum punya konversi aktif tidak muncul di sini, jadi
+    tidak dipublish.
+    """
+    rows = (
+        db.query(ProductMenuMapping.product_id, ProductMenuColorplate.platecolor, ProductMenuColorplate.multiplier)
+        .join(ProductMenuColorplate, ProductMenuColorplate.menu_mapping_id == ProductMenuMapping.id)
+        .filter(ProductMenuMapping.is_active.is_(True), ProductMenuColorplate.is_active.is_(True))
+        .order_by(ProductMenuMapping.product_id, ProductMenuColorplate.platecolor)
+        .all()
+    )
+
+    hasil: dict[int, list[tuple[str, int]]] = {}
+    for row in rows:
+        hasil.setdefault(row.product_id, []).append((row.platecolor, row.multiplier))
+    return hasil
+
+
+def list_colors(db) -> list[str]:
+    return SalesService.list_colorplate_colors(db)
+
+
+def _get_colorplate(db, mapping_id: int, colorplate_id: int):
+    row = db.get(ProductMenuColorplate, colorplate_id)
+    if row is None or row.menu_mapping_id != mapping_id:
+        raise KonversiTidakDitemukan(colorplate_id)
+    return row
+
+
+def add_colorplate(db, mapping_id: int, platecolor: str, multiplier: int, is_active: bool = True):
+    """Tambah konversi menu → warna. Warna harus ada di data COLORPLATE.
+
+    Disimpan dengan ejaan dari data ("Blue", bukan input admin "blue ") supaya
+    event yang dipublish memakai nama yang sama dengan colorplate langsung.
+    """
+    menu = get_by_id(db, mapping_id)
+    if not menu:
+        raise MenuTidakDitemukan(mapping_id)
+
+    kunci = color_key(platecolor)
+    warna = next((w for w in list_colors(db) if color_key(w) == kunci), None)
+    if warna is None:
+        raise WarnaTidakDikenal(platecolor)
+
+    if any(color_key(c.platecolor) == kunci for c in menu.colorplates):
+        raise WarnaSudahAda(warna)
+
+    row = ProductMenuColorplate(
+        menu_mapping_id=menu.id,
+        platecolor=warna,
+        multiplier=multiplier,
+        is_active=is_active,
+        created_at=utcnow(),
+    )
+    db.add(row)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise WarnaSudahAda(warna)
+
+    db.refresh(row)
+    return row
+
+
+def update_colorplate(db, mapping_id: int, colorplate_id: int, multiplier: int | None = None, is_active: bool | None = None):
+    """Ubah multiplier / status. Warna tidak bisa diganti — buat baris baru."""
+    row = _get_colorplate(db, mapping_id, colorplate_id)
+
+    if multiplier is not None:
+        row.multiplier = multiplier
+    if is_active is not None:
+        row.is_active = is_active
+    row.updated_at = utcnow()
+
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def list_candidates(db, outlet=None, product_group=None, q=None, limit=CANDIDATE_DEFAULT_LIMIT):

@@ -3,15 +3,16 @@
 Aturan yang dijaga:
 
 - menu dikenali lewat ProductID; nama & group hanya salinan dari data penjualan;
-- publish mengirim gabungan group aktif + menu aktif;
-- tidak ada penghapusan — menu dimatikan lewat `is_active`.
+- publish hanya mengirim format colorplate: qty COLORPLATE + qty menu × multiplier;
+- menu tanpa konversi warna aktif tidak dipublish;
+- tidak ada penghapusan — menu & konversi dimatikan lewat `is_active`.
 """
 
 from datetime import date
 
 import pytest
 
-from app.models.product_menu_mapping import ProductMenuMapping
+from app.models.product_menu_mapping import ProductMenuColorplate, ProductMenuMapping
 from tests.conftest import bearer, make_item_row, make_sale_row
 
 
@@ -228,37 +229,225 @@ class TestPublishDenganMenu:
     def _publish(self, client, api_key_headers):
         return client.post("/api/sales/publish", json={"date": "2026-01-15"}, headers=api_key_headers)
 
-    def test_menu_saja_tanpa_group_aktif(self, client, api_key_headers, data_promo, make_product_menu, rabbit):
-        make_product_menu(product_id=200300, product_name="F birthday cake", product_group="PROMO")
+    def _data(self, rabbit):
+        return sorted((e["data"]["platecolor"], e["data"]["sold"]) for e in rabbit.published)
 
-        response = self._publish(client, api_key_headers)
-
-        assert response.json()["published"] == 1
-        assert rabbit.published[0]["data"] == {
-            "group": "PROMO",
-            "product": "F birthday cake",
-            "outlet": "OUTLET_001",
-            "date": "2026-01-15",
-            "sold": 1,
-        }
-
-    def test_gabungan_group_dan_menu(self, client, api_key_headers, data_promo, make_product_group, make_product_menu, rabbit):
+    def test_semua_event_berformat_colorplate(
+        self, client, api_key_headers, data_promo, make_product_group, make_product_menu, make_menu_colorplate, rabbit
+    ):
         make_product_group("COLORPLATE")
-        make_product_menu(product_id=309747)
+        make_menu_colorplate(make_product_menu(product_id=200300, product_group="PROMO"), "Blue", 2)
 
         self._publish(client, api_key_headers)
 
-        data = [e["data"] for e in rabbit.published]
-        assert {"platecolor", "group"} == {next(iter(d)) for d in data}
-        assert sorted(d.get("platecolor") or d.get("product") for d in data) == [
-            "Blue ",
-            "Chicken Katsu & Medamayaki Don",
-        ]
+        assert rabbit.published[0]["data"] == {
+            "platecolor": "Blue ",  # ejaan dari data COLORPLATE, sama seperti sebelum konversi ada
+            "outlet": "OUTLET_001",
+            "date": "2026-01-15",
+            "sold": 4,  # 2 Blue langsung + 1 birthday cake × 2
+        }
 
-    def test_menu_nonaktif_tidak_dipublish(self, client, api_key_headers, data_promo, make_product_menu, rabbit):
-        make_product_menu(product_id=200300, is_active=False)
+    def test_satu_menu_ke_beberapa_warna(
+        self, client, api_key_headers, data_promo, make_product_group, make_product_menu, make_menu_colorplate, rabbit
+    ):
+        make_product_group("COLORPLATE")
+        menu = make_product_menu(product_id=309747, product_group="PROMO BANDUNG")
+        make_menu_colorplate(menu, "blue", 1)
+        make_menu_colorplate(menu, "RED", 2)
+
+        response = self._publish(client, api_key_headers)
+
+        assert response.json()["published"] == 2
+        # Katsu terjual 3: Blue 2 + 3×1, RED 3×2.
+        assert self._data(rabbit) == [("Blue ", 5), ("RED", 6)]
+
+    def test_konversi_tanpa_group_colorplate_aktif(
+        self, client, api_key_headers, data_promo, make_product_menu, make_menu_colorplate, rabbit
+    ):
+        make_menu_colorplate(make_product_menu(product_id=200300, product_group="PROMO"), "Blue", 2)
+
+        self._publish(client, api_key_headers)
+
+        # Qty COLORPLATE langsung tidak ikut; nama warna dari mapping.
+        assert self._data(rabbit) == [("Blue", 2)]
+
+    def test_menu_tanpa_konversi_tidak_dipublish(self, client, api_key_headers, data_promo, make_product_menu, rabbit):
+        make_product_menu(product_id=200300, product_name="F birthday cake", product_group="PROMO")
 
         response = self._publish(client, api_key_headers)
 
         assert response.json()["message"] == "No active product groups to publish"
         assert rabbit.published == []
+
+    def test_menu_tanpa_konversi_tidak_mengubah_colorplate(
+        self, client, api_key_headers, data_promo, make_product_group, make_product_menu, rabbit
+    ):
+        make_product_group("COLORPLATE")
+        make_product_menu(product_id=309747)
+
+        self._publish(client, api_key_headers)
+
+        assert self._data(rabbit) == [("Blue ", 2)]
+
+    def test_konversi_nonaktif_tidak_dihitung(
+        self, client, api_key_headers, data_promo, make_product_group, make_product_menu, make_menu_colorplate, rabbit
+    ):
+        make_product_group("COLORPLATE")
+        make_menu_colorplate(make_product_menu(product_id=200300), "Blue", 2, is_active=False)
+
+        self._publish(client, api_key_headers)
+
+        assert self._data(rabbit) == [("Blue ", 2)]
+
+    def test_menu_nonaktif_tidak_dihitung(
+        self, client, api_key_headers, data_promo, make_product_menu, make_menu_colorplate, rabbit
+    ):
+        make_menu_colorplate(make_product_menu(product_id=200300, is_active=False), "Blue", 2)
+
+        response = self._publish(client, api_key_headers)
+
+        assert response.json()["message"] == "No active product groups to publish"
+        assert rabbit.published == []
+
+    def test_menu_colorplate_tidak_terhitung_dua_kali(
+        self, client, api_key_headers, data_promo, make_product_group, make_product_menu, make_menu_colorplate, rabbit
+    ):
+        """Menu COLORPLATE sudah terhitung langsung selama group-nya aktif."""
+        make_product_group("COLORPLATE")
+        make_menu_colorplate(make_product_menu(product_id=200252), "Blue", 2)
+
+        self._publish(client, api_key_headers)
+
+        assert self._data(rabbit) == [("Blue ", 2)]
+
+    def test_group_lain_yang_aktif_tidak_dipublish(
+        self, client, api_key_headers, data_promo, make_product_group, rabbit
+    ):
+        make_product_group("COLORPLATE")
+        make_product_group("PROMO")
+
+        self._publish(client, api_key_headers)
+
+        assert self._data(rabbit) == [("Blue ", 2)]
+
+
+class TestColorplate:
+
+    def test_daftar_warna_dari_data_colorplate(self, client, admin_headers, data_promo):
+        response = client.get("/api/product-menus/platecolors", headers=admin_headers)
+
+        assert response.status_code == 200
+        assert response.json()["data"] == ["Blue"]
+
+    def test_tambah_konversi_memakai_ejaan_data(self, client, admin_headers, data_promo, make_product_menu):
+        menu = make_product_menu(product_id=200300, product_group="PROMO")
+
+        response = client.post(
+            f"/api/product-menus/{menu.id}/colorplates",
+            json={"platecolor": " blue ", "multiplier": 2},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 201
+        data = response.json()["data"]
+        assert (data["platecolor"], data["multiplier"], data["is_active"]) == ("Blue", 2, True)
+
+        listed = client.get("/api/product-menus", headers=admin_headers).json()["data"][0]
+        assert [(c["platecolor"], c["multiplier"]) for c in listed["colorplates"]] == [("Blue", 2)]
+
+    def test_multiplier_default_1(self, client, admin_headers, data_promo, make_product_menu):
+        menu = make_product_menu(product_id=200300)
+
+        response = client.post(
+            f"/api/product-menus/{menu.id}/colorplates", json={"platecolor": "Blue"}, headers=admin_headers
+        )
+
+        assert response.json()["data"]["multiplier"] == 1
+
+    def test_warna_tidak_ada_di_data_422(self, client, admin_headers, data_promo, make_product_menu):
+        menu = make_product_menu(product_id=200300)
+
+        response = client.post(
+            f"/api/product-menus/{menu.id}/colorplates", json={"platecolor": "REDD"}, headers=admin_headers
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.parametrize("multiplier", [0, -1])
+    def test_multiplier_tidak_valid_422(self, client, admin_headers, data_promo, make_product_menu, multiplier):
+        menu = make_product_menu(product_id=200300)
+
+        response = client.post(
+            f"/api/product-menus/{menu.id}/colorplates",
+            json={"platecolor": "Blue", "multiplier": multiplier},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 422
+
+    def test_warna_duplikat_409(self, client, admin_headers, data_promo, make_product_menu, make_menu_colorplate):
+        menu = make_product_menu(product_id=200300)
+        make_menu_colorplate(menu, "Blue", is_active=False)
+
+        response = client.post(
+            f"/api/product-menus/{menu.id}/colorplates", json={"platecolor": "BLUE"}, headers=admin_headers
+        )
+
+        assert response.status_code == 409
+
+    def test_menu_tidak_dikenal_404(self, client, admin_headers, data_promo):
+        response = client.post("/api/product-menus/999/colorplates", json={"platecolor": "Blue"}, headers=admin_headers)
+
+        assert response.status_code == 404
+
+    def test_ubah_multiplier_dan_status(self, client, admin_headers, make_product_menu, make_menu_colorplate, app_db):
+        menu = make_product_menu(product_id=200300)
+        row = make_menu_colorplate(menu, "RED", 2)
+
+        response = client.patch(
+            f"/api/product-menus/{menu.id}/colorplates/{row.id}",
+            json={"multiplier": 3, "is_active": False},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200
+        app_db.expire_all()
+        simpan = app_db.get(ProductMenuColorplate, row.id)
+        assert (simpan.multiplier, simpan.is_active) == (3, False)
+
+    def test_ubah_tanpa_field_422(self, client, admin_headers, make_product_menu, make_menu_colorplate):
+        menu = make_product_menu(product_id=200300)
+        row = make_menu_colorplate(menu)
+
+        response = client.patch(f"/api/product-menus/{menu.id}/colorplates/{row.id}", json={}, headers=admin_headers)
+
+        assert response.status_code == 422
+
+    def test_konversi_milik_menu_lain_404(self, client, admin_headers, make_product_menu, make_menu_colorplate):
+        row = make_menu_colorplate(make_product_menu(product_id=200300))
+        lain = make_product_menu(product_id=309747)
+
+        response = client.patch(
+            f"/api/product-menus/{lain.id}/colorplates/{row.id}", json={"is_active": False}, headers=admin_headers
+        )
+
+        assert response.status_code == 404
+
+    def test_tidak_ada_endpoint_hapus(self, client, admin_headers, make_product_menu, make_menu_colorplate):
+        menu = make_product_menu(product_id=200300)
+        row = make_menu_colorplate(menu)
+
+        response = client.delete(f"/api/product-menus/{menu.id}/colorplates/{row.id}", headers=admin_headers)
+
+        assert response.status_code == 405
+
+    def test_manager_ditolak(self, client, manager_headers, data_promo, make_product_menu):
+        menu = make_product_menu(product_id=200300)
+
+        assert client.get("/api/product-menus/platecolors", headers=manager_headers).status_code == 403
+        assert (
+            client.post(
+                f"/api/product-menus/{menu.id}/colorplates", json={"platecolor": "Blue"}, headers=manager_headers
+            ).status_code
+            == 403
+        )

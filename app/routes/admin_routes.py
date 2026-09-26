@@ -27,18 +27,23 @@ from app.schemas.admin_schema import (
     ApiKeyResponse,
     CreateApiKeyRequest,
     CreateProductGroupMappingRequest,
+    CreateProductMenuColorplateRequest,
     CreateProductMenuMappingRequest,
     CreateUserRequest,
+    PlatecolorListResponse,
     ProductGroupMappingDetailResponse,
     ProductGroupMappingListResponse,
     ProductGroupMappingResponse,
     ProductMenuCandidate,
     ProductMenuCandidateListResponse,
+    ProductMenuColorplateDetailResponse,
+    ProductMenuColorplateResponse,
     ProductMenuMappingDetailResponse,
     ProductMenuMappingListResponse,
     ProductMenuMappingResponse,
     SetPasswordRequest,
     UpdateProductGroupMappingRequest,
+    UpdateProductMenuColorplateRequest,
     UpdateProductMenuMappingRequest,
     UpdateUserRequest,
     UserAdminResponse,
@@ -290,8 +295,9 @@ def update_product_group(
 # Product menu mapping — publish per menu
 # ---------------------------------------------------------------------------
 #
-# Publish mengirim gabungan group aktif + menu aktif di sini. Sama seperti
-# group: tidak ada DELETE, menu dimatikan lewat PATCH `is_active`.
+# Publish hanya mengirim format colorplate. Menu di sini ikut terhitung lewat
+# konversi ke warna (`/{id}/colorplates`): qty × multiplier. Sama seperti
+# group: tidak ada DELETE, menu & konversi dimatikan lewat PATCH `is_active`.
 
 product_menu_router = APIRouter(prefix="/api/product-menus", tags=["Admin - Product Menus"])
 
@@ -327,6 +333,12 @@ def list_product_menu_candidates(
     )
 
     return ProductMenuCandidateListResponse(data=[ProductMenuCandidate.model_validate(row) for row in rows])
+
+
+@product_menu_router.get("/platecolors", response_model=PlatecolorListResponse)
+def list_platecolors(db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
+    """Warna COLORPLATE yang ada di data penjualan — pilihan tujuan konversi menu."""
+    return PlatecolorListResponse(data=product_menu_service.list_colors(db))
 
 
 @product_menu_router.post("", response_model=ProductMenuMappingDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -373,3 +385,67 @@ def update_product_menu(
     logger.info(f"PRODUCT MENU DIUBAH product_id={row.product_id} aktif={row.is_active} oleh={admin.email}")
 
     return ProductMenuMappingDetailResponse(data=ProductMenuMappingResponse.model_validate(row))
+
+
+@product_menu_router.post(
+    "/{mapping_id}/colorplates",
+    response_model=ProductMenuColorplateDetailResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_product_menu_colorplate(
+    mapping_id: int,
+    payload: CreateProductMenuColorplateRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Hitung menu ini sebagai `multiplier` × warna colorplate saat publish."""
+    try:
+        row = product_menu_service.add_colorplate(
+            db, mapping_id, payload.platecolor, payload.multiplier, is_active=payload.is_active
+        )
+    except product_menu_service.MenuTidakDitemukan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Menu tidak ditemukan")
+    except product_menu_service.WarnaTidakDikenal:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Warna {payload.platecolor!r} tidak ada di data COLORPLATE.",
+        )
+    except product_menu_service.WarnaSudahAda as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Menu ini sudah punya konversi ke {e.args[0]!r}. Ubah lewat PATCH.",
+        )
+
+    logger.info(
+        f"PRODUCT MENU COLORPLATE DIBUAT menu_id={mapping_id} warna={row.platecolor!r} "
+        f"x{row.multiplier} aktif={row.is_active} oleh={admin.email}"
+    )
+
+    return ProductMenuColorplateDetailResponse(data=ProductMenuColorplateResponse.model_validate(row))
+
+
+@product_menu_router.patch(
+    "/{mapping_id}/colorplates/{colorplate_id}",
+    response_model=ProductMenuColorplateDetailResponse,
+)
+def update_product_menu_colorplate(
+    mapping_id: int,
+    colorplate_id: int,
+    payload: UpdateProductMenuColorplateRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Ubah multiplier / aktifkan / nonaktifkan konversi. Berlaku pada publish berikutnya."""
+    try:
+        row = product_menu_service.update_colorplate(
+            db, mapping_id, colorplate_id, multiplier=payload.multiplier, is_active=payload.is_active
+        )
+    except product_menu_service.KonversiTidakDitemukan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Konversi warna tidak ditemukan")
+
+    logger.info(
+        f"PRODUCT MENU COLORPLATE DIUBAH menu_id={mapping_id} warna={row.platecolor!r} "
+        f"x{row.multiplier} aktif={row.is_active} oleh={admin.email}"
+    )
+
+    return ProductMenuColorplateDetailResponse(data=ProductMenuColorplateResponse.model_validate(row))

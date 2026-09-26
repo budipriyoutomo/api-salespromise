@@ -38,7 +38,7 @@ from app.core import security  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.models.api_key import ApiKey  # noqa: E402
 from app.models.product_group_mapping import ProductGroupMapping  # noqa: E402
-from app.models.product_menu_mapping import ProductMenuMapping  # noqa: E402
+from app.models.product_menu_mapping import ProductMenuColorplate, ProductMenuMapping  # noqa: E402
 from app.models.sales import Sales  # noqa: E402
 from app.models.sales_items import SalesItems  # noqa: E402
 from app.models.user import User  # noqa: E402
@@ -256,6 +256,26 @@ def make_product_menu(app_db):
             product_id=product_id,
             product_name=product_name,
             product_group=product_group,
+            is_active=is_active,
+            created_at=datetime(2026, 1, 1),
+        )
+        app_db.add(row)
+        app_db.commit()
+        app_db.refresh(row)
+        return row
+
+    return _make
+
+
+@pytest.fixture()
+def make_menu_colorplate(app_db):
+    """Baris `product_menu_colorplates` — langsung ke DB, tanpa validasi warna."""
+
+    def _make(menu, platecolor="RED", multiplier=1, is_active=True):
+        row = ProductMenuColorplate(
+            menu_mapping_id=menu.id,
+            platecolor=platecolor,
+            multiplier=multiplier,
             is_active=is_active,
             created_at=datetime(2026, 1, 1),
         )

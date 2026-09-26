@@ -10,6 +10,10 @@ from app.models.sales_items import SalesItems
 from app.services.product_group_service import normalize_product_group
 from app.utils.logger import logger
 
+# Warna dibandingkan dengan aturan yang sama seperti nama group:
+# "Blue " dan "BLUE" adalah warna yang sama.
+color_key = normalize_product_group
+
 
 class SalesService:
 
@@ -308,6 +312,72 @@ class SalesService:
         )
 
         return query.all()
+
+    @staticmethod
+    def get_sales_by_product_ids(db, product_ids, outlet=None, start_date=None, end_date=None, exclude_groups=None):
+        """Qty terjual per ProductID / outlet / tanggal — bahan konversi menu ke warna.
+
+        Dikelompokkan per ProductID, bukan nama: konversi warna menempel di
+        ProductID, dan nama menu bisa berubah di POS.
+
+        `exclude_groups` membuang baris dari group yang sudah dihitung langsung
+        (COLORPLATE), supaya satu baris orderdetail tidak terhitung dua kali.
+        """
+        ids = sorted({int(i) for i in (product_ids or []) if i is not None and int(i) > 0})
+        if not ids:
+            return []
+
+        group_expr = SalesService._normalized_product_group()
+
+        query = (
+            db.query(
+                SalesItems.product_id,
+                Sales.outlet_code,
+                Sales.sale_date,
+                func.sum(SalesItems.qty).label("sold")
+            )
+            .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
+            .filter(SalesItems.product_id.in_(ids))
+        )
+
+        excluded = sorted({normalize_product_group(g) for g in (exclude_groups or [])} - {""})
+        if excluded:
+            # NULL group tetap ikut — `NOT IN` saja akan membuangnya.
+            query = query.filter(or_(SalesItems.product_group.is_(None), group_expr.notin_(excluded)))
+
+        query = SalesService._filter_sales(
+            query,
+            outlet=outlet,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+        return query.group_by(
+            SalesItems.product_id,
+            Sales.outlet_code,
+            Sales.sale_date
+        ).all()
+
+    @staticmethod
+    def list_colorplate_colors(db):
+        """Nama menu COLORPLATE yang pernah terjual — pilihan warna untuk konversi menu."""
+        name_expr = func.trim(SalesItems.product_name)
+
+        rows = (
+            db.query(name_expr.label("platecolor"))
+            .filter(SalesService._normalized_product_group() == SalesService.COLORPLATE)
+            .filter(name_expr != "")
+            .distinct()
+            .all()
+        )
+
+        # Nama yang sama dengan kapitalisasi berbeda ("Blue" / "BLUE") dianggap
+        # satu warna; yang pertama ditemukan dipakai.
+        warna: dict = {}
+        for row in rows:
+            warna.setdefault(color_key(row.platecolor), row.platecolor)
+
+        return sorted(warna.values(), key=color_key)
 
     @staticmethod
     def get_sales_by_product_group(db, product_group, outlet=None, start_date=None, end_date=None):
