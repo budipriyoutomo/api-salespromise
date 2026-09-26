@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.request_logging import RequestIdMiddleware
 from app.database import get_db
-from app.routes.admin_routes import api_key_router, product_group_router, user_router
+from app.routes.admin_routes import api_key_router, product_group_router, product_menu_router, user_router
 from app.routes.auth_routes import router as auth_router
 from app.routes.outlet_routes import router as outlet_router
 from app.routes.sales_routes import router as sales_router
@@ -52,6 +52,7 @@ app.include_router(outlet_router)
 app.include_router(api_key_router)
 app.include_router(user_router)
 app.include_router(product_group_router)
+app.include_router(product_menu_router)
 
 
 @app.get("/", tags=["Health"])

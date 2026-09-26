@@ -1,6 +1,6 @@
 import traceback
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -246,12 +246,16 @@ class SalesService:
         return func.upper(func.trim(SalesItems.product_group))
 
     @staticmethod
-    def get_sales_by_product_groups(db, product_groups, outlet=None, start_date=None, end_date=None):
+    def get_sales_by_product_groups(db, product_groups, outlet=None, start_date=None, end_date=None, product_ids=None):
         """Qty terjual per group / produk / outlet / tanggal.
 
-        `product_groups` kosong menghasilkan list kosong, BUKAN semua group —
-        publish memakai fungsi ini, dan "tanpa filter" di sana berarti
-        mengirim seluruh penjualan ke consumer.
+        `product_ids` menambah menu satu per satu di luar `product_groups`
+        (mapping per menu). Filternya OR per baris orderdetail, jadi menu yang
+        cocok lewat group dan lewat ProductID sekaligus tetap terhitung sekali.
+
+        `product_groups` dan `product_ids` sama-sama kosong menghasilkan list
+        kosong, BUKAN semua penjualan — publish memakai fungsi ini, dan "tanpa
+        filter" di sana berarti mengirim seluruh penjualan ke consumer.
 
         `product_group` ikut di GROUP BY supaya produk bernama sama di dua
         group tidak dijumlahkan jadi satu baris.
@@ -260,8 +264,9 @@ class SalesService:
         colorplate sebelum Fase 6 (TODO 4.5).
         """
         groups = sorted({normalize_product_group(g) for g in product_groups} - {""})
+        ids = sorted({int(i) for i in (product_ids or []) if i is not None and int(i) > 0})
 
-        if not groups:
+        if not groups and not ids:
             return []
 
         group_expr = SalesService._normalized_product_group()
@@ -275,8 +280,14 @@ class SalesService:
                 func.sum(SalesItems.qty).label("sold")
             )
             .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
-            .filter(group_expr.in_(groups))
         )
+
+        syarat = []
+        if groups:
+            syarat.append(group_expr.in_(groups))
+        if ids:
+            syarat.append(SalesItems.product_id.in_(ids))
+        query = query.filter(or_(*syarat))
 
         query = SalesService._filter_sales(
             query,

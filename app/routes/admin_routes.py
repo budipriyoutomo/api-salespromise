@@ -5,13 +5,16 @@ Tiga kelompok:
 - `/api/api-keys`       → kredensial mesin POS
 - `/api/users`          → akun login dashboard
 - `/api/product-groups` → group yang dipublish ke RabbitMQ
+- `/api/product-menus`  → menu satuan yang dipublish ke RabbitMQ
 
 Semuanya `require_roles(ROLE_ADMIN)`. Manager sengaja tidak diberi akses:
 manager boleh membaca data semua outlet, tapi tidak mengelola kredensial
 maupun kontrak event ke consumer.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -24,18 +27,25 @@ from app.schemas.admin_schema import (
     ApiKeyResponse,
     CreateApiKeyRequest,
     CreateProductGroupMappingRequest,
+    CreateProductMenuMappingRequest,
     CreateUserRequest,
     ProductGroupMappingDetailResponse,
     ProductGroupMappingListResponse,
     ProductGroupMappingResponse,
+    ProductMenuCandidate,
+    ProductMenuCandidateListResponse,
+    ProductMenuMappingDetailResponse,
+    ProductMenuMappingListResponse,
+    ProductMenuMappingResponse,
     SetPasswordRequest,
     UpdateProductGroupMappingRequest,
+    UpdateProductMenuMappingRequest,
     UpdateUserRequest,
     UserAdminResponse,
     UserDetailResponse,
     UserListResponse,
 )
-from app.services import api_key_service, product_group_service, user_service
+from app.services import api_key_service, product_group_service, product_menu_service, user_service
 from app.utils.logger import logger
 
 require_admin = require_roles(ROLE_ADMIN)
@@ -274,3 +284,85 @@ def update_product_group(
     logger.info(f"PRODUCT GROUP DIUBAH group={row.product_group!r} aktif={row.is_active} oleh={admin.email}")
 
     return ProductGroupMappingDetailResponse(data=ProductGroupMappingResponse.model_validate(row))
+
+
+# ---------------------------------------------------------------------------
+# Product menu mapping — publish per menu
+# ---------------------------------------------------------------------------
+#
+# Publish mengirim gabungan group aktif + menu aktif di sini. Sama seperti
+# group: tidak ada DELETE, menu dimatikan lewat PATCH `is_active`.
+
+product_menu_router = APIRouter(prefix="/api/product-menus", tags=["Admin - Product Menus"])
+
+
+@product_menu_router.get("", response_model=ProductMenuMappingListResponse)
+def list_product_menus(db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
+    """Semua mapping menu, termasuk yang nonaktif."""
+    rows = product_menu_service.list_mappings(db)
+
+    return ProductMenuMappingListResponse(data=[ProductMenuMappingResponse.model_validate(row) for row in rows])
+
+
+@product_menu_router.get("/candidates", response_model=ProductMenuCandidateListResponse)
+def list_product_menu_candidates(
+    product_group: Optional[str] = Query(None, description="Batasi ke satu group (tidak peka huruf besar/kecil)"),
+    q: Optional[str] = Query(None, max_length=255, description="Cari nama menu atau ProductID"),
+    limit: int = Query(
+        product_menu_service.CANDIDATE_DEFAULT_LIMIT,
+        ge=1,
+        le=product_menu_service.CANDIDATE_MAX_LIMIT,
+    ),
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Menu yang pernah muncul di data penjualan — sumber pilihan mapping menu."""
+    rows = product_menu_service.list_candidates(db, product_group=product_group, q=q, limit=limit)
+
+    return ProductMenuCandidateListResponse(data=[ProductMenuCandidate.model_validate(row) for row in rows])
+
+
+@product_menu_router.post("", response_model=ProductMenuMappingDetailResponse, status_code=status.HTTP_201_CREATED)
+def create_product_menu(
+    payload: CreateProductMenuMappingRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Tambah menu yang ikut dipublish, terlepas dari status group-nya."""
+    try:
+        row = product_menu_service.create_mapping(db, payload.product_id, is_active=payload.is_active)
+    except product_menu_service.MenuSudahAda:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Menu ProductID {payload.product_id} sudah terdaftar. Aktifkan lewat PATCH kalau sedang nonaktif.",
+        )
+    except product_menu_service.MenuTidakAdaDiData:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"ProductID {payload.product_id} tidak ditemukan di data penjualan.",
+        )
+
+    logger.info(
+        f"PRODUCT MENU DIBUAT product_id={row.product_id} nama={row.product_name!r} "
+        f"group={row.product_group!r} aktif={row.is_active} oleh={admin.email}"
+    )
+
+    return ProductMenuMappingDetailResponse(data=ProductMenuMappingResponse.model_validate(row))
+
+
+@product_menu_router.patch("/{mapping_id}", response_model=ProductMenuMappingDetailResponse)
+def update_product_menu(
+    mapping_id: int,
+    payload: UpdateProductMenuMappingRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Aktifkan / nonaktifkan menu. Berlaku pada publish berikutnya."""
+    try:
+        row = product_menu_service.set_active(db, mapping_id, payload.is_active)
+    except product_menu_service.MenuTidakDitemukan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Menu tidak ditemukan")
+
+    logger.info(f"PRODUCT MENU DIUBAH product_id={row.product_id} aktif={row.is_active} oleh={admin.email}")
+
+    return ProductMenuMappingDetailResponse(data=ProductMenuMappingResponse.model_validate(row))

@@ -139,3 +139,11 @@ def test_advisory_lock_diambil_sebelum_migrasi(folder):
     migrate.jalankan(conn, migrate.daftar_migrasi(folder))
 
     assert conn.log[0].startswith("SELECT pg_advisory_lock")
+
+
+def test_migrasi_007_idempoten_tanpa_seed():
+    """Tanpa seed: publish yang sudah berjalan tidak berubah sampai admin menambah menu."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "007_product_menu_mappings.sql").read_text(encoding="utf-8"))
+
+    assert "CREATE TABLE IF NOT EXISTS PRODUCT_MENU_MAPPINGS" in sql
+    assert "INSERT" not in sql

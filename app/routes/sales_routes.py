@@ -40,7 +40,7 @@ from app.schemas.sales_response import (
     TopProductListResponse,
     TopProductRow,
 )
-from app.services import product_group_service
+from app.services import product_group_service, product_menu_service
 from app.services.rabbitmq import RabbitMQClient
 from app.services.sales_service import SalesService
 from app.utils.logger import logger
@@ -385,7 +385,8 @@ def publish_sales(
 ):
     """Dipicu mesin POS, bukan dashboard — karena itu tetap pakai API key outlet.
 
-    Group yang dipublish dibaca dari `product_group_mappings` yang aktif.
+    Yang dipublish: gabungan group aktif (`product_group_mappings`) dan menu
+    aktif (`product_menu_mappings`).
     Gagal di tengah tetap seperti sebelumnya: 500, event yang sudah terkirim
     tidak ditarik kembali (TODO 3.4).
     """
@@ -393,9 +394,10 @@ def publish_sales(
 
     try:
         groups = product_group_service.get_active_groups(db)
+        menu_ids = product_menu_service.get_active_product_ids(db)
 
-        if not groups:
-            logger.warning(f"[PUBLISH] outlet={outlet} date={body.date} tidak ada product group aktif")
+        if not groups and not menu_ids:
+            logger.warning(f"[PUBLISH] outlet={outlet} date={body.date} tidak ada product group / menu aktif")
             return PublishResponse(
                 message="No active product groups to publish",
                 outlet=outlet,
@@ -406,6 +408,7 @@ def publish_sales(
         sales = SalesService.get_sales_by_product_groups(
             db=db,
             product_groups=groups,
+            product_ids=menu_ids,
             outlet=outlet,
             start_date=body.date,
             end_date=body.date,
@@ -419,7 +422,7 @@ def publish_sales(
                 published=0,
             )
 
-        logger.info(f"[PUBLISH] outlet={outlet} date={body.date} groups={','.join(groups)} total={len(sales)}")
+        logger.info(f"[PUBLISH] outlet={outlet} date={body.date} groups={','.join(groups)} menus={','.join(map(str, menu_ids))} total={len(sales)}")
 
         total = 0
         for sale in sales:

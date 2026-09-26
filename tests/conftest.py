@@ -38,6 +38,7 @@ from app.core import security  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.models.api_key import ApiKey  # noqa: E402
 from app.models.product_group_mapping import ProductGroupMapping  # noqa: E402
+from app.models.product_menu_mapping import ProductMenuMapping  # noqa: E402
 from app.models.sales import Sales  # noqa: E402
 from app.models.sales_items import SalesItems  # noqa: E402
 from app.models.user import User  # noqa: E402
@@ -234,6 +235,26 @@ def make_product_group(app_db):
 
     def _make(product_group="COLORPLATE", is_active=True):
         row = ProductGroupMapping(
+            product_group=product_group,
+            is_active=is_active,
+            created_at=datetime(2026, 1, 1),
+        )
+        app_db.add(row)
+        app_db.commit()
+        app_db.refresh(row)
+        return row
+
+    return _make
+
+
+@pytest.fixture()
+def make_product_menu(app_db):
+    """Baris `product_menu_mappings` di DB test (migrasi 007 tidak punya seed)."""
+
+    def _make(product_id=101, product_name="RED", product_group="COLORPLATE", is_active=True):
+        row = ProductMenuMapping(
+            product_id=product_id,
+            product_name=product_name,
             product_group=product_group,
             is_active=is_active,
             created_at=datetime(2026, 1, 1),

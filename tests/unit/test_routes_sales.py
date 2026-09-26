@@ -73,9 +73,15 @@ def mock_service(monkeypatch):
                 raise colorplate_error
             return colorplate if colorplate is not None else []
 
-        def fake_by_groups(db, product_groups, outlet=None, start_date=None, end_date=None):
+        def fake_by_groups(db, product_groups, outlet=None, start_date=None, end_date=None, product_ids=None):
             calls["get_sales_by_product_groups"].append(
-                {"product_groups": list(product_groups), "outlet": outlet, "start_date": start_date, "end_date": end_date}
+                {
+                    "product_groups": list(product_groups),
+                    "product_ids": list(product_ids or []),
+                    "outlet": outlet,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                }
             )
             if colorplate_error:
                 raise colorplate_error

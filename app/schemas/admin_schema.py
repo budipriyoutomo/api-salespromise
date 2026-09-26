@@ -1,6 +1,6 @@
-"""Schema untuk endpoint administrasi: API key outlet, user dashboard, product group."""
+"""Schema untuk endpoint administrasi: API key outlet, user dashboard, product group & menu."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -155,3 +155,57 @@ class UpdateProductGroupMappingRequest(BaseModel):
     """
 
     is_active: bool
+
+
+# ---------------------------------------------------------------------------
+# Product menu mapping — publish per menu
+# ---------------------------------------------------------------------------
+
+
+class ProductMenuMappingResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    product_id: int
+    product_name: Optional[str] = None
+    product_group: Optional[str] = None
+    is_active: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ProductMenuMappingListResponse(BaseModel):
+    success: bool = True
+    data: List[ProductMenuMappingResponse]
+
+
+class ProductMenuMappingDetailResponse(BaseModel):
+    success: bool = True
+    data: ProductMenuMappingResponse
+
+
+class CreateProductMenuMappingRequest(BaseModel):
+    """Nama & group diambil server dari data penjualan terakhir menu ini."""
+
+    product_id: int = Field(gt=0)
+    is_active: bool = True
+
+
+class UpdateProductMenuMappingRequest(BaseModel):
+    """Hanya status aktif — alasannya sama dengan mapping group."""
+
+    is_active: bool
+
+
+class ProductMenuCandidate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    product_id: int
+    product_name: Optional[str] = None
+    product_group: Optional[str] = None
+    last_sale_date: Optional[date] = None
+
+
+class ProductMenuCandidateListResponse(BaseModel):
+    success: bool = True
+    data: List[ProductMenuCandidate]

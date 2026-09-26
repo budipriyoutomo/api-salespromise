@@ -281,6 +281,59 @@ class TestGetSalesColorplate:
         assert result[0].sold == 3
 
 
+class TestGetSalesByProductIds:
+    """Mapping per menu — menu dipilih lewat ProductID di luar group aktif."""
+
+    @pytest.fixture()
+    def promo(self, db_session, sale_factory, item_factory):
+        db_session.add(sale_factory(transaction_id=1))
+        db_session.add_all(
+            [
+                item_factory(order_detail_id=1, transaction_id=1, product_id=200252, product_name="Blue ", qty=2),
+                item_factory(
+                    order_detail_id=2,
+                    transaction_id=1,
+                    product_id=200300,
+                    product_group="PROMO",
+                    product_name="F birthday cake",
+                    qty=1,
+                ),
+                item_factory(
+                    order_detail_id=3,
+                    transaction_id=1,
+                    product_id=309747,
+                    product_group=" PROMO BANDUNG",
+                    product_name="Chicken Katsu",
+                    qty=3,
+                ),
+            ]
+        )
+        db_session.commit()
+        return db_session
+
+    def test_hanya_menu_terpilih_tanpa_group(self, promo):
+        result = SalesService.get_sales_by_product_groups(db=promo, product_groups=[], product_ids=[200300])
+
+        assert [(r.product_group, r.product_name, r.sold) for r in result] == [("PROMO", "F birthday cake", 1)]
+
+    def test_gabungan_group_dan_menu(self, promo):
+        result = SalesService.get_sales_by_product_groups(db=promo, product_groups=["COLORPLATE"], product_ids=[309747])
+
+        assert {(r.product_group, r.product_name) for r in result} == {
+            ("COLORPLATE", "Blue "),
+            ("PROMO BANDUNG", "Chicken Katsu"),
+        }
+
+    def test_menu_yang_juga_masuk_group_aktif_tidak_dihitung_dua_kali(self, promo):
+        result = SalesService.get_sales_by_product_groups(db=promo, product_groups=["COLORPLATE"], product_ids=[200252])
+
+        assert [(r.product_name, r.sold) for r in result] == [("Blue ", 2)]
+
+    def test_group_dan_menu_kosong_mengembalikan_kosong(self, promo):
+        assert SalesService.get_sales_by_product_groups(db=promo, product_groups=[], product_ids=[]) == []
+        assert SalesService.get_sales_by_product_groups(db=promo, product_groups=[], product_ids=[0, None]) == []
+
+
 class TestGetSalesByProductGroups:
     """Fase 6 — pengganti filter hardcode `COLORPLATE`."""
 
