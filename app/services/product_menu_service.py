@@ -18,7 +18,7 @@ from app.models.product_menu_mapping import ProductMenuColorplate, ProductMenuMa
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
 from app.services.product_group_service import normalize_product_group
-from app.services.sales_service import SalesService, color_key
+from app.services.sales_service import SalesService, color_key, item_join
 
 CANDIDATE_DEFAULT_LIMIT = 100
 CANDIDATE_MAX_LIMIT = 500
@@ -197,7 +197,7 @@ def list_candidates(db, outlet=None, product_group=None, q=None, limit=CANDIDATE
             Sales.outlet_code.label("outlet_code"),
             func.max(SalesItems.sale_date).label("last_sale_date"),
         )
-        .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
+        .join(Sales, item_join)
         .filter(SalesItems.product_id > 0)
     )
 

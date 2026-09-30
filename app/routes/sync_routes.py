@@ -1,6 +1,7 @@
 import traceback
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -47,10 +48,15 @@ def sync_sales(request: Request, payload: SyncRequestSchema, db: Session = Depen
 
         traceback.print_exc()
 
+        # Error database: kirim pesan psycopg2 saja (constraint + DETAIL).
+        # str(e) memuat seluruh INSERT dan parameternya — cukup di log server.
+        # Status tetap 500 supaya worker POS tetap menyimpan & mengirim ulang.
+        message = str(e.orig).strip() if isinstance(e, DBAPIError) and e.orig else str(e)
+
         raise HTTPException(
             status_code=500,
             detail={
                 "success": False,
-                "message": str(e)
+                "message": message
             }
         )

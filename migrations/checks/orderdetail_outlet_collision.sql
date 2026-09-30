@@ -105,7 +105,9 @@ SELECT
 
 
 -- ------------------------------------------------------------
--- Rencana perbaikan (BELUM dibuat, menunggu persetujuan) — lihat TODO 0.5.
--- Rencana lama di file ini (hanya menambah index unik) TIDAK cukup: PK sempit
--- dan FK di atas tetap akan menolak outlet kedua.
+-- Perbaikan: migrations/010_outlet_code_composite_keys.sql (TODO 0.5).
+-- Jalankan query 0 dan 4 di produksi SEBELUM deploy: 010 berhenti (dan
+-- container tidak start) kalau ada outlet_code NULL atau item yatim.
+-- Setelah 010, query 1 bermakna: baris di sana = nomor yang dipakai >1 outlet,
+-- dan itu sekarang sah.
 -- ------------------------------------------------------------

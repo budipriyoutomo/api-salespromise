@@ -62,9 +62,18 @@ END $$;
 -- tidak dijamin unik lintas outlet, dua outlet bisa saling menimpa baris item.
 -- Jalankan migrations/checks/orderdetail_outlet_collision.sql untuk memeriksa
 -- apakah tabrakan itu benar-benar terjadi di data produksi.
+--
+-- Migrasi 010 mengganti index ini dengan versi yang memuat outlet_code. Kalau
+-- 002 dijalankan ulang setelah 010 (schema_migrations hilang), index lama
+-- TIDAK boleh dibuat lagi — dua outlet dengan nomor sama akan ditolak.
 DO $$
 BEGIN
-    IF NOT EXISTS (
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orderdetail' AND column_name = 'outlet_code'
+    ) THEN
+        RAISE NOTICE 'orderdetail sudah punya outlet_code (migrasi 010) — index lama dilewati.';
+    ELSIF NOT EXISTS (
         SELECT 1
         FROM pg_index i
         JOIN pg_class t ON t.oid = i.indrelid

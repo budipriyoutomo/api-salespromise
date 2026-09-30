@@ -1,19 +1,22 @@
-from sqlalchemy import Column, Date, ForeignKey, Integer, Numeric, SmallInteger, String
+from sqlalchemy import Column, Date, ForeignKeyConstraint, Integer, Numeric, SmallInteger, String
 
 from app.database import Base
 
 
 class SalesItems(Base):
     __tablename__ = "orderdetail"
+    __table_args__ = (
+        # Item menunjuk transaksi lewat (TransactionID, outlet_code), bukan
+        # TransactionID saja — lihat Sales.outlet_code.
+        ForeignKeyConstraint(
+            ["TransactionID", "outlet_code"],
+            ["ordertransaction.TransactionID", "ordertransaction.outlet_code"],
+        ),
+    )
 
     order_detail_id = Column("OrderDetailID", Integer, primary_key=True)
-    transaction_id = Column(
-        "TransactionID",
-        Integer,
-        ForeignKey("ordertransaction.TransactionID"),
-        primary_key=True,
-        nullable=False
-    )
+    transaction_id = Column("TransactionID", Integer, primary_key=True, nullable=False)
+    outlet_code = Column("outlet_code", String(20), primary_key=True, nullable=False)
 
     sale_date = Column("SaleDate", Date, nullable=False)
 

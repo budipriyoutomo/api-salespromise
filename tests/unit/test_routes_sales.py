@@ -51,16 +51,20 @@ def mock_service(monkeypatch):
     def _install(get_sales=None, colorplate=None, total=None, get_sales_error=None, colorplate_error=None):
         """`colorplate` / `colorplate_error` dipakai dua query yang sama bentuknya:
         `/colorplate` (get_sales_colorplate) dan publish (get_sales_by_product_groups)."""
-        def fake_get_sales(db, outlet=None, start_date=None, end_date=None, limit=None, offset=0):
+        def fake_get_sales(db, outlet=None, start_date=None, end_date=None, limit=None, offset=0, brand=None):
             calls["get_sales"].append(
                 {"outlet": outlet, "start_date": start_date, "end_date": end_date, "limit": limit, "offset": offset}
             )
+            if brand is not None:
+                calls["get_sales"][-1]["brand"] = brand
             if get_sales_error:
                 raise get_sales_error
             return get_sales if get_sales is not None else []
 
-        def fake_count(db, outlet=None, start_date=None, end_date=None):
+        def fake_count(db, outlet=None, start_date=None, end_date=None, brand=None):
             calls["count_sales"].append({"outlet": outlet, "start_date": start_date, "end_date": end_date})
+            if brand is not None:
+                calls["count_sales"][-1]["brand"] = brand
             if total is not None:
                 return total
             return len(get_sales) if get_sales else 0
@@ -73,7 +77,9 @@ def mock_service(monkeypatch):
                 raise colorplate_error
             return colorplate if colorplate is not None else []
 
-        def fake_by_groups(db, product_groups, outlet=None, start_date=None, end_date=None, product_ids=None):
+        def fake_by_groups(
+            db, product_groups, outlet=None, start_date=None, end_date=None, product_ids=None, brand=None
+        ):
             calls["get_sales_by_product_groups"].append(
                 {
                     "product_groups": list(product_groups),

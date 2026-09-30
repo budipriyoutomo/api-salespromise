@@ -10,8 +10,8 @@ Hanya di sini `on_conflict_do_update` benar-benar dieksekusi. Test unit
 
 CATATAN SKEMA
 -------------
-Unique index di bawah ini sama dengan `migrations/002_unique_indexes.sql`.
-Dibuat ulang di sini (bukan menjalankan file .sql-nya) supaya test tidak
+PK & FK komposit dengan outlet_code dibuat oleh model (sama dengan migrasi 010).
+Unique index upsert item di bawah ini sama dengan migrasi 010. Dibuat ulang di sini (bukan menjalankan file .sql-nya) supaya test tidak
 bergantung pada urutan migrasi, dan supaya ketidakcocokan antara kode dan
 skema langsung terlihat sebagai kegagalan test.
 """
@@ -36,10 +36,8 @@ pytestmark = [
 
 
 UNIQUE_INDEXES = (
-    'CREATE UNIQUE INDEX IF NOT EXISTS uq_ordertransaction_txn_outlet '
-    'ON ordertransaction ("TransactionID", outlet_code)',
-    'CREATE UNIQUE INDEX IF NOT EXISTS uq_orderdetail_detail_txn_product '
-    'ON orderdetail ("OrderDetailID", "TransactionID", "ProductID")',
+    'CREATE UNIQUE INDEX IF NOT EXISTS uq_orderdetail_detail_txn_product_outlet '
+    'ON orderdetail ("OrderDetailID", "TransactionID", "ProductID", outlet_code)',
 )
 
 
@@ -143,6 +141,26 @@ class TestUpsertSungguhan:
         assert fetch_sale(pg_session, 500, "OUTLET_001") is not None
         assert fetch_sale(pg_session, 500, "OUTLET_002") is not None
 
+    def test_item_dua_outlet_dengan_nomor_sama_tersimpan_terpisah(self, pg_session):
+        """Kasus produksi: `Key ("TransactionID")=(138605) already exists` (TODO 0.5).
+
+        TransactionID DAN OrderDetailID sama — keduanya nomor lokal POS.
+        """
+        for outlet, qty in (("OUTLET_001", 2.0), ("OUTLET_002", 7.0)):
+            SalesService.sync_sales(
+                db=pg_session,
+                outlet=outlet,
+                sales_list=[build_sale(transaction_id=500, items=[build_item(transaction_id=500, qty=qty)])],
+            )
+
+        rows = pg_session.execute(
+            text('SELECT outlet_code, "Amount" FROM orderdetail ORDER BY outlet_code')
+        ).all()
+        assert [(o, float(q)) for o, q in rows] == [("OUTLET_001", 2.0), ("OUTLET_002", 7.0)]
+
+        _, items = SalesService.get_sale_detail(db=pg_session, transaction_id=500, outlet="OUTLET_002")
+        assert [float(i.qty) for i in items] == [7.0]
+
     def test_item_ter_update_saat_kirim_ulang(self, pg_session):
         SalesService.sync_sales(
             db=pg_session,
@@ -184,14 +202,30 @@ class TestTransaksional:
         pg_session.rollback()
         assert count(pg_session, "ordertransaction") == 0
 
+    def test_item_ke_outlet_lain_ditolak_foreign_key(self, pg_session):
+        """FK komposit: TransactionID ada, tapi milik outlet lain — tetap yatim."""
+        from sqlalchemy.exc import IntegrityError
+
+        SalesService.sync_sales(db=pg_session, outlet="OUTLET_001", sales_list=[build_sale(transaction_id=1)])
+
+        with pytest.raises(IntegrityError):
+            pg_session.execute(
+                text(
+                    'INSERT INTO orderdetail ("SaleDate", "OrderDetailID", "TransactionID", outlet_code, "ProductID") '
+                    "VALUES (:d, 1, 1, 'OUTLET_002', 1)"
+                ),
+                {"d": date(2026, 1, 15)},
+            )
+            pg_session.commit()
+
     def test_item_tanpa_transaksi_induk_ditolak_foreign_key(self, pg_session):
         from sqlalchemy.exc import IntegrityError
 
         with pytest.raises(IntegrityError):
             pg_session.execute(
                 text(
-                    'INSERT INTO orderdetail ("SaleDate", "OrderDetailID", "TransactionID", "ProductID") '
-                    "VALUES (:d, 1, 999999, 1)"
+                    'INSERT INTO orderdetail ("SaleDate", "OrderDetailID", "TransactionID", outlet_code, "ProductID") '
+                    "VALUES (:d, 1, 999999, 'OUTLET_001', 1)"
                 ),
                 {"d": date(2026, 1, 15)},
             )

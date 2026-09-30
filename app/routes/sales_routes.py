@@ -48,6 +48,10 @@ from app.utils.logger import logger
 router = APIRouter(prefix="/api/sales", tags=["Sales"])
 
 
+def brand_query():
+    return Query(None, max_length=20, description="Kode brand; hanya outlet yang dipetakan ke brand ini")
+
+
 def get_rabbitmq_client():
     """Client RabbitMQ per request, ditutup setelah request selesai.
 
@@ -76,6 +80,7 @@ def get_sales(
     end_date: Optional[date_type] = Query(None, description="Tanggal akhir (inklusif)"),
     limit: int = Query(SalesService.DEFAULT_LIMIT, ge=1, le=SalesService.MAX_LIMIT),
     offset: int = Query(0, ge=0),
+    brand: Optional[str] = brand_query(),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -91,12 +96,14 @@ def get_sales(
             end_date=end_date,
             limit=limit,
             offset=offset,
+            brand=brand,
         )
         total = SalesService.count_sales(
             db=db,
             outlet=outlet,
             start_date=start_date,
             end_date=end_date,
+            brand=brand,
         )
 
     except Exception as e:
@@ -148,6 +155,7 @@ def get_sales_by_group(
     outlet: Optional[str] = Query(None, description="Kode outlet; diabaikan untuk role 'outlet'"),
     start_date: Optional[date_type] = Query(None, description="Tanggal awal (inklusif)"),
     end_date: Optional[date_type] = Query(None, description="Tanggal akhir (inklusif)"),
+    brand: Optional[str] = brand_query(),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -166,6 +174,7 @@ def get_sales_by_group(
         outlet=outlet,
         start_date=start_date,
         end_date=end_date,
+        brand=brand,
     )
 
     return ProductGroupSalesListResponse(data=[ProductGroupSalesRow.model_validate(row) for row in rows])
@@ -201,13 +210,14 @@ def get_summary(
     outlet: Optional[str] = Query(None),
     start_date: Optional[date_type] = Query(None),
     end_date: Optional[date_type] = Query(None),
+    brand: Optional[str] = brand_query(),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Kartu ringkasan di atas dashboard. Transaksi terhapus tidak dihitung."""
     outlet = resolve_outlet_scope(user, outlet)
 
-    hasil = SalesService.get_summary(db=db, outlet=outlet, start_date=start_date, end_date=end_date)
+    hasil = SalesService.get_summary(db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand)
 
     return SummaryResponse(data=SummaryData(**hasil))
 
@@ -217,13 +227,16 @@ def get_daily(
     outlet: Optional[str] = Query(None),
     start_date: Optional[date_type] = Query(None),
     end_date: Optional[date_type] = Query(None),
+    brand: Optional[str] = brand_query(),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Time series harian untuk grafik."""
     outlet = resolve_outlet_scope(user, outlet)
 
-    rows = SalesService.get_daily_sales(db=db, outlet=outlet, start_date=start_date, end_date=end_date)
+    rows = SalesService.get_daily_sales(
+        db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand
+    )
 
     return DailyListResponse(data=[DailyRow.model_validate(row) for row in rows])
 
@@ -232,11 +245,12 @@ def get_daily(
 def get_by_outlet(
     start_date: Optional[date_type] = Query(None),
     end_date: Optional[date_type] = Query(None),
+    brand: Optional[str] = brand_query(),
     db: Session = Depends(get_db),
     _user: User = Depends(require_roles(ROLE_ADMIN, ROLE_MANAGER)),
 ):
     """Perbandingan antar outlet — bukan hak user yang terikat satu outlet."""
-    rows = SalesService.get_sales_by_outlet(db=db, start_date=start_date, end_date=end_date)
+    rows = SalesService.get_sales_by_outlet(db=db, start_date=start_date, end_date=end_date, brand=brand)
 
     return OutletSalesListResponse(data=[OutletSalesRow.model_validate(row) for row in rows])
 
@@ -252,6 +266,7 @@ def get_top_products(
         ge=1,
         le=SalesService.TOP_PRODUCTS_MAX_LIMIT,
     ),
+    brand: Optional[str] = brand_query(),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -264,6 +279,7 @@ def get_top_products(
         end_date=end_date,
         product_group=product_group,
         limit=limit,
+        brand=brand,
     )
 
     return TopProductListResponse(data=[TopProductRow.model_validate(row) for row in rows])
@@ -288,6 +304,7 @@ def export_sales(
     outlet: Optional[str] = Query(None),
     start_date: Optional[date_type] = Query(None),
     end_date: Optional[date_type] = Query(None),
+    brand: Optional[str] = brand_query(),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -303,6 +320,7 @@ def export_sales(
         outlet=outlet,
         start_date=start_date,
         end_date=end_date,
+        brand=brand,
     )
 
     buffer = io.StringIO()

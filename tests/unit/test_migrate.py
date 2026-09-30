@@ -158,3 +158,14 @@ def test_migrasi_008_idempoten_tanpa_seed():
     assert "INSERT" not in sql
     assert "DROP" not in sql
     assert "DELETE" not in sql
+
+
+def test_migrasi_009_hanya_membuat_tabel_brand():
+    """Tanpa seed, dan tabel lama (api_keys, ordertransaction, orderdetail) tidak disentuh."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "009_brands.sql").read_text(encoding="utf-8"))
+
+    assert "CREATE TABLE IF NOT EXISTS BRANDS" in sql
+    assert "CREATE TABLE IF NOT EXISTS OUTLET_BRAND_MAPPINGS" in sql
+    assert "CREATE INDEX IF NOT EXISTS" in sql
+    for terlarang in ["INSERT", "DROP", "DELETE", "ALTER", "API_KEYS", "ORDERTRANSACTION", "ORDERDETAIL"]:
+        assert terlarang not in sql, terlarang

@@ -37,6 +37,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from app.core import security  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.models.api_key import ApiKey  # noqa: E402
+from app.models.brand import Brand, OutletBrandMapping  # noqa: E402
 from app.models.product_group_mapping import ProductGroupMapping  # noqa: E402
 from app.models.product_menu_mapping import ProductMenuColorplate, ProductMenuMapping  # noqa: E402
 from app.models.sales import Sales  # noqa: E402
@@ -112,16 +113,22 @@ def make_sale_row(transaction_id=1, outlet_code="OUTLET_001", sale_date=date(202
 def make_item_row(
     order_detail_id=1,
     transaction_id=1,
+    outlet_code="OUTLET_001",
     product_group="COLORPLATE",
     product_name="RED",
     qty=2,
     sale_date=date(2026, 1, 15),
     **overrides,
 ):
-    """Baris `orderdetail` untuk diisi langsung ke DB test."""
+    """Baris `orderdetail` untuk diisi langsung ke DB test.
+
+    `outlet_code` harus sama dengan transaksi induknya — item di-join lewat
+    (TransactionID, outlet_code).
+    """
     values = dict(
         order_detail_id=order_detail_id,
         transaction_id=transaction_id,
+        outlet_code=outlet_code,
         sale_date=sale_date,
         product_id=101,
         product_group=product_group,
@@ -277,6 +284,38 @@ def make_menu_colorplate(app_db):
             platecolor=platecolor,
             multiplier=multiplier,
             is_active=is_active,
+            created_at=datetime(2026, 1, 1),
+        )
+        app_db.add(row)
+        app_db.commit()
+        app_db.refresh(row)
+        return row
+
+    return _make
+
+
+@pytest.fixture()
+def make_brand(app_db):
+    """Baris `brands` di DB test (migrasi 009 tidak punya seed)."""
+
+    def _make(code="MHR", name="Maharasa", is_active=True):
+        row = Brand(code=code, name=name, is_active=is_active, created_at=datetime(2026, 1, 1))
+        app_db.add(row)
+        app_db.commit()
+        app_db.refresh(row)
+        return row
+
+    return _make
+
+
+@pytest.fixture()
+def map_outlet_brand(app_db):
+    """Petakan outlet ke brand langsung di DB, tanpa validasi API key."""
+
+    def _make(outlet_code, brand):
+        row = OutletBrandMapping(
+            outlet_code=outlet_code,
+            brand_id=brand.id if brand else None,
             created_at=datetime(2026, 1, 1),
         )
         app_db.add(row)

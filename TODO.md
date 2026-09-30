@@ -83,19 +83,35 @@ Dikerjakan 2026-09-11 dengan TDD (test dulu, baru kode).
       outlet belum ada kerusakan; outlet kedua dengan TransactionID yang tumpang
       tindih akan langsung gagal sync.
 
-      **Rencana (menunggu persetujuan — migrasi otomatis jalan saat container start):**
-      - [ ] Migrasi `007_outlet_code_composite_keys.sql` (006 sudah dipakai Fase 6), **tanpa DELETE**, satu transaksi:
-            pra-cek (abort kalau ada `outlet_code` NULL / item yatim), `orderdetail`
-            tambah `outlet_code` + backfill dari `ordertransaction`, PK kedua tabel
-            menjadi komposit dengan `outlet_code`, FK komposit, index unik upsert item
-            ditambah `outlet_code`. Yang di-drop hanya constraint/index, bukan baris.
-      - [ ] Kode: model, `sync_sales` (kirim `outlet_code` di item + `index_elements`),
-            join 3 query di atas memakai `outlet_code`.
-      - [ ] Test unit (TDD) + test integrasi dua outlet dengan TransactionID &
-            OrderDetailID yang sama.
-      - [ ] Uji migrasi pada **salinan** database (`pg_dump` → DB terpisah), bukan aslinya.
-      - [ ] Jalankan `migrations/checks/orderdetail_outlet_collision.sql` di **produksi**
-            (read-only) sebelum deploy.
+      **Terjadi di produksi 2026-09-30:** worker POS ditolak terus-menerus —
+      `Key ("TransactionID")=(138605) already exists`, batch 2026-09-07 (68 transaksi)
+      tidak pernah masuk.
+
+      **Perbaikan (2026-09-30):**
+      - [x] Migrasi `010_outlet_code_composite_keys.sql`, **tanpa DELETE**, satu transaksi:
+            pra-cek (abort kalau ada `outlet_code` NULL / item yatim / FK lain ke
+            `ordertransaction`), `orderdetail` tambah `outlet_code` + backfill, PK kedua
+            tabel komposit dengan `outlet_code`, FK komposit, index upsert item
+            + `outlet_code`. Index unik `(TransactionID, outlet_code)` yang ada dipakai
+            ulang sebagai PK (`USING INDEX`). 002 tidak lagi membuat index item lama
+            kalau dijalankan ulang setelah 010.
+      - [x] Kode: model, `sync_sales` (item membawa `outlet_code`, `index_elements`),
+            semua join item↔transaksi lewat `item_join` (sales_service + kandidat menu),
+            `get_sale_detail` memfilter item dengan outlet transaksinya.
+      - [x] Route sync: error database tidak lagi mengirim teks SQL ke client (tetap 500
+            supaya worker POS menyimpan & mengirim ulang).
+      - [x] Test unit (`test_outlet_composite_keys.py`) + test integrasi dua outlet
+            dengan TransactionID & OrderDetailID sama.
+      - [x] Uji di salinan `maharasa_pos_uji010` (pg_dump `maharasa_pos`): `migrate.py`
+            asli, checksum data identik sebelum/sesudah, jalan ulang idempoten,
+            TransactionID 6057 (STTSM) tersimpan juga untuk OUTLET_UJI, abort bersih
+            saat ada `outlet_code` NULL.
+      - [ ] Jalankan query 0 & 4 `migrations/checks/orderdetail_outlet_collision.sql`
+            di **produksi** (read-only) sebelum deploy — kalau ada `outlet_code` NULL,
+            migrasi berhenti dan container tidak start.
+      - [ ] `tests/integration/...::test_rollback_membatalkan_seluruh_batch` gagal
+            karena `product_id=None` kini ditolak schema sebelum sampai DB — test
+            perlu cara lain memicu kegagalan (bukan dari perubahan ini).
 
 ---
 

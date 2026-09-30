@@ -58,6 +58,7 @@ def data_dua_outlet(app_db, data_promo):
             make_item_row(
                 order_detail_id=1,
                 transaction_id=2,
+                outlet_code="OUTLET_002",
                 product_id=200252,
                 product_name="Blue ",
                 qty=1,
@@ -66,6 +67,7 @@ def data_dua_outlet(app_db, data_promo):
             make_item_row(
                 order_detail_id=2,
                 transaction_id=2,
+                outlet_code="OUTLET_002",
                 product_id=400100,
                 product_group="FOOD",
                 product_name="Nasi Goreng",

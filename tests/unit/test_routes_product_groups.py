@@ -46,10 +46,11 @@ def data_penjualan(app_db):
                 qty=5,
                 sale_date=date(2026, 1, 15),
             ),
-            make_item_row(order_detail_id=1, transaction_id=3, product_name="BLUE", qty=7, sale_date=date(2026, 1, 15)),
+            make_item_row(order_detail_id=1, transaction_id=3, outlet_code="OUTLET_002", product_name="BLUE", qty=7, sale_date=date(2026, 1, 15)),
             make_item_row(
                 order_detail_id=2,
                 transaction_id=3,
+                outlet_code="OUTLET_002",
                 product_group="DRINK",
                 product_name="ES TEH",
                 qty=1,

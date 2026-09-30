@@ -73,7 +73,7 @@ def seeded(db_session, sale_factory, item_factory):
             item_factory(order_detail_id=1, transaction_id=1, product_id=101, product_name="RED", qty=2),
             item_factory(order_detail_id=1, transaction_id=2, product_id=101, product_name="RED", qty=3),
             item_factory(order_detail_id=2, transaction_id=2, product_id=102, product_name="BLUE", qty=10),
-            item_factory(order_detail_id=1, transaction_id=3, product_id=101, product_name="RED", qty=1),
+            item_factory(order_detail_id=1, transaction_id=3, outlet_code="OUTLET_002", product_id=101, product_name="RED", qty=1),
             item_factory(
                 order_detail_id=3,
                 transaction_id=2,
@@ -273,7 +273,7 @@ class TestGetTopProducts:
     def test_varian_nama_group_produk_yang_sama_digabung_satu_baris(self, seeded, item_factory):
         """Tanpa ini NASI muncul dua kali di ranking: sekali sebagai FOOD, sekali sebagai `food `."""
         seeded.add(
-            item_factory(order_detail_id=2, transaction_id=3, product_id=201, product_group="food ", product_name="NASI", qty=2)
+            item_factory(order_detail_id=2, transaction_id=3, outlet_code="OUTLET_002", product_id=201, product_group="food ", product_name="NASI", qty=2)
         )
         seeded.commit()
 

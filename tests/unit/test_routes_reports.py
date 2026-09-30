@@ -52,7 +52,7 @@ def seeded(app_db, sale_factory, item_factory):
         [
             item_factory(order_detail_id=1, transaction_id=1, product_id=101, product_name="RED", qty=2),
             item_factory(order_detail_id=1, transaction_id=2, product_id=102, product_name="BLUE", qty=10),
-            item_factory(order_detail_id=1, transaction_id=3, product_id=101, product_name="RED", qty=1),
+            item_factory(order_detail_id=1, transaction_id=3, outlet_code="OUTLET_002", product_id=101, product_name="RED", qty=1),
         ]
     )
     app_db.commit()

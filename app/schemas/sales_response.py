@@ -109,8 +109,13 @@ class PublishResponse(BaseModel):
 
 
 class OutletResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     outlet_code: str
     is_active: bool
+    # Brand outlet ini; None kalau belum dipetakan.
+    brand_code: Optional[str] = None
+    brand_name: Optional[str] = None
 
 
 class OutletListResponse(BaseModel):

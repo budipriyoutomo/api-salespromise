@@ -32,7 +32,7 @@ def seeded(db_session, sale_factory, item_factory):
             # OUTLET_001 / 15 Jan — BLUE 5
             item_factory(order_detail_id=3, transaction_id=2, product_name="BLUE", qty=5, sale_date=date(2026, 1, 15)),
             # OUTLET_002 / 15 Jan — RED 7
-            item_factory(order_detail_id=1, transaction_id=3, product_name="RED", qty=7, sale_date=date(2026, 1, 15)),
+            item_factory(order_detail_id=1, transaction_id=3, outlet_code="OUTLET_002", product_name="RED", qty=7, sale_date=date(2026, 1, 15)),
             # non-COLORPLATE, tidak boleh ikut terhitung
             item_factory(
                 order_detail_id=4,
@@ -45,6 +45,7 @@ def seeded(db_session, sale_factory, item_factory):
             item_factory(
                 order_detail_id=1,
                 transaction_id=4,
+                outlet_code="OUTLET_002",
                 product_group="DRINK",
                 product_name="ES TEH",
                 qty=50,

@@ -401,13 +401,13 @@ class TestPemetaanKolomItem:
 
         assert params_of(statements_for(db, "orderdetail")[0])["SaleDate"] == date(2026, 2, 1)
 
-    def test_konflik_item_berdasarkan_order_detail_transaction_product(self):
+    def test_konflik_item_berdasarkan_order_detail_transaction_product_outlet(self):
         db = RecordingSession()
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(items=[build_item()])])
         sql = sql_of(statements_for(db, "orderdetail")[0])
 
-        assert 'ON CONFLICT ("OrderDetailID", "TransactionID", "ProductID")' in sql
+        assert 'ON CONFLICT ("OrderDetailID", "TransactionID", "ProductID", outlet_code)' in sql
 
     def test_kolom_item_yang_di_update_saat_konflik(self):
         db = RecordingSession()
@@ -422,16 +422,22 @@ class TestPemetaanKolomItem:
                 f"{column} hilang dari klausa DO UPDATE"
             )
 
-    def test_item_tidak_membawa_outlet_code(self):
-        """Penanda TODO 0.5 — orderdetail belum punya kolom outlet_code.
+    def test_outlet_code_item_diambil_dari_parameter_bukan_body(self):
+        """TODO 0.5: item ikut membawa outlet_code dari API key, sama seperti induknya."""
+        db = RecordingSession()
 
-        Ubah test ini begitu kolom tersebut ditambahkan.
-        """
+        SalesService.sync_sales(db=db, outlet="OUTLET_009", sales_list=[build_sale(items=[build_item()])])
+
+        assert params_of(statements_for(db, "orderdetail")[0])["outlet_code"] == "OUTLET_009"
+
+    def test_outlet_code_item_tidak_ikut_di_update_saat_konflik(self):
         db = RecordingSession()
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(items=[build_item()])])
+        sql = sql_of(statements_for(db, "orderdetail")[0])
+        do_update = sql[sql.find("DO UPDATE"):]
 
-        assert "outlet_code" not in params_of(statements_for(db, "orderdetail")[0])
+        assert "outlet_code =" not in do_update
 
 
 class TestUrutanEksekusi:

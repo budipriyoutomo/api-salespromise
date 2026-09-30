@@ -73,7 +73,9 @@ class Sales(Base):
     no_print_bill_detail = Column("NoPrintBillDetail", SmallInteger, nullable=False, default=0)
     bill_detail_reference_no = Column("BillDetailReferenceNo", Integer, nullable=False, default=0)
 
-    # Outlet (tambahan dari arsitektur sync)
-    outlet_code = Column("outlet_code", String(20), nullable=True)
+    # Outlet (tambahan dari arsitektur sync). Bagian dari PK: POS tiap outlet
+    # menomori TransactionID sendiri, jadi nomor yang sama bisa datang dari
+    # dua outlet (TODO 0.5, migrasi 010).
+    outlet_code = Column("outlet_code", String(20), primary_key=True)
     created_at = Column("created_at", DateTime, nullable=True)
     updated_at = Column("updated_at", DateTime, nullable=True)

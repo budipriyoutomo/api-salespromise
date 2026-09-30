@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies.auth import get_current_user, require_roles, resolve_outlet_scope
-from app.models.api_key import ApiKey
 from app.models.user import ROLE_ADMIN, ROLE_MANAGER, User
 from app.schemas.sales_response import (
     OutletListResponse,
@@ -13,6 +12,7 @@ from app.schemas.sales_response import (
     SyncStatusListResponse,
     SyncStatusRow,
 )
+from app.services import brand_service
 from app.services.sales_service import SalesService
 
 router = APIRouter(prefix="/api/outlets", tags=["Outlets"])
@@ -26,13 +26,12 @@ def list_outlets(
     """Daftar outlet untuk dropdown filter.
 
     Sumbernya tabel `api_keys`: satu outlet = satu key. Hanya role yang berhak
-    melihat lintas outlet yang boleh memanggilnya.
+    melihat lintas outlet yang boleh memanggilnya. Brand ikut dikirim supaya
+    dropdown outlet bisa dikelompokkan / disaring per brand.
     """
-    rows = db.query(ApiKey.outlet_code, ApiKey.is_active).order_by(ApiKey.outlet_code).all()
+    rows = brand_service.list_outlets(db)
 
-    return OutletListResponse(
-        data=[OutletResponse(outlet_code=row.outlet_code, is_active=row.is_active) for row in rows]
-    )
+    return OutletListResponse(data=[OutletResponse.model_validate(row) for row in rows])
 
 
 @router.get("/sync-status", response_model=SyncStatusListResponse)

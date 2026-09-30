@@ -1,18 +1,26 @@
 import traceback
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
+from app.services.brand_service import outlet_codes_subquery
 from app.services.product_group_service import normalize_product_group
 from app.utils.logger import logger
 
 # Warna dibandingkan dengan aturan yang sama seperti nama group:
 # "Blue " dan "BLUE" adalah warna yang sama.
 color_key = normalize_product_group
+
+# Item milik transaksi lewat (TransactionID, outlet_code). TransactionID saja
+# tidak cukup: nomornya unik per outlet, bukan global (TODO 0.5).
+item_join = and_(
+    Sales.transaction_id == SalesItems.transaction_id,
+    Sales.outlet_code == SalesItems.outlet_code,
+)
 
 
 class SalesService:
@@ -113,6 +121,7 @@ class SalesService:
                     item_stmt = insert(SalesItems).values(
                         OrderDetailID=item.order_detail_id,
                         TransactionID=sale.transaction_id,
+                        outlet_code=outlet,
 
                         # 🔥 NEW
                         SaleDate=item.sale_date,
@@ -139,7 +148,7 @@ class SalesService:
                     )
 
                     item_stmt = item_stmt.on_conflict_do_update(
-                        index_elements=["OrderDetailID", "TransactionID","ProductID"],
+                        index_elements=["OrderDetailID", "TransactionID", "ProductID", "outlet_code"],
                         set_={
                             "Amount": item.qty,
                             "Price": item.price,
@@ -192,9 +201,14 @@ class SalesService:
         return limit, offset
 
     @staticmethod
-    def _filter_sales(query, outlet=None, start_date=None, end_date=None):
+    def _filter_sales(query, outlet=None, start_date=None, end_date=None, brand=None):
         if outlet:
             query = query.filter(Sales.outlet_code == outlet)
+
+        # Digabung AND dengan `outlet`: user role outlet yang memfilter brand
+        # lain mendapat hasil kosong, bukan data outlet lain.
+        if brand:
+            query = query.filter(Sales.outlet_code.in_(outlet_codes_subquery(brand)))
 
         if start_date:
             query = query.filter(Sales.sale_date >= start_date)
@@ -205,14 +219,15 @@ class SalesService:
         return query
 
     @staticmethod
-    def get_sales(db, outlet=None, start_date=None, end_date=None, limit=None, offset=0):
+    def get_sales(db, outlet=None, start_date=None, end_date=None, limit=None, offset=0, brand=None):
         limit, offset = SalesService._normalize_paging(limit, offset)
 
         query = SalesService._filter_sales(
             db.query(Sales),
             outlet=outlet,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            brand=brand
         )
 
         # urutan deterministik — tanpa ini pagination bisa melewatkan baris
@@ -221,12 +236,13 @@ class SalesService:
         return query.limit(limit).offset(offset).all()
 
     @staticmethod
-    def count_sales(db, outlet=None, start_date=None, end_date=None):
+    def count_sales(db, outlet=None, start_date=None, end_date=None, brand=None):
         query = SalesService._filter_sales(
             db.query(func.count()).select_from(Sales),
             outlet=outlet,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            brand=brand
         )
 
         return query.scalar()
@@ -250,7 +266,9 @@ class SalesService:
         return func.upper(func.trim(SalesItems.product_group))
 
     @staticmethod
-    def get_sales_by_product_groups(db, product_groups, outlet=None, start_date=None, end_date=None, product_ids=None):
+    def get_sales_by_product_groups(
+        db, product_groups, outlet=None, start_date=None, end_date=None, product_ids=None, brand=None
+    ):
         """Qty terjual per group / produk / outlet / tanggal.
 
         `product_ids` menambah menu satu per satu di luar `product_groups`
@@ -283,7 +301,7 @@ class SalesService:
                 Sales.sale_date,
                 func.sum(SalesItems.qty).label("sold")
             )
-            .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
+            .join(Sales, item_join)
         )
 
         syarat = []
@@ -297,7 +315,8 @@ class SalesService:
             query,
             outlet=outlet,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            brand=brand
         )
 
         query = query.group_by(
@@ -336,7 +355,7 @@ class SalesService:
                 Sales.sale_date,
                 func.sum(SalesItems.qty).label("sold")
             )
-            .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
+            .join(Sales, item_join)
             .filter(SalesItems.product_id.in_(ids))
         )
 
@@ -411,7 +430,7 @@ class SalesService:
 
         query = (
             db.query(group_expr.label("product_group"))
-            .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
+            .join(Sales, item_join)
             # TRIM(NULL) = NULL, dan NULL <> '' tidak bernilai benar —
             # jadi baris tanpa group ikut tersaring di sini.
             .filter(group_expr != "")
@@ -444,17 +463,18 @@ class SalesService:
         return query.filter(Sales.deleted == 0)
 
     @staticmethod
-    def _report_query(query, outlet=None, start_date=None, end_date=None, include_deleted=False):
+    def _report_query(query, outlet=None, start_date=None, end_date=None, include_deleted=False, brand=None):
         query = SalesService._filter_sales(
             query,
             outlet=outlet,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            brand=brand
         )
         return SalesService._active_sales(query, include_deleted=include_deleted)
 
     @staticmethod
-    def get_summary(db, outlet=None, start_date=None, end_date=None, include_deleted=False):
+    def get_summary(db, outlet=None, start_date=None, end_date=None, include_deleted=False, brand=None):
         """Angka ringkas untuk kartu di atas dashboard.
 
         Omzet diambil dari `ReceiptPayPrice` — jumlah yang benar-benar dibayar.
@@ -475,7 +495,8 @@ class SalesService:
             outlet=outlet,
             start_date=start_date,
             end_date=end_date,
-            include_deleted=include_deleted
+            include_deleted=include_deleted,
+            brand=brand
         )
 
         row = query.one()
@@ -495,7 +516,7 @@ class SalesService:
         }
 
     @staticmethod
-    def get_daily_sales(db, outlet=None, start_date=None, end_date=None, include_deleted=False):
+    def get_daily_sales(db, outlet=None, start_date=None, end_date=None, include_deleted=False, brand=None):
         """Time series harian untuk grafik. Urutan kronologis menaik."""
         query = SalesService._report_query(
             db.query(
@@ -506,13 +527,14 @@ class SalesService:
             outlet=outlet,
             start_date=start_date,
             end_date=end_date,
-            include_deleted=include_deleted
+            include_deleted=include_deleted,
+            brand=brand
         )
 
         return query.group_by(Sales.sale_date).order_by(Sales.sale_date.asc()).all()
 
     @staticmethod
-    def get_sales_by_outlet(db, start_date=None, end_date=None, include_deleted=False):
+    def get_sales_by_outlet(db, start_date=None, end_date=None, include_deleted=False, brand=None):
         """Perbandingan antar outlet, diurutkan dari omzet terbesar."""
         total_amount = func.coalesce(func.sum(Sales.receipt_pay_price), 0).label("total_amount")
 
@@ -524,7 +546,8 @@ class SalesService:
             ),
             start_date=start_date,
             end_date=end_date,
-            include_deleted=include_deleted
+            include_deleted=include_deleted,
+            brand=brand
         )
 
         return query.group_by(Sales.outlet_code).order_by(total_amount.desc()).all()
@@ -537,7 +560,8 @@ class SalesService:
         end_date=None,
         product_group=None,
         limit=None,
-        include_deleted=False
+        include_deleted=False,
+        brand=None
     ):
         """Ranking produk berdasarkan jumlah terjual.
 
@@ -562,7 +586,7 @@ class SalesService:
                 total_qty,
                 func.coalesce(func.sum(SalesItems.qty * SalesItems.price), 0).label("total_amount"),
             )
-            .join(Sales, Sales.transaction_id == SalesItems.transaction_id)
+            .join(Sales, item_join)
         )
 
         product_group = normalize_product_group(product_group)
@@ -574,7 +598,8 @@ class SalesService:
             outlet=outlet,
             start_date=start_date,
             end_date=end_date,
-            include_deleted=include_deleted
+            include_deleted=include_deleted,
+            brand=brand
         )
 
         return (
@@ -606,9 +631,12 @@ class SalesService:
         if not sale:
             return None, []
 
+        # Outlet diambil dari transaksi yang ketemu, bukan dari parameter:
+        # tanpa filter outlet, item outlet lain dengan nomor sama ikut terbawa.
         items = (
             db.query(SalesItems)
             .filter(SalesItems.transaction_id == transaction_id)
+            .filter(SalesItems.outlet_code == sale.outlet_code)
             .order_by(SalesItems.order_detail_id)
             .all()
         )
@@ -636,7 +664,7 @@ class SalesService:
         return query.group_by(Sales.outlet_code).order_by(Sales.outlet_code).all()
 
     @staticmethod
-    def get_sales_for_export(db, outlet=None, start_date=None, end_date=None, include_deleted=False):
+    def get_sales_for_export(db, outlet=None, start_date=None, end_date=None, include_deleted=False, brand=None):
         """Seluruh baris hasil filter, tanpa pagination — khusus export CSV.
 
         Sengaja terpisah dari `get_sales` supaya batas pagination di sana tidak
@@ -647,7 +675,8 @@ class SalesService:
             outlet=outlet,
             start_date=start_date,
             end_date=end_date,
-            include_deleted=include_deleted
+            include_deleted=include_deleted,
+            brand=brand
         )
 
         return query.order_by(Sales.sale_date.desc(), Sales.transaction_id.desc()).all()

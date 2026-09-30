@@ -370,6 +370,27 @@ COLORPLATE RED terjual 4 → event RED `sold = 4 + 3 × 2 = 10`.
   group COLORPLATE aktif — sudah terhitung langsung.
 - **Tidak ada DELETE**, baik untuk menu maupun konversinya.
 
+#### Brand
+
+Mengelompokkan outlet per brand untuk filter laporan. Satu outlet paling
+banyak satu brand; satu brand boleh banyak outlet. Daftar outlet diambil dari
+`api_keys`.
+
+| Endpoint | Isi |
+|---|---|
+| `GET /api/brands` | Semua brand + `outlet_codes`-nya. **Admin & manager** (sumber dropdown filter) |
+| `POST /api/brands` | Tambah brand — `{"code": "MHR", "name": "Maharasa", "is_active": true}` |
+| `PATCH /api/brands/{id}` | Ubah — `{"name": "..."}` dan/atau `{"is_active": false}` |
+| `GET /api/brands/outlets` | Semua outlet beserta brand-nya, termasuk yang belum dipetakan |
+| `PUT /api/brands/outlets/{outlet_code}` | Petakan / pindahkan — `{"brand_id": 1}`; lepas — `{"brand_id": null}` |
+
+- `code` dinormalisasi (trim + huruf besar), maksimal 20 karakter, dan **tidak
+  bisa diubah** — dipakai sebagai nilai `?brand=`. Duplikat `409`, termasuk
+  yang nonaktif.
+- Outlet tanpa API key `404`. Brand yang tidak ada / nonaktif `422`.
+- Menonaktifkan brand tidak melepas outlet-nya; laporannya tetap bisa difilter.
+- **Tidak ada DELETE.**
+
 ---
 
 ### Sync (API key outlet)
@@ -422,7 +443,13 @@ Authorization: Bearer <API_KEY_OUTLET>
 
 #### `GET /api/sales/`
 
-Query param: `outlet`, `start_date`, `end_date`, `limit` (1–500, default 50), `offset`.
+Query param: `outlet`, `brand`, `start_date`, `end_date`, `limit` (1–500, default 50), `offset`.
+
+`brand` (kode brand, tidak peka huruf besar/kecil) juga diterima oleh
+`/by-group`, `/summary`, `/daily`, `/by-outlet`, `/top-products`, dan
+`/export`: hanya outlet yang dipetakan ke brand itu yang dihitung. Digabung AND
+dengan `outlet` (dan dengan scope user role `outlet`), jadi outlet di luar
+brand menghasilkan data kosong. Brand yang tidak dikenal juga kosong, bukan error.
 
 ```json
 {
@@ -468,7 +495,8 @@ dan untuk menemukan group baru dari POS. Ter-scope outlet. Berbeda dari
 
 #### `GET /api/outlets`
 
-Daftar outlet untuk dropdown filter. Khusus role `admin` dan `manager`.
+Daftar outlet untuk dropdown filter, beserta `brand_code` / `brand_name`-nya
+(`null` kalau belum dipetakan). Khusus role `admin` dan `manager`.
 
 #### `GET /api/outlets/sync-status`
 

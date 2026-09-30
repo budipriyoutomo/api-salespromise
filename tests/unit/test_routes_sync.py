@@ -159,6 +159,26 @@ class TestPenangananError:
         assert detail["success"] is False
         assert detail["message"] == "database mati"
 
+    def test_error_database_tidak_membocorkan_sql_ke_client(self, client, api_key_headers, mock_sync):
+        """Pesan psycopg2 (constraint + DETAIL) cukup untuk diagnosa; SQL & parameter tetap di log server."""
+        from sqlalchemy.exc import IntegrityError
+
+        asli = Exception(
+            'duplicate key value violates unique constraint "ordertransaction_pkey"\n'
+            'DETAIL:  Key ("TransactionID", outlet_code)=(1, OUTLET_001) already exists.\n'
+        )
+        mock_sync(error=IntegrityError('INSERT INTO ordertransaction ("TransactionID") VALUES (%(x)s)', {"x": 1}, asli))
+
+        response = client.post("/api/sync/sales", json=VALID_BODY, headers=api_key_headers)
+        detail = response.json()["detail"]
+
+        assert response.status_code == 500
+        assert detail["success"] is False
+        assert "ordertransaction_pkey" in detail["message"]
+        assert "already exists" in detail["message"]
+        assert "INSERT INTO" not in detail["message"]
+        assert "[SQL:" not in detail["message"]
+
     def test_error_dicatat_di_log(self, client, api_key_headers, mock_sync, caplog):
         mock_sync(error=RuntimeError("database mati"))
 
