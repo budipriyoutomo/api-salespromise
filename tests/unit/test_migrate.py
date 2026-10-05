@@ -169,3 +169,54 @@ def test_migrasi_009_hanya_membuat_tabel_brand():
     assert "CREATE INDEX IF NOT EXISTS" in sql
     for terlarang in ["INSERT", "DROP", "DELETE", "ALTER", "API_KEYS", "ORDERTRANSACTION", "ORDERDETAIL"]:
         assert terlarang not in sql, terlarang
+
+
+def test_migrasi_011_hanya_membuat_tabel_closing_report():
+    """Tanpa seed, tanpa ALTER, dan tabel lama tidak disentuh.
+
+    Revisi closing report tidak menghapus item lama — setiap kiriman punya
+    baris revisi + item sendiri, header cukup menunjuk revisi aktif.
+    """
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "011_closing_reports.sql").read_text(encoding="utf-8"))
+
+    for tabel in [
+        "CLOSING_REPORTS",
+        "CLOSING_REPORT_REVISIONS",
+        "CLOSING_REPORT_ITEMS",
+        "CLOSING_MENUS",
+        "CLOSING_MENU_PRODUCTS",
+    ]:
+        assert f"CREATE TABLE IF NOT EXISTS {tabel} " in sql, tabel
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS UQ_CLOSING_REPORT_REVISIONS_CURRENT" in sql
+    for terlarang in [
+        "INSERT",
+        "UPDATE ",
+        "DROP",
+        "DELETE",
+        "ALTER",
+        "API_KEYS",
+        "ORDERTRANSACTION",
+        "ORDERDETAIL",
+        "PRODUCT_MENU_",
+    ]:
+        assert terlarang not in sql, terlarang
+
+
+def test_migrasi_012_hanya_mengubah_tabel_closing_tanpa_hapus_data():
+    """Jawaban pengirim (2026-10-05): kunci menu = menuId, menuCode/productionDate
+    boleh null, dedup per messageId, compensation boleh negatif."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "012_closing_menu_id.sql").read_text(encoding="utf-8"))
+
+    for harus in [
+        "UQ_CLOSING_REPORT_REVISIONS_MESSAGE_ID",
+        "UQ_CLOSING_MENUS_MENU_ID",
+        "ALTER COLUMN MENU_CODE DROP NOT NULL",
+        "ALTER COLUMN PRODUCTION_DATE DROP NOT NULL",
+        "ADD COLUMN IF NOT EXISTS BRAND_CODE",
+        "CHECK (SOLD >= 0 AND WASTE >= 0)",
+        # Berhenti, bukan menghapus, kalau ada duplikat yang menghalangi constraint baru.
+        "RAISE EXCEPTION",
+    ]:
+        assert harus in sql, harus
+    for terlarang in ["INSERT", "UPDATE ", "DELETE", "TRUNCATE", "DROP TABLE", "DROP COLUMN", "API_KEYS", "ORDERTRANSACTION", "ORDERDETAIL"]:
+        assert terlarang not in sql, terlarang

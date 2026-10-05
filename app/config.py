@@ -46,6 +46,16 @@ class Settings:
         self.RABBITMQ_HOST: str = os.getenv("RABBITMQ_HOST", "rabbitmq")
         self.RABBITMQ_USER: str = os.getenv("RABBITMQ_USER", "maharasa")
         self.RABBITMQ_PASSWORD: str = os.getenv("RABBITMQ_PASSWORD", "")
+        self.RABBITMQ_PORT: int = int(os.getenv("RABBITMQ_PORT", "5672"))
+        self.RABBITMQ_VHOST: str = os.getenv("RABBITMQ_VHOST", "/")
+
+        # --- Consumer closing report (TODO Fase 7) ---
+        # Tanpa default: nama ditentukan bersama pengirim. Hanya wajib untuk
+        # worker consumer — API tetap start tanpa ini.
+        self.CLOSING_EXCHANGE: str = os.getenv("CLOSING_EXCHANGE", "")
+        self.CLOSING_ROUTING_KEY: str = os.getenv("CLOSING_ROUTING_KEY", "")
+        self.CLOSING_QUEUE: str = os.getenv("CLOSING_QUEUE", "")
+        self.CLOSING_PREFETCH: int = int(os.getenv("CLOSING_PREFETCH", "1"))
 
         # --- Pembatasan percobaan login ---
         # 0 = mematikan pembatasan.

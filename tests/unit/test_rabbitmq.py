@@ -80,6 +80,19 @@ class TestConnect:
         assert kwargs["heartbeat"] == 60
         assert kwargs["blocked_connection_timeout"] == 300
 
+    def test_port_dan_vhost_dari_settings(self, fake_pika, monkeypatch):
+        """Sama dengan consumer closing report — satu sumber konfigurasi broker."""
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "RABBITMQ_PORT", 5673)
+        monkeypatch.setattr(settings, "RABBITMQ_VHOST", "maharasa")
+
+        RabbitMQClient()._connect()
+
+        kwargs = fake_pika.ConnectionParameters.call_args.kwargs
+        assert kwargs["port"] == 5673
+        assert kwargs["virtual_host"] == "maharasa"
+
     def test_tidak_membuka_koneksi_baru_saat_masih_terbuka(self, fake_pika):
         client = RabbitMQClient()
         client._connect()

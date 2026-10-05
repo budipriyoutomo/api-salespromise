@@ -12,6 +12,8 @@ class RabbitMQClient:
         self.host = settings.RABBITMQ_HOST
         self.user = settings.RABBITMQ_USER
         self.password = settings.RABBITMQ_PASSWORD
+        self.port = settings.RABBITMQ_PORT
+        self.vhost = settings.RABBITMQ_VHOST
 
         self.connection = None
         self.channel = None
@@ -24,6 +26,8 @@ class RabbitMQClient:
 
         parameters = pika.ConnectionParameters(
             host=self.host,
+            port=self.port,
+            virtual_host=self.vhost,
             credentials=credentials,
             heartbeat=60,
             blocked_connection_timeout=300

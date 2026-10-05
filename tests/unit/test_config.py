@@ -156,6 +156,33 @@ class TestDefaultEnv:
 
         assert Settings().RABBITMQ_PASSWORD == ""
 
+    def test_default_koneksi_rabbitmq(self, monkeypatch):
+        monkeypatch.delenv("RABBITMQ_PORT", raising=False)
+        monkeypatch.delenv("RABBITMQ_VHOST", raising=False)
+        monkeypatch.delenv("CLOSING_PREFETCH", raising=False)
+
+        s = Settings()
+
+        assert s.RABBITMQ_PORT == 5672
+        assert s.RABBITMQ_VHOST == "/"
+        assert s.CLOSING_PREFETCH == 1
+
+    def test_topologi_closing_report_tidak_punya_default(self, monkeypatch):
+        """Nama exchange/queue ditentukan bersama pengirim — tebakan bisa diam-diam salah queue."""
+        for nama in ("CLOSING_EXCHANGE", "CLOSING_ROUTING_KEY", "CLOSING_QUEUE"):
+            monkeypatch.delenv(nama, raising=False)
+
+        s = Settings()
+
+        assert (s.CLOSING_EXCHANGE, s.CLOSING_ROUTING_KEY, s.CLOSING_QUEUE) == ("", "", "")
+
+    def test_api_tetap_start_tanpa_env_closing_report(self, monkeypatch):
+        """Env closing report hanya wajib untuk worker consumer, bukan untuk API."""
+        for nama in ("CLOSING_EXCHANGE", "CLOSING_ROUTING_KEY", "CLOSING_QUEUE"):
+            monkeypatch.delenv(nama, raising=False)
+
+        Settings().validate()
+
     def test_env_dibaca_ulang_tiap_instansiasi(self, monkeypatch):
         monkeypatch.setenv("DB_HOST", "host-a")
         assert Settings().DB_HOST == "host-a"

@@ -190,10 +190,15 @@ class TestUpsertSungguhan:
 class TestTransaksional:
 
     def test_rollback_membatalkan_seluruh_batch(self, pg_session):
-        """Sale kedua punya item dengan ProductID null → gagal; sale pertama ikut batal."""
+        """Item sale kedua gagal di database → sale pertama ikut batal.
+
+        ProductID di luar rentang INTEGER lolos validasi schema (int Python tak
+        terbatas) tapi ditolak Postgres — kegagalan harus datang dari DB, bukan
+        dari schema yang menolak sebelum transaksi dimulai.
+        """
         sales = [
             build_sale(transaction_id=1, items=[build_item(transaction_id=1)]),
-            build_sale(transaction_id=2, items=[build_item(transaction_id=2, product_id=None)]),
+            build_sale(transaction_id=2, items=[build_item(transaction_id=2, product_id=2**40)]),
         ]
 
         with pytest.raises(Exception):

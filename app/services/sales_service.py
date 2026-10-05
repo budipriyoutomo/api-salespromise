@@ -282,8 +282,9 @@ class SalesService:
         `product_group` ikut di GROUP BY supaya produk bernama sama di dua
         group tidak dijumlahkan jadi satu baris.
 
-        Transaksi `Deleted=1` masih ikut terhitung, sama seperti rekap
-        colorplate sebelum Fase 6 (TODO 4.5).
+        Transaksi `Deleted=1` (void) tidak dihitung — sama dengan laporan
+        dashboard (diputuskan 2026-10-05, TODO 4.5 / A5). Fungsi ini juga
+        sumber angka publish colorplate.
         """
         groups = sorted({normalize_product_group(g) for g in product_groups} - {""})
         ids = sorted({int(i) for i in (product_ids or []) if i is not None and int(i) > 0})
@@ -318,6 +319,7 @@ class SalesService:
             end_date=end_date,
             brand=brand
         )
+        query = SalesService._active_sales(query)
 
         query = query.group_by(
             group_expr,
@@ -341,6 +343,9 @@ class SalesService:
 
         `exclude_groups` membuang baris dari group yang sudah dihitung langsung
         (COLORPLATE), supaya satu baris orderdetail tidak terhitung dua kali.
+
+        Transaksi `Deleted=1` (void) tidak dihitung, sama dengan
+        `get_sales_by_product_groups`.
         """
         ids = sorted({int(i) for i in (product_ids or []) if i is not None and int(i) > 0})
         if not ids:
@@ -370,6 +375,7 @@ class SalesService:
             start_date=start_date,
             end_date=end_date
         )
+        query = SalesService._active_sales(query)
 
         return query.group_by(
             SalesItems.product_id,

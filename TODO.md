@@ -2,10 +2,17 @@
 
 Dibuat: 2026-09-11 · Basis commit: `b66417f`
 
-Status: **Fase 0, 1, 2, 4, dan 5 selesai. Fase 3 sebagian besar selesai.
-Fase 6 selesai di backend.**
-Sisa: Alembic, idempotensi publish, bulk upsert, rate limiting endpoint sync,
-halaman product group di frontend — semuanya **tidak memblokir frontend**.
+Status (2026-10-05): **Fase 0–2 dan 4–6 selesai. Fase 3 sebagian besar selesai.
+Fase 7 (closing report RabbitMQ) selesai di kode — backend & frontend.**
+
+Sisa:
+- **Fase 7 siap di-deploy** — pengirim sudah menjawab (7.0); tinggal host/port/vhost/
+  kredensial broker yang dikirim pengirim terpisah.
+- **Sebelum deploy:** ikuti [docs/deploy-fase7.md](docs/deploy-fase7.md) — termasuk
+  query pemeriksaan produksi untuk migrasi 010 (0.5).
+- Ditunda atas keputusanmu (2026-10-05): Alembic (3.1), idempotensi publish (3.4),
+  bulk upsert (3.5), rate limit endpoint sync (3.8b).
+- Keputusan arsitektur yang masih terbuka — lihat bagian Keputusan di bawah.
 
 Backend siap dipakai frontend terpisah: CORS aktif, auth user terpisah dari
 API key mesin POS, data ter-scope per outlet, response ter-skema, dan endpoint
@@ -109,9 +116,9 @@ Dikerjakan 2026-09-11 dengan TDD (test dulu, baru kode).
       - [ ] Jalankan query 0 & 4 `migrations/checks/orderdetail_outlet_collision.sql`
             di **produksi** (read-only) sebelum deploy — kalau ada `outlet_code` NULL,
             migrasi berhenti dan container tidak start.
-      - [ ] `tests/integration/...::test_rollback_membatalkan_seluruh_batch` gagal
-            karena `product_id=None` kini ditolak schema sebelum sampai DB — test
-            perlu cara lain memicu kegagalan (bukan dari perubahan ini).
+      - [x] `tests/integration/...::test_rollback_membatalkan_seluruh_batch` —
+            (2026-10-05) kegagalan kini dipicu ProductID di luar rentang INTEGER
+            (lolos schema, ditolak Postgres), bukan `product_id=None`.
 
 ---
 
@@ -276,6 +283,9 @@ mengganti password pada login berikutnya — mengunci orang demi kerapian.
 
 ### Belum dikerjakan
 
+Ditunda atas keputusanmu (2026-10-05) — keempatnya menyentuh jalur sync
+produksi, sistem migrasi, atau butuh data/keputusan dari luar.
+
 - [ ] **3.1 Alembic.** Migrasi masih SQL manual bernomor. Guard `drop_all` sudah
       dipasang, tapi versioning skema yang sesungguhnya belum ada.
 - [ ] **3.4 Publish belum idempoten.** Memanggil `/publish` dua kali untuk tanggal
@@ -316,8 +326,10 @@ Cara menjalankan dan konvensinya ada di [tests/README.md](tests/README.md).
 
 - [x] **4.10 Test auth user & RBAC** — selesai bersamaan dengan Fase 1
       (`test_auth_dependencies.py`, `test_routes_auth.py`).
-- [ ] **Jalankan test integrasi minimal sekali** terhadap Postgres sungguhan.
-      Ini yang akan memverifikasi item 0.4:
+- [x] **Jalankan test integrasi minimal sekali** terhadap Postgres sungguhan.
+      **2026-10-05: 15/15 lulus** di database kosong `sync_test` (localhost:5433,
+      dibuat atas izin — suite ini menjalankan `drop_all`, jangan arahkan ke DB lain).
+      Ini yang memverifikasi item 0.4:
       ```bash
       TEST_DATABASE_URL=postgresql+psycopg2://user:pass@localhost:5432/sync_test pytest tests/integration -v
       ```
@@ -409,8 +421,10 @@ di-ROLLBACK (salinannya pun tidak berubah):
 - [x] **A4 → trim spasi + case-insensitive.** Dicocokkan dengan
       `UPPER(TRIM("Group"))`; data item tidak diubah. Hanya spasi yang di-trim
       (sama dengan `TRIM` di PostgreSQL/SQLite), bukan tab/newline.
-- [ ] **A5. Transaksi `Deleted=1`** — tetap menunggu 4.5. Rekap per group masih
-      ikut menghitungnya, sama seperti colorplate sebelum Fase 6.
+- [x] **A5. Transaksi `Deleted=1`** — diputuskan 2026-10-05: **dibuang** dari
+      rekap per group, colorplate, dan publish (`get_sales_by_product_groups`,
+      `get_sales_by_product_ids`). Test `xfail` 4.5 kini lulus biasa. Angka event
+      colorplate berikutnya bisa lebih kecil dari event lama untuk tanggal yang sama.
 
 ### B. Database
 
@@ -467,9 +481,8 @@ di-ROLLBACK (salinannya pun tidak berubah):
 
 - [x] F1. `src/types/api.ts` di sync-frontend di-generate ulang dari skema OpenAPI
       terbaru (`openapi-typescript`, hanya penambahan 345 baris); `tsc --noEmit` lolos.
-- [ ] F2. Dropdown group dan halaman kelola mapping. Proxy BFF sudah meneruskan
-      `GET`/`POST`/`PATCH`, jadi tidak perlu diubah; nav admin di
-      `src/lib/auth/access.ts` perlu entri baru.
+- [x] F2. Dropdown group dan halaman kelola mapping — selesai di sync-frontend
+      Fase 10 (`/product-group`, entri nav admin).
 - [x] F3. README: `/by-group`, `/product-groups`, `/api/product-groups`, bentuk event generik.
 - [x] F4. **`top-products` ikut dinormalisasi** (pemblokir frontend 10.11).
       Filter `product_group` sebelumnya mencocokkan nama persis, jadi nilai dari
@@ -518,6 +531,197 @@ semua group sekaligus.
 
 ---
 
+## Fase 7 — Konsumsi `closingreport.submitted` dari RabbitMQ
+
+Sistem lain mengirim closing report harian per outlet (sold / waste /
+adjustment / compensation per menu). sync-api menyimpannya dan
+**membandingkannya dengan penjualan POS**.
+
+Kontrak payload (version 1):
+
+```json
+{
+  "event": "closingreport.submitted",
+  "version": 1,
+  "messageId": "<closing_report_id>",
+  "sentAt": "2026-10-02T22:15:00+07:00",
+  "data": {
+    "closingReportId": "<uuid>",
+    "date": "2026-10-02",
+    "outlet": { "code": "MHR-01", "name": "Maharasa PIK" },
+    "brand":  { "code": "MHR", "name": "Maharasa" },
+    "items": [
+      { "menuId": "<uuid>", "menuCode": "SU-001", "menuName": "Salmon Nigiri",
+        "productionDate": "2026-10-02",
+        "sold": 42, "waste": 3, "adjustment": 1, "compensation": 0 }
+    ]
+  }
+}
+```
+
+### 7.0 Keputusan (diputuskan 2026-10-02)
+
+Temuan read-only di DB lokal `maharasa_pos` (bukan produksi, migrasi 006+ belum
+jalan): outlet POS berkode `STTSM`, sedangkan contoh payload mengirim `MHR-01`.
+`orderdetail` hanya punya `ProductID` integer + `Name` (mis. `Salmon HR`), tanpa
+kode seperti `SU-001`, jadi menu **tidak bisa** dicocokkan lewat nama.
+
+1. **Tujuan: dibandingkan dengan POS.** Butuh mapping menu → ProductID.
+2. **Mapping menu: 1 `menuCode` → banyak `ProductID` × pengali.** Polanya sama
+   dengan konversi colorplate (`product_menu_mappings`). Kasus 1:1 = satu baris
+   pengali 1.
+3. **Master menu diambil dari pesan yang masuk.** `menuCode` baru otomatis
+   tercatat sebagai *belum dipetakan*, lalu admin memetakannya. Tidak ada import
+   master di awal.
+4. **Outlet: kodenya akan disamakan oleh pengirim.** `outlet.code` = `outlet_code`
+   POS (mis. `STTSM`), tidak perlu tabel mapping outlet.
+5. **Outlet tidak dikenal tetap disimpan** apa adanya (kode + nama dari pesan),
+   tidak dibuang ke DLQ. Laporan perbandingannya kosong sampai outletnya ada.
+6. **Tanggal pembanding: `item.productionDate`** ↔ `orderdetail.SaleDate`.
+   `data.date` tetap disimpan sebagai tanggal closing.
+7. **`closingReportId` yang sama dikirim ulang = revisi → ditimpa.** Header
+   di-update, item diganti seluruhnya, payload mentah tiap kiriman tetap
+   disimpan untuk audit.
+
+### 7.0 Jawaban pengirim (2026-10-05) — semua terjawab
+
+Sumber: [docs/jawaban-pengirim-closing.md](docs/jawaban-pengirim-closing.md)
+(pertanyaan: [docs/pertanyaan-pengirim-closing.md](docs/pertanyaan-pengirim-closing.md)).
+
+- [x] **Topologi:** exchange `closingreport_exchange` (direct, durable, milik
+      pengirim), routing key `closingreport.submitted`, queue milik kita
+      `syncapi.closingreport`. Broker sama dengan POS; host/port/vhost/kredensial
+      dikirim terpisah. Pengirim memakai `mandatory` + publisher confirms + outbox
+      retry ±25 jam, jadi tidak ada urutan deploy yang ketat. At-least-once.
+- [x] **Kode outlet** = kode POS, tapi dijamin sama hanya **setelah normalisasi**
+      → dicocokkan ke `api_keys` dengan huruf kecil + hanya alfanumerik, disimpan
+      dengan kode POS.
+- [x] **`messageId` selalu = `closingReportId`**, `sentAt` berubah tiap retry,
+      isi identik, tidak ada alur revisi → **duplikat per `messageId` saja**.
+- [x] **Revisi tidak berurutan** — tetap: `sentAt` lebih lama tidak menimpa.
+      Praktis tidak terjadi selama belum ada alur revisi.
+- [x] **`adjustment` boleh negatif** (dikonfirmasi).
+- [x] **`compensation` bisa negatif** (pengirim belum memvalidasi) — diputuskan:
+      diterima, consumer mencatat warning `compensation negatif`.
+- [x] **`version` tidak dikenal** → DLQ (dikonfirmasi pengirim).
+- [x] **Kunci menu = `menuId`.** `menuCode` bisa berubah, unik per brand, dan
+      bisa **null**. `productionDate` juga bisa **null** (pakai `data.date`).
+- [x] **Rumus pengirim:** `selisih = pos − (sold + adjustment + compensation)`.
+- [x] **POS menjual sushi per warna piring** → diputuskan: perbandingan **per
+      ProductID POS** — semua menu yang dipetakan ke produk yang sama dijumlah.
+      Pengali = berapa unit produk POS untuk 1 porsi menu.
+      **Batasan:** "1 unit POS = beberapa porsi menu" (paket isi 2) tidak bisa
+      dinyatakan dengan model ini.
+- [x] **Transaksi void/`Deleted=1` di POS** — tidak dihitung (kecuali
+      `include_deleted=true`), sama dengan semua rekap lain.
+- [ ] Contoh payload nyata — dijanjikan pengirim setelah aktif di produksi.
+      Saat datang, jalankan lewat `ClosingReportSubmitted.model_validate` sebagai
+      test tambahan.
+
+### 7.1–7.6 Rencana kerja
+
+- [x] **7.1 Skema Pydantic** — `app/schemas/closing_report_event.py`,
+      penjaga `tests/unit/test_closing_report_event.py` (56 test). `adjustment`
+      negatif diizinkan sesuai usulan 7.0; ubah satu test itu kalau pengirim
+      menjawab lain.
+- [x] **7.2 Migrasi `011_closing_reports.sql`** + model `app/models/closing_report.py`.
+      Penjaga: `tests/unit/test_closing_report_models.py`,
+      `test_migrate.py::test_migrasi_011_hanya_membuat_tabel_closing_report`.
+      - Revisi **tanpa DELETE**: tiap kiriman = baris `closing_report_revisions`
+        + item sendiri; revisi lama `is_current = FALSE`. Partial unique index
+        `uq_closing_report_revisions_current` menjamin satu revisi aktif.
+      - Redelivery (`report_id, message_id, sent_at` sama) ditolak unique.
+      - `closing_menus` kuncinya `menu_code`; `closing_menu_products`
+        menuCode → ProductID × pengali, `is_active`.
+      - Hanya CREATE TABLE/INDEX — tanpa ALTER, seed, atau sentuhan ke tabel lama.
+      - **Diuji 2026-10-02 di salinan `maharasa_pos_uji010`** (PG 16, atas izin):
+        dijalankan 2× (idempoten), semua constraint menolak sesuai harapan,
+        model ORM cocok dengan skema. Uji data di-rollback; yang tersisa hanya
+        5 tabel kosong. `maharasa_pos` tidak disentuh.
+      - ⚠️ File ini ikut jalan otomatis saat container start berikutnya
+        (`migrate.py`) — jangan deploy sebelum Fase 7 siap.
+- [x] **7.3 Service** `app/services/closing_report_service.py` —
+      `simpan_closing_report(db, event, raw_payload)` → status `baru` /
+      `revisi` / `revisi_lama` / `duplikat`, plus `outlet_dikenal` untuk log.
+      Penjaga: `tests/unit/test_closing_report_service.py` (15 test).
+      - Duplikat = `messageId` + `sentAt` sama → tidak ada yang berubah.
+      - `sentAt` lebih lama dari revisi aktif → disimpan, tidak aktif, header &
+        nama menu tidak berubah (usulan 7.0; ubah `test_revisi_lebih_lama_*`
+        kalau keputusannya lain).
+      - menuCode baru otomatis masuk `closing_menus`; mapping tidak disentuh.
+      - `IntegrityError` (dua consumer bersamaan) diulang sekali.
+      - Diuji juga di salinan `maharasa_pos_uji010` dalam transaksi yang
+        di-rollback (FOR UPDATE + partial unique index Postgres) — tidak ada
+        baris tersisa.
+- [x] **7.4 Worker consumer** `app/consumers/closing_report_consumer.py`
+      (`python -m app.consumers.closing_report_consumer`). Penjaga:
+      `tests/unit/test_closing_report_consumer.py` (29 test) + default env di
+      `test_config.py`.
+      - Env baru: `RABBITMQ_PORT`, `RABBITMQ_VHOST`, `CLOSING_EXCHANGE`,
+        `CLOSING_ROUTING_KEY`, `CLOSING_QUEUE` (tiga terakhir tanpa default),
+        `CLOSING_PREFETCH`. Hanya wajib untuk worker.
+      - Exchange pengirim dicek `passive` (tidak dibuat); queue kita durable
+        dengan `<queue>.dlx` / `<queue>.dlq`.
+      - Ack setelah commit. Bukan JSON / gagal validasi / error lain → DLQ.
+        DB putus → jeda 5 dtk (`connection.sleep`, heartbeat jalan) lalu requeue.
+      - Menunggu tabel migrasi 011 ada sebelum terhubung ke broker — pesan
+        tidak terbuang ke DLQ kalau worker start sebelum API selesai migrasi.
+      - Reconnect backoff 1→60 dtk; SIGTERM/SIGINT berhenti setelah pesan
+        yang sedang diproses selesai.
+      - Log membawa `messageId` sebagai `request_id`, juga ke stdout.
+      - **Belum diuji ke broker sungguhan** — menunggu topologi dari pengirim.
+      - (2026-10-05) `consumer.py` lama dihapus (CI & README ikut diperbarui);
+        publisher `RabbitMQClient` kini juga memakai `RABBITMQ_PORT`/`RABBITMQ_VHOST`.
+- [x] **7.5 Deploy:** service `maharasa-closing-consumer` di
+      `docker-compose.yml` — image sama, `command` exec form, tanpa port, tanpa
+      migrasi, log ke `logs/closing-consumer.log`, `stop_grace_period: 30s`.
+      Penjaga: `tests/unit/test_deploy_config.py`. Cara pakai di README › Docker.
+      **Urutan deploy:**
+      1. Dapatkan topologi dari pengirim, isi `CLOSING_*` di `.env` server —
+         tanpa itu container consumer keluar & di-restart terus.
+      2. `docker compose up -d --build` — API menjalankan migrasi 011
+         (CREATE TABLE saja), consumer menunggu tabelnya lalu terhubung.
+      3. Cek `docker compose logs maharasa-closing-consumer` → `CLOSING CONSUMER SIAP`.
+- [x] **7.6a Endpoint backend** `app/routes/closing_routes.py`. Penjaga:
+      `tests/unit/test_routes_closing.py` (33 test).
+      - Admin `/api/closing-menus` — `GET ?status=all|mapped|unmapped&q=`,
+        `POST /{id}/products` `{product_id, multiplier}` (ProductID harus ada di
+        data penjualan; pilihan dari `/api/product-menus/candidates`),
+        `PATCH /{id}/products/{mapping_id}`. Tanpa DELETE.
+      - User (scope outlet) `/api/closing-reports` — daftar (paginasi),
+        `/{closingReportId}` (item revisi aktif + riwayat revisi, tanpa
+        payload mentah; outlet lain → 404), `/comparison`.
+      - Perbandingan: tanggal produksi ↔ `Sales.sale_date`; `pos_qty` =
+        Σ qty × pengali; `selisih` = sold − pos_qty; status `cocok` /
+        `selisih` / `belum_dipetakan` / `tidak_ada_di_closing`. Hanya
+        pasangan (outlet, tanggal) yang punya closing. `Deleted=1` dibuang
+        kecuali `include_deleted` — sama dengan laporan dashboard lain.
+      - Diuji di salinan `maharasa_pos_uji010` dengan data POS STTSM nyata,
+        dalam transaksi yang di-rollback.
+- [x] **7.7 Penyesuaian jawaban pengirim (2026-10-05)** — TDD, tanpa hapus data:
+      - Migrasi **`012_closing_menu_id.sql`** (hanya ALTER tabel `closing_*`):
+        dedup `(report_id, message_id)`, `closing_menus` dikunci `menu_id` + kolom
+        `brand_code`, `menu_code` & `production_date` boleh NULL, CHECK qty tanpa
+        `compensation`. Pra-cek: berhenti (RAISE) kalau ada duplikat.
+        Penjaga: `test_migrate.py::test_migrasi_012_...`.
+      - Skema pesan: `menuCode`/`productionDate` opsional, `compensation` tanpa
+        batas bawah. Service: normalisasi kode outlet, dedup per `messageId`, menu
+        per `menuId`. Consumer: warning `compensation negatif`.
+      - Perbandingan per ProductID (`compare_with_pos`), response baru
+        `ClosingComparisonRow` (`product_id`, `product_name`, `menus[]`,
+        `closing_qty`, `pos_qty`, `selisih`, `status`).
+      - **Diuji di `sync_test`:** 011 → 012 → 012 ulang; pra-cek 012 berhenti pada
+        duplikat; simpan + retry (`duplikat`) + perbandingan RED (Salmon 3 + Tuna 5
+        = POS 8, cocok) di Postgres 16; `sync_test` dikosongkan lagi.
+      - Salinan `maharasa_pos_uji010` masih berisi tabel closing versi 011 (tanpa
+        012) dari uji 2026-10-02 — tidak dipakai lagi.
+- [x] **7.6b Frontend** — repo sync-frontend, Fase 11 di TODO-nya:
+      `/closing` (semua role: perbandingan POS + daftar/detail laporan) dan
+      `/closing-menu` (admin: mapping). Lewat catch-all BFF, tanpa route baru.
+      E2E Playwright belum ada (sync-frontend TODO 11.6).
+
+---
+
 ## Keputusan
 
 ### Sudah diputuskan
@@ -531,6 +735,9 @@ semua group sekaligus.
 3. **API key di-hash di tempat.** Key yang sudah beredar di mesin POS tetap
    berlaku; tidak ada outlet yang perlu di-update manual.
 4. **`orderdetail` ditunda** sampai data produksi diperiksa — lihat item 0.5.
+5. **Transaksi `Deleted=1` tidak dihitung di rekap mana pun** (2026-10-05) —
+   colorplate, per group, publish, laporan, perbandingan closing. Daftar struk
+   (`GET /api/sales/`) tetap menampilkannya dengan penanda void.
 
 ### Masih terbuka
 
@@ -539,11 +746,9 @@ semua group sekaligus.
    Belum mendesak: pagination sudah membatasi beban query terberat.
 2. **Colorplate satu-satunya konsumen event RabbitMQ?** Perlu dikonfirmasi supaya
    desain exchange/routing key tidak berubah lagi nanti.
-3. **Transaksi `Deleted=1` / void ikut dihitung di rekap colorplate?**
-   Sekarang ikut terhitung. Ada test `xfail` yang menunggu keputusan ini.
-4. **Masa berlaku token.** Sekarang access 30 menit, refresh 7 hari. Perlu
+3. **Masa berlaku token.** Sekarang access 30 menit, refresh 7 hari. Perlu
    disesuaikan kalau kasir membuka dashboard seharian penuh.
-5. **Pencabutan token.** JWT stateless — logout hanya membuang token di klien.
+4. **Pencabutan token.** JWT stateless — logout hanya membuang token di klien.
    Kalau perlu memutus akses seketika (mis. karyawan keluar), butuh denylist
    token di Redis/DB. Sementara ini, `manage_users.py deactivate` sudah memutus
    akses karena status user dicek ulang di setiap request.

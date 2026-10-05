@@ -15,6 +15,29 @@ services:
 
     volumes:
       - ./logs:/app/logs
+
+  # Worker closing report dari RabbitMQ (TODO Fase 7). Image sama dengan API,
+  # tapi tidak menjalankan migrasi — menunggu tabel dari migrasi 011 dibuat
+  # container API dulu. Butuh CLOSING_EXCHANGE / CLOSING_ROUTING_KEY /
+  # CLOSING_QUEUE di .env; tanpa itu container keluar dengan pesan error.
+  maharasa-closing-consumer:
+    build: .
+    container_name: maharasa-closing-consumer
+    restart: unless-stopped
+    command: ["python", "-m", "app.consumers.closing_report_consumer"]
+    # Pesan yang sedang diproses diselesaikan dulu setelah SIGTERM.
+    stop_grace_period: 30s
+
+    env_file:
+      - .env
+    environment:
+      LOG_FILE: logs/closing-consumer.log
+    networks:
+      - rabbitmq_net
+      - postgres_net
+
+    volumes:
+      - ./logs:/app/logs
 networks:
   rabbitmq_net:
     external: true

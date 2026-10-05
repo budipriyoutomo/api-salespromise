@@ -250,11 +250,8 @@ class TestGetSalesColorplate:
         assert row.sale_date == date(2026, 1, 15)
         assert int(row.sold) == 7
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="TODO 4.5 — transaksi void/Deleted=1 masih ikut terhitung; tentukan perilakunya dulu",
-    )
     def test_transaksi_terhapus_tidak_ikut_dihitung(self, db_session, sale_factory, item_factory):
+        """Diputuskan 2026-10-05 (TODO 4.5 / A5): void dibuang, sama seperti laporan dashboard."""
         db_session.add(sale_factory(transaction_id=1, deleted=1))
         db_session.add(item_factory(transaction_id=1, qty=5))
         db_session.commit()
@@ -284,6 +281,21 @@ class TestGetSalesColorplate:
 
 class TestGetSalesByProductIds:
     """Mapping per menu — menu dipilih lewat ProductID di luar group aktif."""
+
+    def test_transaksi_terhapus_tidak_ikut_dihitung(self, db_session, sale_factory, item_factory):
+        """Konversi menu → warna saat publish juga membuang void."""
+        db_session.add_all([sale_factory(transaction_id=1), sale_factory(transaction_id=2, deleted=1)])
+        db_session.add_all(
+            [
+                item_factory(order_detail_id=1, transaction_id=1, product_id=200300, product_group="PROMO", qty=1),
+                item_factory(order_detail_id=1, transaction_id=2, product_id=200300, product_group="PROMO", qty=4),
+            ]
+        )
+        db_session.commit()
+
+        result = SalesService.get_sales_by_product_ids(db=db_session, product_ids=[200300])
+
+        assert [int(r.sold) for r in result] == [1]
 
     @pytest.fixture()
     def promo(self, db_session, sale_factory, item_factory):
@@ -337,6 +349,20 @@ class TestGetSalesByProductIds:
 
 class TestGetSalesByProductGroups:
     """Fase 6 — pengganti filter hardcode `COLORPLATE`."""
+
+    def test_transaksi_terhapus_tidak_ikut_dihitung(self, db_session, sale_factory, item_factory):
+        db_session.add_all([sale_factory(transaction_id=1), sale_factory(transaction_id=2, deleted=1)])
+        db_session.add_all(
+            [
+                item_factory(order_detail_id=1, transaction_id=1, product_group="PROMO", product_name="A", qty=2),
+                item_factory(order_detail_id=1, transaction_id=2, product_group="PROMO", product_name="A", qty=5),
+            ]
+        )
+        db_session.commit()
+
+        result = SalesService.get_sales_by_product_groups(db=db_session, product_groups=["PROMO"])
+
+        assert [int(r.sold) for r in result] == [2]
 
     def test_filter_satu_group(self, seeded):
         result = SalesService.get_sales_by_product_groups(db=seeded, product_groups=["FOOD"])

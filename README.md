@@ -547,10 +547,12 @@ dan **mengecualikan transaksi yang dibatalkan** (`Deleted=1`).
 }
 ```
 
-> **Catatan konsistensi.** `GET /api/sales/`, `/by-group`, dan `/colorplate` masih IKUT
-> menghitung transaksi `Deleted=1`, sedangkan endpoint laporan tidak.
-> Perbedaan ini disengaja: mengubah endpoint lama akan mengubah angka yang
-> sudah dipublish ke RabbitMQ. Lihat TODO 4.5.
+> **Catatan konsistensi.** Sejak 2026-10-05 rekap `/by-group`, `/colorplate`,
+> publish RabbitMQ, dan perbandingan closing **tidak** menghitung transaksi
+> `Deleted=1`, sama seperti endpoint laporan. Angka event colorplate setelah
+> perubahan ini bisa lebih kecil dari event lama untuk tanggal yang sama.
+> `GET /api/sales/` (daftar struk) tetap menampilkan transaksi void — dashboard
+> memberinya penanda "Void". Lihat TODO 4.5.
 
 `GET /api/sales/{transaction_id}` mengembalikan 404 untuk transaksi milik outlet
 lain — bukan 403 — supaya nomor transaksi outlet lain tidak bisa dipetakan lewat
@@ -622,6 +624,8 @@ sync-api/
 │   ├── main.py                     # Entry point + CORS + wiring router
 │   ├── config.py                   # Konfigurasi env (validasi saat import)
 │   ├── database.py                 # SQLAlchemy engine & session
+│   ├── consumers/
+│   │   └── closing_report_consumer.py # worker RabbitMQ closingreport.submitted
 │   ├── core/
 │   │   ├── security.py             # Hash API key, hash password, JWT
 │   │   ├── rate_limit.py           # Penahan penebakan password
@@ -630,6 +634,8 @@ sync-api/
 │   │   └── auth.py                 # require_api_key, get_current_user, scoping
 │   ├── models/
 │   │   ├── api_key.py              # api_keys (kolom `key` berisi hash)
+│   │   ├── brand.py                # brands + outlet_brand_mappings
+│   │   ├── closing_report.py       # closing_reports, revisi, item, mapping menu
 │   │   ├── product_group_mapping.py # product_group_mappings (group yang dipublish)
 │   │   ├── product_menu_mapping.py # product_menu_mappings + product_menu_colorplates
 │   │   ├── user.py                 # users + definisi role
@@ -640,13 +646,17 @@ sync-api/
 │   │   ├── admin_routes.py         # /api/api-keys, /api/users, /api/product-groups (admin)
 │   │   ├── sync_routes.py          # /api/sync/*      (API key)
 │   │   ├── sales_routes.py         # /api/sales/*     (JWT + publish API key)
+│   │   ├── brand_routes.py         # /api/brands (admin)
+│   │   ├── closing_routes.py       # /api/closing-menus (admin), /api/closing-reports
 │   │   └── outlet_routes.py        # /api/outlets
 │   ├── schemas/
 │   │   ├── auth_schema.py
 │   │   ├── admin_schema.py
 │   │   ├── sales_schema.py         # request sync
 │   │   ├── sales_response.py       # response model
-│   │   └── sales_event.py
+│   │   ├── sales_event.py
+│   │   ├── closing_report_event.py # kontrak pesan closingreport.submitted
+│   │   └── closing_schema.py       # response endpoint closing
 │   ├── services/
 │   │   ├── sales_service.py        # upsert + query baca + laporan
 │   │   ├── api_key_service.py      # dipakai route DAN CLI
@@ -654,6 +664,9 @@ sync-api/
 │   │   ├── product_group_service.py # mapping group yang dipublish (tanpa hapus)
 │   │   ├── product_menu_service.py # mapping menu + konversi warna (tanpa hapus)
 │   │   ├── colorplate_publish_service.py # rekap per warna untuk publish
+│   │   ├── brand_service.py
+│   │   ├── closing_report_service.py # simpan pesan + revisi, laporan, perbandingan POS
+│   │   ├── closing_menu_service.py # mapping menuCode → ProductID × pengali
 │   │   └── rabbitmq.py
 │   └── utils/
 │       └── logger.py
@@ -663,6 +676,9 @@ sync-api/
 │   ├── 003_hash_api_keys.sql       # hash key di tempat + updated_at
 │   ├── 004_users.sql               # tabel users
 │   ├── 005_must_change_password.sql
+│   ├── 006–009                     # product group, product menu, colorplate, brand
+│   ├── 010_outlet_code_composite_keys.sql # PK/FK komposit dengan outlet_code
+│   ├── 011_closing_reports.sql     # closing report dari RabbitMQ
 │   └── checks/
 │       └── orderdetail_outlet_collision.sql
 ├── .github/workflows/tests.yml     # CI: lint + unit + integrasi Postgres
@@ -670,7 +686,6 @@ sync-api/
 ├── migrate.py                      # runner migrasi (otomatis saat container start)
 ├── manage_keys.py                  # CLI API key outlet
 ├── manage_users.py                 # CLI user dashboard
-├── consumer.py                     # contoh consumer RabbitMQ
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── pytest.ini
@@ -741,3 +756,27 @@ tail -f logs/api.log
 
 docker compose down
 ```
+
+### Worker closing report (RabbitMQ)
+
+Container `maharasa-closing-consumer` memakai image yang sama dan menerima
+event `closingreport.submitted` dari sistem lain. Isi dulu di `.env`:
+
+```bash
+CLOSING_EXCHANGE=closingreport_exchange      # milik pengirim — hanya dicek, tidak dibuat
+CLOSING_ROUTING_KEY=closingreport.submitted
+CLOSING_QUEUE=syncapi.closingreport
+```
+
+Tanpa ketiganya worker keluar dengan pesan `Env belum diisi` (dan di-restart
+terus oleh `restart: unless-stopped`). Worker menunggu tabel migrasi 011 yang
+dibuat container API, lalu baru terhubung ke broker.
+
+```bash
+docker compose logs -f maharasa-closing-consumer
+tail -f logs/closing-consumer.log
+```
+
+Pesan yang ditolak (bukan JSON, gagal validasi) masuk `<CLOSING_QUEUE>.dlq`.
+Setelah penyebabnya diperbaiki, pindahkan kembali ke queue lewat RabbitMQ
+Management. Lokal tanpa Docker: `python -m app.consumers.closing_report_consumer`.

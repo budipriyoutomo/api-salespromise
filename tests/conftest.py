@@ -38,6 +38,7 @@ from app.core import security  # noqa: E402
 from app.database import Base  # noqa: E402
 from app.models.api_key import ApiKey  # noqa: E402
 from app.models.brand import Brand, OutletBrandMapping  # noqa: E402
+from app.models.closing_report import ClosingReport  # noqa: E402,F401
 from app.models.product_group_mapping import ProductGroupMapping  # noqa: E402
 from app.models.product_menu_mapping import ProductMenuColorplate, ProductMenuMapping  # noqa: E402
 from app.models.sales import Sales  # noqa: E402
