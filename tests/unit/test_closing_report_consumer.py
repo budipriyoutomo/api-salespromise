@@ -5,6 +5,7 @@ Broker tidak disentuh — channel pika di-mock. Penyimpanan memakai SQLite.
 
 import copy
 import json
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -14,7 +15,8 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 from app.consumers import closing_report_consumer as consumer
 from app.consumers.closing_report_consumer import Keputusan, proses_pesan
 from app.core.request_context import get_request_id
-from app.models.closing_report import ClosingReport, ClosingReportRevision
+from app.models.api_key import ApiKey
+from app.models.closing_report import ClosingMessageLog, ClosingReport, ClosingReportRevision
 from app.services.closing_report_service import HasilSimpan, StatusSimpan
 
 REPORT_ID = "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
@@ -288,6 +290,12 @@ class TestTungguSkema:
     def test_skema_siap_kalau_tabel_ada(self, db_session, factory):
         assert consumer.skema_siap(factory) is True
 
+    def test_skema_belum_siap_kalau_tabel_log_belum_ada(self, db_session, factory):
+        """Tabel log dibuat migrasi 013 — consumer menunggu, bukan gagal di tiap pesan."""
+        ClosingMessageLog.__table__.drop(db_session.get_bind())
+
+        assert consumer.skema_siap(factory) is False
+
     def test_skema_belum_siap_kalau_tabel_belum_ada(self, db_session, factory):
         from app.models.closing_report import ClosingReportItem
 
@@ -346,3 +354,164 @@ class TestCompensationNegatif:
             proses_pesan(BODY, factory)
 
         assert not [r for r in caplog.records if "compensation negatif" in r.getMessage()]
+
+
+class TestLogPesan:
+    """Setiap pesan yang diputuskan (ack / DLQ) tercatat di `closing_message_logs`
+    supaya admin bisa melihat isi pesan dan alasan penolakan dari dashboard."""
+
+    def _log(self, db_session):
+        return db_session.query(ClosingMessageLog).order_by(ClosingMessageLog.id).all()
+
+    def test_pesan_baru_tercatat_dengan_payload(self, db_session, factory):
+        proses_pesan(BODY, factory)
+
+        [log] = self._log(db_session)
+        revisi = db_session.query(ClosingReportRevision).one()
+        assert log.status == "baru"
+        assert log.payload == PAYLOAD
+        assert log.body_text is None
+        assert log.body_bytes == len(BODY)
+        assert log.message_id == REPORT_ID
+        assert str(log.closing_report_id) == REPORT_ID
+        assert log.outlet_code == "STTSM"
+        assert log.report_date.isoformat() == "2026-10-02"
+        assert log.item_count == 1
+        assert log.revision_id == revisi.id
+        assert log.reason is None
+        assert log.received_at is not None
+
+    def test_duplikat_tercatat_terpisah(self, db_session, factory):
+        proses_pesan(BODY, factory)
+        proses_pesan(BODY, factory)
+
+        assert [log.status for log in self._log(db_session)] == ["baru", "duplikat"]
+
+    def test_bukan_json_tercatat_sebagai_teks(self, db_session, factory):
+        assert proses_pesan(b"bukan json", factory) is Keputusan.DLQ
+
+        [log] = self._log(db_session)
+        assert log.status == "ditolak"
+        assert log.reason == "bukan JSON"
+        assert log.payload is None
+        assert log.body_text == "bukan json"
+        assert log.message_id is None
+
+    def test_body_bukan_utf8_tetap_tercatat(self, db_session, factory):
+        proses_pesan(b"\xff\xfe", factory)
+
+        [log] = self._log(db_session)
+        assert log.status == "ditolak"
+        assert log.body_text  # karakter pengganti, bukan error
+
+    def test_teks_besar_dipotong(self, db_session, factory):
+        proses_pesan(b"x" * (consumer.MAKS_BODY_TEXT + 500), factory)
+
+        [log] = self._log(db_session)
+        assert len(log.body_text) == consumer.MAKS_BODY_TEXT
+        assert log.body_bytes == consumer.MAKS_BODY_TEXT + 500
+
+    @pytest.mark.parametrize("konstanta", ["NaN", "Infinity", "-Infinity"])
+    def test_nan_dianggap_bukan_json(self, db_session, factory, konstanta):
+        """JSONB Postgres menolak NaN — tanpa ini lognya gagal tersimpan."""
+        body = f'{{"messageId": "m", "x": {konstanta}}}'.encode()
+
+        assert proses_pesan(body, factory) is Keputusan.DLQ
+
+        [log] = self._log(db_session)
+        assert log.reason == "bukan JSON"
+        assert log.payload is None
+        assert log.body_text == body.decode()
+
+    def test_json_bukan_objek(self, db_session, factory):
+        proses_pesan(b"[1, 2]", factory)
+
+        [log] = self._log(db_session)
+        assert log.reason == "JSON bukan objek"
+        assert log.payload == [1, 2]
+
+    def test_gagal_validasi_menyimpan_error_dan_identitas_dari_payload(self, db_session, factory):
+        rusak = copy.deepcopy(PAYLOAD)
+        rusak["version"] = 2
+
+        proses_pesan(json.dumps(rusak).encode(), factory)
+
+        [log] = self._log(db_session)
+        assert log.status == "ditolak"
+        assert log.reason == "gagal validasi"
+        assert log.payload == rusak
+        assert log.message_id == REPORT_ID
+        assert log.outlet_code == "STTSM"
+        assert [e["loc"] for e in log.errors] == [["version"]]
+        assert log.revision_id is None
+
+    def test_identitas_payload_rusak_tidak_membuat_log_gagal(self, db_session, factory):
+        """messageId / outlet bisa berupa apa saja di pesan yang ditolak."""
+        rusak = {"messageId": {"x": 1}, "data": {"outlet": "bukan objek"}}
+
+        proses_pesan(json.dumps(rusak).encode(), factory)
+
+        [log] = self._log(db_session)
+        assert log.status == "ditolak"
+        assert log.message_id == '{"x": 1}'
+        assert log.outlet_code is None
+
+    def test_gagal_disimpan_tercatat(self, db_session, factory, monkeypatch):
+        def gagal(db, event, raw):
+            raise RuntimeError("bug")
+
+        monkeypatch.setattr(consumer, "simpan_closing_report", gagal)
+
+        proses_pesan(BODY, factory)
+
+        [log] = self._log(db_session)
+        assert log.status == "ditolak"
+        assert log.reason == "gagal disimpan: RuntimeError"
+        assert log.payload == PAYLOAD
+
+    def test_database_putus_tidak_dicatat(self, db_session, factory, monkeypatch):
+        """Pesan dikembalikan ke antrean dan akan dicatat saat diproses ulang."""
+
+        def putus(db, event, raw):
+            raise OperationalError("SELECT 1", {}, Exception("server closed the connection"))
+
+        monkeypatch.setattr(consumer, "simpan_closing_report", putus)
+
+        proses_pesan(BODY, factory)
+
+        assert self._log(db_session) == []
+
+    def test_peringatan_outlet_dan_compensation(self, db_session, factory):
+        pesan = copy.deepcopy(PAYLOAD)
+        pesan["data"]["items"][0]["compensation"] = -2
+
+        proses_pesan(json.dumps(pesan).encode(), factory)
+
+        [log] = self._log(db_session)
+        assert log.status == "baru"
+        assert log.warnings == [
+            "outlet belum terdaftar di api_keys",
+            "compensation negatif: 1 menu",
+        ]
+
+    def test_outlet_terdaftar_tanpa_peringatan(self, db_session, factory):
+        db_session.add(
+            ApiKey(key_hash="h", key_prefix="p", outlet_code="STTSM", is_active=True, created_at=datetime(2026, 1, 1))
+        )
+        db_session.commit()
+
+        proses_pesan(BODY, factory)
+
+        assert self._log(db_session)[0].warnings is None
+
+    @pytest.mark.parametrize("body", [BODY, b"bukan json"])
+    def test_gagal_mencatat_tidak_mengubah_keputusan(self, factory, monkeypatch, body):
+        """Log hanya alat bantu — pesan valid tetap di-ack, pesan rusak tetap ke DLQ."""
+
+        def rusak(*args, **kwargs):
+            raise RuntimeError("tabel log bermasalah")
+
+        monkeypatch.setattr(consumer, "catat_pesan", rusak)
+
+        harapan = Keputusan.ACK if body == BODY else Keputusan.DLQ
+        assert proses_pesan(body, factory) is harapan

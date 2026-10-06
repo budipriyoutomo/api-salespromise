@@ -1,8 +1,8 @@
 """Closing report dari RabbitMQ (`closingreport.submitted`) — TODO Fase 7.
 
-Skema produksi ada di migrations/011_closing_reports.sql + 012_closing_menu_id.sql;
-constraint di sini
-harus sama supaya test SQLite mewakili Postgres.
+Skema produksi ada di migrations/011_closing_reports.sql, 012_closing_menu_id.sql,
+dan 013_closing_message_logs.sql; constraint di sini harus sama supaya test
+SQLite mewakili Postgres.
 
 Tidak ada yang dihapus: revisi baru mendapat baris revisi + item sendiri,
 revisi lama dimatikan lewat `is_current`.
@@ -10,6 +10,7 @@ revisi lama dimatikan lewat `is_current`.
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -20,6 +21,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     text,
@@ -186,3 +188,47 @@ class ClosingMenuProduct(Base):
 
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=True)
+
+
+STATUS_LOG_PESAN = ("baru", "revisi", "revisi_lama", "duplikat", "ditolak")
+
+
+class ClosingMessageLog(Base):
+    """Satu baris per pesan yang diputuskan consumer (migrasi 013).
+
+    Untuk diperiksa admin dari dashboard; tidak dipakai untuk perhitungan.
+    """
+
+    __tablename__ = "closing_message_logs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('baru', 'revisi', 'revisi_lama', 'duplikat', 'ditolak')",
+            name="ck_closing_message_logs_status",
+        ),
+        Index("ix_closing_message_logs_received_at", "received_at"),
+        Index("ix_closing_message_logs_status_received_at", "status", "received_at"),
+        Index("ix_closing_message_logs_message_id", "message_id"),
+    )
+
+    # BIGSERIAL di Postgres; SQLite hanya auto-increment untuk INTEGER.
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+
+    received_at = Column(DateTime, nullable=False, default=utcnow)
+    status = Column(String(20), nullable=False)
+    reason = Column(String(255), nullable=True)
+    errors = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
+    warnings = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
+
+    # Dari payload, juga untuk pesan yang ditolak.
+    message_id = Column(String(255), nullable=True)
+    outlet_code = Column(String(255), nullable=True)
+    # Hanya untuk pesan yang lolos validasi.
+    closing_report_id = Column(Uuid, nullable=True)
+    report_date = Column(Date, nullable=True)
+    item_count = Column(Integer, nullable=True)
+    revision_id = Column(Integer, ForeignKey("closing_report_revisions.id"), nullable=True)
+
+    body_bytes = Column(Integer, nullable=False)
+    # JSON apa adanya; body_text hanya kalau body bukan JSON.
+    payload = Column(JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"), nullable=True)
+    body_text = Column(Text, nullable=True)

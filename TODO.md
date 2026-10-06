@@ -715,6 +715,24 @@ Sumber: [docs/jawaban-pengirim-closing.md](docs/jawaban-pengirim-closing.md)
         = POS 8, cocok) di Postgres 16; `sync_test` dikosongkan lagi.
       - Salinan `maharasa_pos_uji010` masih berisi tabel closing versi 011 (tanpa
         012) dari uji 2026-10-02 — tidak dipakai lagi.
+- [x] **7.8 Log pesan RabbitMQ (2026-10-06)** — TDD, tanpa hapus data:
+      - Migrasi **`013_closing_message_logs.sql`** (CREATE saja): satu baris per
+        pesan yang di-ack / DLQ — status (`baru`/`revisi`/`revisi_lama`/
+        `duplikat`/`ditolak`), alasan + error validasi, peringatan (outlet belum
+        terdaftar, compensation negatif), messageId/outlet/tanggal, JSON asli
+        (atau teks kalau bukan JSON). Pesan yang di-requeue karena DB putus
+        tidak dicatat (dicatat saat diproses ulang). Gagal mencatat tidak
+        mengubah keputusan ack/DLQ. Consumer menunggu tabel ini juga.
+      - `NaN`/`Infinity` kini dianggap bukan JSON (JSONB Postgres menolaknya).
+      - Endpoint admin `GET /api/closing-messages` (filter status, cari
+        messageId/outlet, tanggal terima dalam WIB, `counts` per status) dan
+        `GET /api/closing-messages/{id}` (payload + errors).
+      - Sekalian: detail laporan tidak lagi 500 kalau item mencampur
+        `production_date`/`menu_code` null dan tidak null.
+      - **Diuji di `sync_test`:** 011 → 012 → 013 → 013 ulang; valid, retry,
+        versi 2, bukan JSON, NaN lewat `proses_pesan` sungguhan; dikosongkan lagi.
+      - Belum ada pembersihan log lama (sengaja — tidak ada DELETE). Kalau
+        nanti membesar, putuskan retensinya dulu.
 - [x] **7.6b Frontend** — repo sync-frontend, Fase 11 di TODO-nya:
       `/closing` (semua role: perbandingan POS + daftar/detail laporan) dan
       `/closing-menu` (admin: mapping). Lewat catch-all BFF, tanpa route baru.

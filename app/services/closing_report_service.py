@@ -277,6 +277,12 @@ def list_reports(db, outlet=None, start_date=None, end_date=None, limit=DEFAULT_
     return [_ringkasan(r) for r in rows], total
 
 
+def _urutan_item(i: ClosingReportItem):
+    # production_date / menu_code boleh null (migrasi 012): tanpa tanggal di
+    # depan, tanpa kode di belakang.
+    return (i.production_date or date.min, i.menu_code is None, i.menu_code or "", i.menu_name)
+
+
 def get_report(db, closing_report_id, outlet=None) -> dict | None:
     """Detail laporan. Laporan outlet lain dianggap tidak ada (404, bukan 403)."""
     laporan = (
@@ -289,7 +295,7 @@ def get_report(db, closing_report_id, outlet=None) -> dict | None:
 
     aktif = next((r for r in laporan.revisions if r.is_current), None)
     hasil = _ringkasan(laporan)
-    hasil["items"] = sorted(aktif.items, key=lambda i: (i.production_date, i.menu_code)) if aktif else []
+    hasil["items"] = sorted(aktif.items, key=_urutan_item) if aktif else []
     # Terbaru dulu.
     hasil["revisions"] = sorted(laporan.revisions, key=lambda r: (r.sent_at, r.id), reverse=True)
     return hasil

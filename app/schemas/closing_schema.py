@@ -1,7 +1,7 @@
 """Schema endpoint closing report (TODO Fase 7.6)."""
 
 from datetime import date, datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -179,3 +179,54 @@ class ClosingComparisonRow(BaseModel):
 class ClosingComparisonResponse(BaseModel):
     success: bool = True
     data: List[ClosingComparisonRow]
+
+
+# ---------------------------------------------------------------------------
+# Log pesan RabbitMQ (admin)
+# ---------------------------------------------------------------------------
+
+StatusLogPesan = Literal["baru", "revisi", "revisi_lama", "duplikat", "ditolak"]
+
+
+class ClosingMessageSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    received_at: datetime
+    status: StatusLogPesan
+    reason: Optional[str] = None
+    warnings: Optional[List[str]] = None
+    message_id: Optional[str] = None
+    outlet_code: Optional[str] = None
+    closing_report_id: Optional[UUID] = None
+    report_date: Optional[date] = None
+    item_count: Optional[int] = None
+    revision_id: Optional[int] = None
+    body_bytes: int
+
+
+class ClosingMessageCounts(BaseModel):
+    baru: int = 0
+    revisi: int = 0
+    revisi_lama: int = 0
+    duplikat: int = 0
+    ditolak: int = 0
+
+
+class ClosingMessageListResponse(BaseModel):
+    success: bool = True
+    data: List[ClosingMessageSummary]
+    pagination: PaginationMeta
+    counts: ClosingMessageCounts
+
+
+class ClosingMessageDetail(ClosingMessageSummary):
+    errors: Optional[List[Dict[str, Any]]] = None
+    # JSON pesan apa adanya — bisa objek atau tipe JSON lain kalau pesannya ditolak.
+    payload: Optional[Any] = None
+    body_text: Optional[str] = None
+
+
+class ClosingMessageDetailResponse(BaseModel):
+    success: bool = True
+    data: ClosingMessageDetail

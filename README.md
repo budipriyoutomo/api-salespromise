@@ -647,7 +647,7 @@ sync-api/
 │   │   ├── sync_routes.py          # /api/sync/*      (API key)
 │   │   ├── sales_routes.py         # /api/sales/*     (JWT + publish API key)
 │   │   ├── brand_routes.py         # /api/brands (admin)
-│   │   ├── closing_routes.py       # /api/closing-menus (admin), /api/closing-reports
+│   │   ├── closing_routes.py       # /api/closing-menus, /api/closing-messages (admin), /api/closing-reports
 │   │   └── outlet_routes.py        # /api/outlets
 │   ├── schemas/
 │   │   ├── auth_schema.py
@@ -679,6 +679,8 @@ sync-api/
 │   ├── 006–009                     # product group, product menu, colorplate, brand
 │   ├── 010_outlet_code_composite_keys.sql # PK/FK komposit dengan outlet_code
 │   ├── 011_closing_reports.sql     # closing report dari RabbitMQ
+│   ├── 012_closing_menu_id.sql     # kunci menu = menuId (jawaban pengirim)
+│   ├── 013_closing_message_logs.sql # log setiap pesan RabbitMQ
 │   └── checks/
 │       └── orderdetail_outlet_collision.sql
 ├── .github/workflows/tests.yml     # CI: lint + unit + integrasi Postgres
@@ -770,12 +772,16 @@ CLOSING_QUEUE=syncapi.closingreport
 
 Tanpa ketiganya worker keluar dengan pesan `Env belum diisi` (dan di-restart
 terus oleh `restart: unless-stopped`). Worker menunggu tabel migrasi 011 yang
-dibuat container API, lalu baru terhubung ke broker.
+dan 013 yang dibuat container API, lalu baru terhubung ke broker.
 
 ```bash
 docker compose logs -f maharasa-closing-consumer
 tail -f logs/closing-consumer.log
 ```
+
+Setiap pesan yang diproses tercatat di `closing_message_logs` dan bisa
+diperiksa admin di dashboard (*Pesan RabbitMQ*, `/api/closing-messages`):
+status, alasan ditolak, peringatan, dan JSON aslinya.
 
 Pesan yang ditolak (bukan JSON, gagal validasi) masuk `<CLOSING_QUEUE>.dlq`.
 Setelah penyebabnya diperbaiki, pindahkan kembali ke queue lewat RabbitMQ

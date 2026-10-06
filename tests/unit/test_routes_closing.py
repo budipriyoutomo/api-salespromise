@@ -284,6 +284,22 @@ class TestDetailLaporan:
         assert [r["is_current"] for r in data["revisions"]] == [True, False]
         assert "raw_payload" not in data["revisions"][0]
 
+    def test_item_tanpa_kode_dan_tanggal_produksi_tidak_error(self, client, app_db, admin_headers):
+        """menuCode / productionDate boleh null (migrasi 012) — urutan tidak boleh 500."""
+        rid = kirim_closing(
+            app_db,
+            items=[
+                item(menu_code="SU-002", menu_name="Tuna", production_date=None),
+                item(menu_code="SU-001", menu_name="Salmon", menuCode=None),
+                item(menu_code="SU-003", menu_name="Ebi"),
+            ],
+        )
+
+        res = client.get(f"/api/closing-reports/{rid}", headers=admin_headers)
+
+        assert res.status_code == 200
+        assert [i["menu_name"] for i in res.json()["data"]["items"]] == ["Tuna", "Ebi", "Salmon"]
+
     def test_outlet_lain_404(self, client, app_db, outlet_headers):
         rid = kirim_closing(app_db, outlet="OUTLET_002")
 

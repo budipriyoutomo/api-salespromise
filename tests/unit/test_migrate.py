@@ -220,3 +220,23 @@ def test_migrasi_012_hanya_mengubah_tabel_closing_tanpa_hapus_data():
         assert harus in sql, harus
     for terlarang in ["INSERT", "UPDATE ", "DELETE", "TRUNCATE", "DROP TABLE", "DROP COLUMN", "API_KEYS", "ORDERTRANSACTION", "ORDERDETAIL"]:
         assert terlarang not in sql, terlarang
+
+
+def test_migrasi_013_hanya_membuat_tabel_log_pesan_closing():
+    """Log pesan RabbitMQ: CREATE saja, tabel lain tidak disentuh."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "013_closing_message_logs.sql").read_text(encoding="utf-8"))
+
+    assert "CREATE TABLE IF NOT EXISTS CLOSING_MESSAGE_LOGS " in sql
+    assert "CREATE INDEX IF NOT EXISTS" in sql
+    for terlarang in [
+        "INSERT",
+        "UPDATE ",
+        "DROP",
+        "DELETE",
+        "TRUNCATE",
+        "ALTER",
+        "API_KEYS",
+        "ORDERTRANSACTION",
+        "ORDERDETAIL",
+    ]:
+        assert terlarang not in sql, terlarang

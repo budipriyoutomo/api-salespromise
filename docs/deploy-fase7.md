@@ -9,9 +9,10 @@ perubahan yang belum di-deploy per tanggal itu:
 | Migrasi `010_outlet_code_composite_keys.sql` | PK/FK `ordertransaction` & `orderdetail` jadi komposit dengan `outlet_code`. Memperbaiki outlet yang ditolak sync karena TransactionID bentrok. **Mengunci tabel selama backfill.** |
 | Migrasi `011_closing_reports.sql` | 5 tabel baru `closing_*`, kosong. Tidak menyentuh tabel lama. |
 | Migrasi `012_closing_menu_id.sql` | ALTER tabel `closing_*` saja (kunci menu `menu_id`, dedup per `message_id`, kolom boleh NULL). Pada deploy pertama tabelnya masih kosong. |
+| Migrasi `013_closing_message_logs.sql` | 1 tabel baru `closing_message_logs` (log setiap pesan RabbitMQ untuk dashboard). Tidak menyentuh tabel lain. |
 | Transaksi void dibuang dari rekap | `/by-group`, `/colorplate`, dan **publish RabbitMQ** tidak lagi menghitung `Deleted=1`. Angka event colorplate bisa lebih kecil dari event lama untuk tanggal yang sama. |
 | Consumer closing report | Container baru `maharasa-closing-consumer`. Topologi sudah diketahui; tinggal host/port/vhost/kredensial broker dari pengirim. |
-| Frontend | Halaman `/closing` dan `/closing-menu`, perbaikan waktu UTC (status sync tidak lagi salah 7 jam). Tidak ada env baru. |
+| Frontend | Halaman `/closing`, `/closing-menu`, dan `/closing-pesan` (admin: pesan RabbitMQ), perbaikan waktu UTC (status sync tidak lagi salah 7 jam). Tidak ada env baru. |
 
 Migrasi dijalankan **otomatis** oleh `migrate.py` saat container API start. Kalau
 satu migrasi gagal, container berhenti dan API tidak melayani request sampai
@@ -65,13 +66,13 @@ diisi — tanpa itu container keluar dan di-restart terus. Nyalakan API saja:
 
       docker compose logs -f maharasa-apisales
 
-      Harus terlihat `Menjalankan 010_...`, `011_...`, `012_...`, lalu
+      Harus terlihat `Menjalankan 010_...`, `011_...`, `012_...`, `013_...`, lalu
       `Selesai: N migrasi dijalankan`, lalu gunicorn start. Kalau ada
       `GAGAL di ...`, file itu sudah di-rollback utuh — baca pesannya, jangan
       jalankan ulang sebelum penyebabnya jelas.
 - [ ] **B3. Verifikasi:**
 
-      docker compose exec maharasa-apisales python migrate.py --status   # 010, 011, 012 [x]
+      docker compose exec maharasa-apisales python migrate.py --status   # 010–013 [x]
       curl -s http://localhost:8001/health/ready                         # 200
 
 - [ ] **B4. Sync POS.** Pantau `logs/api.log` beberapa menit: tidak boleh ada
@@ -85,7 +86,7 @@ diisi — tanpa itu container keluar dan di-restart terus. Nyalakan API saja:
       Tidak ada env baru. Deploy **setelah** backend — halaman closing memanggil
       endpoint baru.
 - [ ] **C2. Cek cepat:** login admin → menu *Closing* dan *Mapping Closing*
-      tampil (kosong sampai consumer jalan); *Status Sync* tidak lagi menandai
+      tampil, juga *Pesan RabbitMQ* (kosong sampai consumer jalan); *Status Sync* tidak lagi menandai
       outlet yang baru sync sebagai "Perlu dicek".
 
 ## D. Menyalakan consumer closing report
@@ -110,16 +111,18 @@ Jadi D boleh dikerjakan kapan saja setelah B — makin cepat, makin cepat data m
 
       Harus muncul `CLOSING CONSUMER SIAP` — pada saat itu queue terikat dan
       pesan yang tertahan di outbox pengirim mulai masuk. `MENUNGGU: tabel
-      closing report belum ada` berarti 011 belum jalan (kembali ke B). `TERPUTUS` + 404
+      closing report belum ada` berarti 011/013 belum jalan (kembali ke B). `TERPUTUS` + 404
       berarti nama exchange salah atau exchange belum dibuat pengirim.
 - [ ] **D3.** Minta pengirim mengirim satu closing report uji. Di log harus ada
-      `CLOSING REPORT BARU`; di dashboard laporan muncul di *Closing → Daftar laporan*.
-- [ ] **D4.** Cek DLQ `syncapi.closingreport.dlq` di RabbitMQ Management — harus kosong.
-      Pesan di sana = ditolak validasi; alasannya ada di
-      `logs/closing-consumer.log` (`CLOSING REPORT DITOLAK`).
-- [ ] **D5.** Cek log untuk `outlet belum terdaftar di api_keys` (kode outlet
-      pengirim tidak cocok dengan POS walau sudah dinormalisasi) dan
-      `compensation negatif` (angka janggal dari pengirim — laporan tetap masuk).
+      `CLOSING REPORT BARU`; di dashboard pesannya muncul di *Pesan RabbitMQ*
+      (status Baru) dan laporannya di *Closing → Daftar laporan*.
+- [ ] **D4.** Buka *Pesan RabbitMQ* → *Ditolak* — harus kosong. Kalau ada,
+      buka *Detail*: alasan, field yang salah, dan JSON aslinya (untuk dikirim
+      ke pengirim). Pesannya sendiri ada di DLQ `syncapi.closingreport.dlq`.
+- [ ] **D5.** Di *Pesan RabbitMQ*, kolom Keterangan: `outlet belum terdaftar di
+      api_keys` (kode outlet pengirim tidak cocok dengan POS walau sudah
+      dinormalisasi) dan `compensation negatif` (angka janggal dari pengirim —
+      laporan tetap masuk).
 - [ ] **D6.** Admin memetakan menu di *Mapping Closing* ke produk POS-nya (untuk
       sushi: produk warna piring), lalu cek *Closing → Perbandingan POS*.
       Sebelum angka perbandingan dipakai, konfirmasi ke tim operation cara kasir
@@ -131,5 +134,5 @@ Jadi D boleh dikerjakan kapan saja setelah B — makin cepat, makin cepat data m
 |---|---|
 | Kode API / frontend | Deploy image/commit sebelumnya. |
 | Consumer | `docker compose stop maharasa-closing-consumer`. Pesan menumpuk di queue, tidak hilang. |
-| 011, 012 | Tabel terpisah, aman dibiarkan walau kode dimundurkan. Kode lama (sebelum 012) tidak cocok dengan skema 012 — jangan jalankan consumer versi lama. |
+| 011–013 | Tabel terpisah, aman dibiarkan walau kode dimundurkan. Kode lama (sebelum 012) tidak cocok dengan skema 012 — jangan jalankan consumer versi lama. |
 | 010 | **Tidak ada migrasi balik.** Kode lama tidak cocok dengan PK komposit — mundur = restore backup A1 (data sync setelah deploy ikut hilang; POS perlu mengirim ulang). |

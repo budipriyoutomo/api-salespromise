@@ -5,6 +5,9 @@
 - `/api/closing-reports`  user dashboard, ter-scope outlet lewat
                           `resolve_outlet_scope` — daftar, detail, dan
                           perbandingan closing vs POS.
+- `/api/closing-messages` admin — log setiap pesan RabbitMQ yang diterima
+                          consumer (termasuk duplikat dan yang ditolak) beserta
+                          JSON aslinya.
 
 Data closing hanya ditulis oleh consumer; tidak ada endpoint tulis laporan.
 """
@@ -26,6 +29,11 @@ from app.schemas.closing_schema import (
     ClosingMenuProductDetailResponse,
     ClosingMenuProductResponse,
     ClosingMenuResponse,
+    ClosingMessageCounts,
+    ClosingMessageDetail,
+    ClosingMessageDetailResponse,
+    ClosingMessageListResponse,
+    ClosingMessageSummary,
     ClosingReportDetail,
     ClosingReportDetailResponse,
     ClosingReportListResponse,
@@ -34,7 +42,7 @@ from app.schemas.closing_schema import (
     UpdateClosingMenuProductRequest,
 )
 from app.schemas.sales_response import PaginationMeta
-from app.services import closing_menu_service, closing_report_service
+from app.services import closing_menu_service, closing_message_log_service, closing_report_service
 from app.utils.logger import logger
 
 require_admin = require_roles(ROLE_ADMIN)
@@ -159,9 +167,10 @@ def compare_closing_with_pos(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Closing vs POS per outlet / tanggal produksi / menu.
+    """Closing vs POS per outlet / tanggal produksi / ProductID POS.
 
-    `pos_qty` = Σ qty ProductID × pengali; `selisih` = sold − pos_qty.
+    `closing_qty` = Σ (sold + adjustment + compensation) × pengali dari semua
+    menu yang dipetakan ke produk itu; `selisih` = pos_qty − closing_qty.
     """
     outlet = resolve_outlet_scope(user, outlet)
     rows = closing_report_service.compare_with_pos(
@@ -183,3 +192,47 @@ def get_closing_report(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Closing report tidak ditemukan")
 
     return ClosingReportDetailResponse(data=ClosingReportDetail.model_validate(detail))
+
+
+# ---------------------------------------------------------------------------
+# Log pesan RabbitMQ (admin)
+# ---------------------------------------------------------------------------
+
+closing_message_router = APIRouter(prefix="/api/closing-messages", tags=["Admin - Closing Messages"])
+
+
+@closing_message_router.get("", response_model=ClosingMessageListResponse)
+def list_closing_messages(
+    status_: Optional[Literal["baru", "revisi", "revisi_lama", "duplikat", "ditolak"]] = Query(None, alias="status"),
+    q: Optional[str] = Query(None, max_length=100, description="Cari messageId atau kode outlet"),
+    start_date: Optional[date_type] = Query(None, description="Tanggal diterima awal (WIB, inklusif)"),
+    end_date: Optional[date_type] = Query(None, description="Tanggal diterima akhir (WIB, inklusif)"),
+    limit: int = Query(closing_message_log_service.DEFAULT_LIMIT, ge=1, le=closing_message_log_service.MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Pesan terbaru dulu, tanpa payload. `counts` = jumlah per status untuk filter yang sama tanpa `status`."""
+    rows, total, jumlah = closing_message_log_service.list_logs(
+        db, status=status_, q=q, start_date=start_date, end_date=end_date, limit=limit, offset=offset
+    )
+
+    return ClosingMessageListResponse(
+        data=[ClosingMessageSummary.model_validate(row) for row in rows],
+        pagination=PaginationMeta(limit=limit, offset=offset, total=total, has_more=offset + len(rows) < total),
+        counts=ClosingMessageCounts(**jumlah),
+    )
+
+
+@closing_message_router.get("/{log_id}", response_model=ClosingMessageDetailResponse)
+def get_closing_message(
+    log_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Satu pesan beserta JSON asli (atau teks, kalau bukan JSON) dan detail error validasi."""
+    row = closing_message_log_service.get_log(db, log_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pesan tidak ditemukan")
+
+    return ClosingMessageDetailResponse(data=ClosingMessageDetail.model_validate(row))

@@ -12,7 +12,7 @@ Topologi:
     queue kita (CLOSING_QUEUE)            durable, diikat ke exchange pengirim
     <queue>.dlx / <queue>.dlq             tujuan pesan yang ditolak
 
-Keputusan per pesan:
+Keputusan per pesan (semua yang di-ack / DLQ dicatat di closing_message_logs):
     tersimpan / duplikat                  ack (setelah commit)
     bukan JSON, gagal validasi, error lain  nack tanpa requeue → DLQ
     database putus                        jeda lalu requeue — datanya valid,
@@ -36,6 +36,7 @@ from app.config import settings
 from app.core.request_context import new_request_id, request_id_var, sanitize_request_id
 from app.database import SessionLocal
 from app.schemas.closing_report_event import ClosingReportSubmitted
+from app.services.closing_message_log_service import catat_pesan
 from app.services.closing_report_service import simpan_closing_report
 from app.utils.logger import LOGGER_NAME, build_formatter, logger
 
@@ -44,9 +45,17 @@ JEDA_RECONNECT_AWAL = 1
 JEDA_RECONNECT_MAKS = 60
 HEARTBEAT_DETIK = 60
 JEDA_CEK_SKEMA_DETIK = 10
+# Body yang bukan JSON disimpan sebagai teks di log pesan, dipotong sepanjang ini.
+MAKS_BODY_TEXT = 100_000
 
-# Dibuat migrasi 011 yang dijalankan container API, bukan worker ini.
-TABEL_WAJIB = ("closing_reports", "closing_report_revisions", "closing_report_items", "closing_menus")
+# Dibuat migrasi 011 dan 013 yang dijalankan container API, bukan worker ini.
+TABEL_WAJIB = (
+    "closing_reports",
+    "closing_report_revisions",
+    "closing_report_items",
+    "closing_menus",
+    "closing_message_logs",
+)
 
 # Error database yang biasanya sembuh sendiri (server restart, koneksi putus).
 ERROR_SEMENTARA = (OperationalError, DisconnectionError)
@@ -102,41 +111,112 @@ class KonfigurasiConsumer:
         )
 
 
-def proses_pesan(body: bytes, session_factory=SessionLocal) -> Keputusan:
-    """Validasi lalu simpan satu pesan. Tidak pernah melempar exception."""
+def _tolak_konstanta(nama: str):
+    """NaN / Infinity diterima `json.loads` tapi bukan JSON standar — JSONB
+    Postgres menolaknya, jadi pesan seperti itu diperlakukan sebagai bukan JSON."""
+    raise ValueError(f"{nama} bukan JSON standar")
+
+
+def _teks(nilai, maks=255) -> str | None:
+    """Nilai dari payload yang belum tentu string (pesan yang ditolak bisa berisi apa saja)."""
+    if nilai is None:
+        return None
+    if not isinstance(nilai, str):
+        nilai = json.dumps(nilai, ensure_ascii=False, default=str)
+    return nilai[:maks]
+
+
+def _identitas(raw: dict) -> dict:
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    outlet = data.get("outlet") if isinstance(data.get("outlet"), dict) else {}
+    return {"message_id": _teks(raw.get("messageId")), "outlet_code": _teks(outlet.get("code"))}
+
+
+def _catat(db, **kolom):
+    """Tulis log pesan untuk dashboard. Gagal mencatat tidak boleh mengubah
+    keputusan ack / DLQ — pesannya sendiri sudah diputuskan."""
     try:
-        raw = json.loads(body)
+        catat_pesan(db, **kolom)
+    except Exception:
+        db.rollback()
+        logger.exception("CLOSING REPORT: gagal mencatat log pesan")
+
+
+def proses_pesan(body: bytes, session_factory=SessionLocal) -> Keputusan:
+    """Validasi lalu simpan satu pesan, dan catat hasilnya di log pesan.
+
+    Tidak pernah melempar exception.
+    """
+    db = session_factory()
+    try:
+        return _proses(db, body)
+    finally:
+        db.close()
+
+
+def _proses(db, body: bytes) -> Keputusan:
+    try:
+        raw = json.loads(body, parse_constant=_tolak_konstanta)
     except (ValueError, UnicodeDecodeError) as e:
         logger.error("CLOSING REPORT DITOLAK: bukan JSON", extra={"error": str(e), "body_bytes": len(body)})
+        _catat(
+            db,
+            status="ditolak",
+            reason="bukan JSON",
+            body_bytes=len(body),
+            body_text=body.decode("utf-8", errors="replace")[:MAKS_BODY_TEXT],
+        )
         return Keputusan.DLQ
 
     if not isinstance(raw, dict):
         logger.error("CLOSING REPORT DITOLAK: JSON bukan objek", extra={"tipe": type(raw).__name__})
+        _catat(db, status="ditolak", reason="JSON bukan objek", body_bytes=len(body), payload=raw)
         return Keputusan.DLQ
 
     try:
         event = ClosingReportSubmitted.model_validate(raw)
     except ValidationError as e:
+        errors = e.errors(include_url=False, include_input=False)
         logger.error(
             "CLOSING REPORT DITOLAK: gagal validasi",
-            extra={
-                "message_id": str(raw.get("messageId")),
-                "errors": e.errors(include_url=False, include_input=False),
-            },
+            extra={"message_id": str(raw.get("messageId")), "errors": errors},
+        )
+        _catat(
+            db,
+            status="ditolak",
+            reason="gagal validasi",
+            # ctx bisa berisi objek exception yang tidak bisa jadi JSON.
+            errors=json.loads(json.dumps(errors, default=str)),
+            body_bytes=len(body),
+            payload=raw,
+            **_identitas(raw),
         )
         return Keputusan.DLQ
 
+    data_pesan = {
+        "message_id": _teks(event.message_id),
+        "outlet_code": _teks(event.data.outlet.code),
+        "closing_report_id": event.data.closing_report_id,
+        "report_date": event.data.date,
+        "item_count": len(event.data.items),
+        "body_bytes": len(body),
+        "payload": raw,
+    }
+
     token = request_id_var.set(sanitize_request_id(event.message_id) or new_request_id())
-    db = session_factory()
     try:
-        hasil = simpan_closing_report(db, event, raw)
-    except ERROR_SEMENTARA as e:
-        logger.warning("CLOSING REPORT DIULANG: database tidak tersedia", extra={"error": str(e).strip()})
-        return Keputusan.ULANGI
-    except Exception:
-        logger.exception("CLOSING REPORT DITOLAK: gagal disimpan")
-        return Keputusan.DLQ
-    else:
+        try:
+            hasil = simpan_closing_report(db, event, raw)
+        except ERROR_SEMENTARA as e:
+            # Tidak dicatat: pesan kembali ke antrean dan dicatat saat diproses ulang.
+            logger.warning("CLOSING REPORT DIULANG: database tidak tersedia", extra={"error": str(e).strip()})
+            return Keputusan.ULANGI
+        except Exception as e:
+            logger.exception("CLOSING REPORT DITOLAK: gagal disimpan")
+            db.rollback()
+            _catat(db, status="ditolak", reason=f"gagal disimpan: {type(e).__name__}", **data_pesan)
+            return Keputusan.DLQ
+
         logger.info(
             f"CLOSING REPORT {hasil.status.value.upper()}",
             extra={
@@ -149,8 +229,10 @@ def proses_pesan(body: bytes, session_factory=SessionLocal) -> Keputusan:
                 "revision_id": hasil.revision_id,
             },
         )
+        peringatan = []
         if not hasil.outlet_dikenal:
             logger.warning("CLOSING REPORT: outlet belum terdaftar di api_keys", extra={"outlet": event.data.outlet.code})
+            peringatan.append("outlet belum terdaftar di api_keys")
         negatif = [str(i.menu_id) for i in event.data.items if i.compensation < 0]
         if negatif:
             # Pengirim belum memvalidasinya per menu; laporan tetap disimpan
@@ -159,9 +241,17 @@ def proses_pesan(body: bytes, session_factory=SessionLocal) -> Keputusan:
                 "CLOSING REPORT: compensation negatif",
                 extra={"closing_report_id": str(event.data.closing_report_id), "menu_ids": negatif},
             )
+            peringatan.append(f"compensation negatif: {len(negatif)} menu")
+
+        _catat(
+            db,
+            status=hasil.status.value,
+            revision_id=hasil.revision_id,
+            warnings=peringatan or None,
+            **data_pesan,
+        )
         return Keputusan.ACK
     finally:
-        db.close()
         request_id_var.reset(token)
 
 
