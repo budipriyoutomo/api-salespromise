@@ -1,21 +1,21 @@
 """Logika master data product dan mapping ProductID POS → produk master.
 
 Dipakai route `/api/products`. ProductID dinomori POS tiap outlet, jadi yang
-dipetakan adalah pasangan (outlet, ProductID).
+dipetakan adalah pasangan (outlet, ProductID). Produk master juga bisa diimpor
+dari penjualan: satu produk per (brand, ProductID POS), berkode `BRAND-ProductID`.
 
 Sama seperti master lain, tidak ada fungsi hapus: produk dan mapping dimatikan
 lewat `is_active`.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
 
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utcnow
-from app.models.brand import Brand
+from app.models.brand import Brand, OutletBrandMapping
 from app.models.product import Product, ProductPosMapping
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
@@ -24,7 +24,7 @@ from app.services.sales_service import SalesService, item_join
 MAX_PRODUCT_CODE_LENGTH = 50
 MAX_PRODUCT_NAME_LENGTH = 255
 MAX_CATEGORY_LENGTH = 100
-MAX_UNIT_LENGTH = 20
+MAX_SUBCATEGORY_LENGTH = 100
 # Sama dengan panjang `api_keys.outlet_code`.
 MAX_OUTLET_CODE_LENGTH = 20
 
@@ -46,7 +46,11 @@ class KandidatPos:
 
 
 class ProdukSudahAda(Exception):
-    """Kode produk sudah terdaftar — termasuk yang sedang nonaktif."""
+    """ProductID (`code`) sudah terdaftar — termasuk yang sedang nonaktif."""
+
+
+class ProductCodeSudahAda(Exception):
+    """Product Code sudah dipakai produk lain — termasuk yang sedang nonaktif."""
 
 
 class ProdukTidakDitemukan(Exception):
@@ -101,6 +105,23 @@ def get_by_code(db, code: str):
     return db.query(Product).filter(Product.code == normalize_product_code(code)).first()
 
 
+def _clean_kode(value, field: str) -> str:
+    normal = normalize_product_code(value)
+    if not normal:
+        raise DataTidakValid(f"{field} tidak boleh kosong")
+    if len(normal) > MAX_PRODUCT_CODE_LENGTH:
+        raise DataTidakValid(f"{field} maksimal {MAX_PRODUCT_CODE_LENGTH} karakter")
+    return normal
+
+
+def _check_product_code_bebas(db, product_code: str, kecuali_id: int | None = None) -> None:
+    query = db.query(Product.id).filter(Product.product_code == product_code)
+    if kecuali_id is not None:
+        query = query.filter(Product.id != kecuali_id)
+    if query.first():
+        raise ProductCodeSudahAda(product_code)
+
+
 def _clean_name(name) -> str:
     name = (name or "").strip()
     if not name:
@@ -120,18 +141,10 @@ def _clean_optional(value, field: str, max_length: int) -> str | None:
     return value
 
 
-def _clean_price(price) -> Decimal:
-    if price is None:
-        raise DataTidakValid("price tidak boleh kosong")
-    price = Decimal(str(price))
-    if price < 0:
-        raise DataTidakValid("price tidak boleh negatif")
-    return price
-
-
 def _check_brand(db, brand_id: int | None) -> None:
+    """Brand wajib diisi dan harus aktif."""
     if brand_id is None:
-        return
+        raise DataTidakValid("brand_id tidak boleh kosong")
     brand = db.get(Brand, brand_id)
     if not brand:
         raise BrandTidakValid(f"Brand id {brand_id} tidak ditemukan")
@@ -142,26 +155,23 @@ def _check_brand(db, brand_id: int | None) -> None:
 def create_product(
     db,
     code,
+    product_code,
     name,
+    brand_id: int | None,
     category=None,
-    unit=None,
-    price=0,
-    brand_id: int | None = None,
+    subcategory=None,
     is_active: bool = True,
 ):
-    normal = normalize_product_code(code)
-
-    if not normal:
-        raise DataTidakValid("code tidak boleh kosong")
-    if len(normal) > MAX_PRODUCT_CODE_LENGTH:
-        raise DataTidakValid(f"code maksimal {MAX_PRODUCT_CODE_LENGTH} karakter")
+    """Wajib: ProductID (`code`), Product Code, nama, dan brand. Sisanya opsional."""
+    normal = _clean_kode(code, "code")
+    product_code = _clean_kode(product_code, "product_code")
 
     row = Product(
         code=normal,
+        product_code=product_code,
         name=_clean_name(name),
         category=_clean_optional(category, "category", MAX_CATEGORY_LENGTH),
-        unit=_clean_optional(unit, "unit", MAX_UNIT_LENGTH),
-        price=_clean_price(price),
+        subcategory=_clean_optional(subcategory, "subcategory", MAX_SUBCATEGORY_LENGTH),
         brand_id=brand_id,
         is_active=is_active,
         created_at=utcnow(),
@@ -170,37 +180,43 @@ def create_product(
     _check_brand(db, brand_id)
     if get_by_code(db, normal):
         raise ProdukSudahAda(normal)
+    _check_product_code_bebas(db, product_code)
 
     db.add(row)
 
     try:
         db.commit()
     except IntegrityError:
+        # Admin lain menyimpan ProductID / Product Code yang sama bersamaan.
         db.rollback()
-        raise ProdukSudahAda(normal)
+        if get_by_code(db, normal):
+            raise ProdukSudahAda(normal)
+        raise ProductCodeSudahAda(product_code)
 
     db.refresh(row)
     return row
 
 
 def update_product(db, product_id: int, changes: dict):
-    """Ubah field yang dikirim saja. Kode tidak bisa diubah.
+    """Ubah field yang dikirim saja. ProductID (`code`) tidak bisa diubah.
 
     `changes` berisi field yang benar-benar dikirim; `None` untuk category /
-    unit / brand_id berarti dikosongkan.
+    subcategory berarti dikosongkan.
     """
     row = get_by_id(db, product_id)
     if not row:
         raise ProdukTidakDitemukan(product_id)
 
+    if "product_code" in changes:
+        product_code = _clean_kode(changes["product_code"], "product_code")
+        _check_product_code_bebas(db, product_code, kecuali_id=row.id)
+        row.product_code = product_code
     if "name" in changes:
         row.name = _clean_name(changes["name"])
     if "category" in changes:
         row.category = _clean_optional(changes["category"], "category", MAX_CATEGORY_LENGTH)
-    if "unit" in changes:
-        row.unit = _clean_optional(changes["unit"], "unit", MAX_UNIT_LENGTH)
-    if "price" in changes:
-        row.price = _clean_price(changes["price"])
+    if "subcategory" in changes:
+        row.subcategory = _clean_optional(changes["subcategory"], "subcategory", MAX_SUBCATEGORY_LENGTH)
     if "brand_id" in changes:
         _check_brand(db, changes["brand_id"])
         row.brand_id = changes["brand_id"]
@@ -208,7 +224,12 @@ def update_product(db, product_id: int, changes: dict):
         row.is_active = changes["is_active"]
     row.updated_at = utcnow()
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Admin lain memakai Product Code yang sama bersamaan.
+        db.rollback()
+        raise ProductCodeSudahAda(changes.get("product_code"))
     db.refresh(row)
     return row
 
@@ -375,3 +396,272 @@ def set_pos_mapping_active(db, product_id: int, mapping_id: int, is_active: bool
     db.commit()
     db.refresh(product)
     return product
+
+
+# ---------------------------------------------------------------------------
+# Impor master data dari transaksi POS
+# ---------------------------------------------------------------------------
+
+IMPORT_CANDIDATE_DEFAULT_LIMIT = 200
+IMPORT_CANDIDATE_MAX_LIMIT = 1000
+IMPORT_MAX_ITEMS = 500
+
+STATUS_IMPOR_BARU = "baru"
+STATUS_IMPOR_TAMBAH_OUTLET = "tambah_outlet"
+STATUS_IMPOR_BENTROK = "bentrok"
+
+
+@dataclass
+class KandidatImpor:
+    """Satu (brand, ProductID POS) dari penjualan yang masih punya outlet belum dipetakan.
+
+    Outlet-outlet satu brand yang menjual ProductID yang sama digabung jadi
+    satu produk master berkode `BRAND-ProductID` (dipakai juga untuk Product
+    Code). Nama / Group / Dept dari penjualan terakhir di brand itu.
+    """
+
+    brand_id: int
+    brand_code: str
+    brand_name: str
+    pos_product_id: int
+    pos_product_name: str | None
+    pos_product_group: str | None
+    pos_product_dept: str | None
+    last_sale_date: date | None
+    outlet_codes: list[str]
+    unmapped_outlet_codes: list[str]
+    proposed_code: str
+    # baru | tambah_outlet | bentrok
+    status: str
+    existing_product_id: int | None = None
+    reason: str | None = None
+    # (outlet, ProductID) → (nama, group) terbaru, untuk salinan di mapping.
+    info_outlet: dict = field(default_factory=dict, repr=False)
+
+
+@dataclass
+class HasilImpor:
+    brand_id: int
+    pos_product_id: int
+    # dibuat | ditambahkan | dilewati
+    status: str
+    product_id: int | None = None
+    code: str | None = None
+    mapped_outlets: list[str] = field(default_factory=list)
+    reason: str | None = None
+
+
+def kode_impor(brand_code: str, pos_product_id: int) -> str:
+    return normalize_product_code(f"{brand_code}-{pos_product_id}")
+
+
+def _potong(value, max_length: int) -> str | None:
+    value = (value or "").strip()
+    return value[:max_length] or None
+
+
+def _kandidat_impor(db, brand_id=None, q=None, pos_product_id=None) -> list[KandidatImpor]:
+    """Semua kandidat, terurut kode brand lalu ProductID. Lihat `KandidatImpor`."""
+    outlet_brand = {
+        m.outlet_code: brand
+        for m, brand in db.query(OutletBrandMapping, Brand)
+        .join(Brand, Brand.id == OutletBrandMapping.brand_id)
+        .filter(Brand.is_active.is_(True))
+        .all()
+        if brand_id is None or brand.id == brand_id
+    }
+    if not outlet_brand:
+        return []
+
+    group_expr = SalesService._normalized_product_group()
+    name_expr = func.trim(SalesItems.product_name)
+    dept_expr = func.trim(SalesItems.product_dept)
+
+    query = (
+        db.query(
+            Sales.outlet_code.label("outlet_code"),
+            SalesItems.product_id.label("product_id"),
+            name_expr.label("product_name"),
+            group_expr.label("product_group"),
+            dept_expr.label("product_dept"),
+            func.max(SalesItems.sale_date).label("last_sale_date"),
+            func.max(SalesItems.transaction_id).label("last_transaction_id"),
+        )
+        .join(Sales, item_join)
+        .filter(SalesItems.product_id > 0, Sales.outlet_code.in_(sorted(outlet_brand)))
+    )
+    if pos_product_id is not None:
+        query = query.filter(SalesItems.product_id == pos_product_id)
+
+    kata = (q or "").strip()
+    if kata:
+        syarat = [func.upper(SalesItems.product_name).contains(kata.upper(), autoescape=True)]
+        if kata.isdigit():
+            syarat.append(SalesItems.product_id == int(kata))
+        query = query.filter(or_(*syarat))
+
+    rows = query.group_by(Sales.outlet_code, SalesItems.product_id, name_expr, group_expr, dept_expr).all()
+
+    # Per (outlet, ProductID): varian nama terakhir. Per (brand, ProductID): yang terakhir di brand itu.
+    per_outlet: dict = {}
+    for row in rows:
+        kunci = (row.outlet_code, row.product_id)
+        urutan = (row.last_sale_date or date.min, row.last_transaction_id or 0)
+        if kunci not in per_outlet or urutan > per_outlet[kunci][0]:
+            per_outlet[kunci] = (urutan, row)
+
+    per_brand: dict = {}
+    for (outlet, pid), (urutan, row) in per_outlet.items():
+        brand = outlet_brand[outlet]
+        grup = per_brand.setdefault((brand.id, pid), {"brand": brand, "outlet": {}, "terbaru": None})
+        grup["outlet"][outlet] = row
+        if grup["terbaru"] is None or urutan > grup["terbaru"][0]:
+            grup["terbaru"] = (urutan, row)
+
+    aktif = {
+        (m.outlet_code, m.pos_product_id)
+        for m in db.query(ProductPosMapping.outlet_code, ProductPosMapping.pos_product_id)
+        .filter(ProductPosMapping.is_active.is_(True))
+        .all()
+    }
+
+    usulan = {kode_impor(g["brand"].code, pid) for (_, pid), g in per_brand.items()}
+    produk_per_kode = {p.code: p for p in db.query(Product).filter(Product.code.in_(usulan)).all()}
+    kode_dipakai = {
+        pc: pid for pc, pid in db.query(Product.product_code, Product.id).filter(Product.product_code.in_(usulan)).all()
+    }
+
+    hasil = []
+    for (b_id, pid), grup in sorted(per_brand.items(), key=lambda x: (x[1]["brand"].code, x[0][1])):
+        outlets = sorted(grup["outlet"])
+        belum = [o for o in outlets if (o, pid) not in aktif]
+        if not belum:
+            continue
+
+        brand = grup["brand"]
+        terbaru = grup["terbaru"][1]
+        kode = kode_impor(brand.code, pid)
+        status, existing_id, alasan = STATUS_IMPOR_BARU, None, None
+
+        produk = produk_per_kode.get(kode)
+        if produk is not None:
+            existing_id = produk.id
+            if not produk.is_active:
+                status, alasan = STATUS_IMPOR_BENTROK, f"Produk {kode} sudah ada tetapi nonaktif"
+            elif produk.brand_id != b_id:
+                status, alasan = STATUS_IMPOR_BENTROK, f"Produk {kode} sudah ada dengan brand lain"
+            else:
+                status = STATUS_IMPOR_TAMBAH_OUTLET
+        elif kode in kode_dipakai:
+            status, alasan = STATUS_IMPOR_BENTROK, f"Product Code {kode} sudah dipakai produk lain"
+
+        hasil.append(
+            KandidatImpor(
+                brand_id=b_id,
+                brand_code=brand.code,
+                brand_name=brand.name,
+                pos_product_id=pid,
+                pos_product_name=terbaru.product_name or None,
+                pos_product_group=terbaru.product_group or None,
+                pos_product_dept=terbaru.product_dept or None,
+                last_sale_date=terbaru.last_sale_date,
+                outlet_codes=outlets,
+                unmapped_outlet_codes=belum,
+                proposed_code=kode,
+                status=status,
+                existing_product_id=existing_id,
+                reason=alasan,
+                info_outlet={
+                    o: (grup["outlet"][o].product_name or None, grup["outlet"][o].product_group or None)
+                    for o in belum
+                },
+            )
+        )
+    return hasil
+
+
+def list_import_candidates(db, brand_id=None, q=None, limit=IMPORT_CANDIDATE_DEFAULT_LIMIT) -> list[KandidatImpor]:
+    limit = max(1, min(limit or IMPORT_CANDIDATE_DEFAULT_LIMIT, IMPORT_CANDIDATE_MAX_LIMIT))
+    return _kandidat_impor(db, brand_id=brand_id, q=q)[:limit]
+
+
+def _petakan_outlet(db, product: Product, kandidat: KandidatImpor) -> list[str]:
+    """Petakan outlet kandidat yang belum aktif ke produk; baris nonaktif dipakai ulang."""
+    sekarang = utcnow()
+    for outlet in kandidat.unmapped_outlet_codes:
+        nama, grup = kandidat.info_outlet[outlet]
+        row = (
+            db.query(ProductPosMapping)
+            .filter(
+                ProductPosMapping.outlet_code == outlet,
+                ProductPosMapping.pos_product_id == kandidat.pos_product_id,
+            )
+            .first()
+        )
+        if row is None:
+            row = ProductPosMapping(outlet_code=outlet, pos_product_id=kandidat.pos_product_id, created_at=sekarang)
+            db.add(row)
+        else:
+            row.updated_at = sekarang
+        row.product_id = product.id
+        row.pos_product_name = nama
+        row.pos_product_group = grup
+        row.is_active = True
+    return list(kandidat.unmapped_outlet_codes)
+
+
+def import_from_pos(db, items: list[tuple[int, int]]) -> list[HasilImpor]:
+    """Buat produk master (atau tambah outlet ke produk yang sudah ada) dari penjualan.
+
+    `items` = [(brand_id, pos_product_id)]. Kandidat dihitung ulang di sini —
+    pilihan dari layar bisa sudah basi. Tiap item di savepoint sendiri: yang
+    gagal dilewati tanpa membatalkan yang lain. Satu commit di akhir.
+    """
+    hasil = []
+    for brand_id, pid in dict.fromkeys(items):
+        [kandidat] = _kandidat_impor(db, brand_id=brand_id, pos_product_id=pid) or [None]
+        if kandidat is None:
+            hasil.append(
+                HasilImpor(brand_id, pid, "dilewati", reason="Tidak ada outlet brand ini yang belum dipetakan")
+            )
+            continue
+        if kandidat.status == STATUS_IMPOR_BENTROK:
+            hasil.append(
+                HasilImpor(
+                    brand_id, pid, "dilewati", product_id=kandidat.existing_product_id, reason=kandidat.reason
+                )
+            )
+            continue
+
+        savepoint = db.begin_nested()
+        try:
+            if kandidat.status == STATUS_IMPOR_TAMBAH_OUTLET:
+                product = db.get(Product, kandidat.existing_product_id)
+                status = "ditambahkan"
+            else:
+                product = Product(
+                    code=kandidat.proposed_code,
+                    product_code=kandidat.proposed_code,
+                    name=_potong(kandidat.pos_product_name, MAX_PRODUCT_NAME_LENGTH) or f"ProductID {pid}",
+                    category=_potong(kandidat.pos_product_group, MAX_CATEGORY_LENGTH),
+                    subcategory=_potong(kandidat.pos_product_dept, MAX_SUBCATEGORY_LENGTH),
+                    brand_id=brand_id,
+                    is_active=True,
+                    created_at=utcnow(),
+                )
+                db.add(product)
+                db.flush()
+                status = "dibuat"
+            outlets = _petakan_outlet(db, product, kandidat)
+            db.flush()
+            savepoint.commit()
+        except IntegrityError:
+            # Admin lain mengimpor / memetakan yang sama bersamaan.
+            savepoint.rollback()
+            hasil.append(HasilImpor(brand_id, pid, "dilewati", reason="Bentrok dengan perubahan lain, coba lagi"))
+            continue
+
+        hasil.append(HasilImpor(brand_id, pid, status, product_id=product.id, code=product.code, mapped_outlets=outlets))
+
+    db.commit()
+    return hasil

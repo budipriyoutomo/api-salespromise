@@ -16,11 +16,15 @@ from app.database import Base
 
 
 class Product(Base):
-    """Master data produk, dikelola admin (migrasi 014).
+    """Master data produk, dikelola admin (migrasi 014, 015).
 
-    `code` selalu dalam bentuk normal (trim + huruf besar), ditegakkan oleh
-    `product_service` dan CHECK di migrasi. Tidak pernah dihapus — dimatikan
-    lewat `is_active`.
+    `code` (tampil sebagai "ProductID") dan `product_code` selalu dalam bentuk
+    normal (trim + huruf besar), ditegakkan oleh `product_service` dan CHECK di
+    migrasi. `product_code` boleh NULL hanya untuk produk lama dari sebelum
+    migrasi 015; API mewajibkannya. `unit` & `price` tidak dipakai API lagi,
+    kolomnya dibiarkan supaya datanya tidak hilang.
+
+    Tidak pernah dihapus — dimatikan lewat `is_active`.
     """
 
     __tablename__ = "products"
@@ -29,8 +33,10 @@ class Product(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     code = Column(String(50), nullable=False, unique=True)
+    product_code = Column(String(50), nullable=True, unique=True)
     name = Column(String(255), nullable=False)
     category = Column(String(100), nullable=True)
+    subcategory = Column(String(100), nullable=True)
     unit = Column(String(20), nullable=True)
     price = Column(Numeric(18, 4), nullable=False, default=0)
     brand_id = Column(Integer, ForeignKey("brands.id"), nullable=True, index=True)

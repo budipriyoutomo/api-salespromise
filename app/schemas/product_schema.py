@@ -1,21 +1,18 @@
 """Schema untuk master data product dan mapping ProductID POS."""
 
 from datetime import date, datetime
-from decimal import Decimal
-from typing import Annotated, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.services.product_service import (
+    IMPORT_MAX_ITEMS,
     MAX_CATEGORY_LENGTH,
     MAX_OUTLET_CODE_LENGTH,
     MAX_PRODUCT_CODE_LENGTH,
     MAX_PRODUCT_NAME_LENGTH,
-    MAX_UNIT_LENGTH,
+    MAX_SUBCATEGORY_LENGTH,
 )
-
-# Sesuai kolom NUMERIC(18, 4).
-Harga = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=4)]
 
 
 class ProductBrand(BaseModel):
@@ -43,11 +40,14 @@ class ProductResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    # Tampil sebagai "ProductID".
     code: str
+    # Kosong hanya untuk produk dari sebelum migrasi 015.
+    product_code: Optional[str] = None
     name: str
     category: Optional[str] = None
-    unit: Optional[str] = None
-    price: float
+    subcategory: Optional[str] = None
+    # Kosong hanya untuk produk dari sebelum brand diwajibkan.
     brand: Optional[ProductBrand] = None
     is_active: bool
     # Semua mapping milik produk ini, termasuk yang nonaktif.
@@ -67,28 +67,31 @@ class ProductDetailResponse(BaseModel):
 
 
 class CreateProductRequest(BaseModel):
-    """Kode dinormalisasi oleh service: `p-001 ` tersimpan sebagai `P-001`."""
+    """Wajib: ProductID (`code`), Product Code, nama, brand.
+
+    `code` & `product_code` dinormalisasi oleh service: `p-001 ` → `P-001`.
+    """
 
     code: str = Field(min_length=1, max_length=MAX_PRODUCT_CODE_LENGTH)
+    product_code: str = Field(min_length=1, max_length=MAX_PRODUCT_CODE_LENGTH)
     name: str = Field(min_length=1, max_length=MAX_PRODUCT_NAME_LENGTH)
+    brand_id: int = Field(gt=0)
     category: Optional[str] = Field(default=None, max_length=MAX_CATEGORY_LENGTH)
-    unit: Optional[str] = Field(default=None, max_length=MAX_UNIT_LENGTH)
-    price: Harga = Decimal(0)
-    brand_id: Optional[int] = Field(default=None, gt=0)
+    subcategory: Optional[str] = Field(default=None, max_length=MAX_SUBCATEGORY_LENGTH)
     is_active: bool = True
 
 
 # Field yang boleh null di PATCH (null = dikosongkan).
-_BOLEH_NULL = {"category", "unit", "brand_id"}
+_BOLEH_NULL = {"category", "subcategory"}
 
 
 class UpdateProductRequest(BaseModel):
-    """Hanya field yang dikirim yang diubah. Kode sengaja tidak bisa diubah."""
+    """Hanya field yang dikirim yang diubah. ProductID (`code`) tidak bisa diubah."""
 
+    product_code: Optional[str] = Field(default=None, min_length=1, max_length=MAX_PRODUCT_CODE_LENGTH)
     name: Optional[str] = Field(default=None, min_length=1, max_length=MAX_PRODUCT_NAME_LENGTH)
     category: Optional[str] = Field(default=None, max_length=MAX_CATEGORY_LENGTH)
-    unit: Optional[str] = Field(default=None, max_length=MAX_UNIT_LENGTH)
-    price: Optional[Harga] = None
+    subcategory: Optional[str] = Field(default=None, max_length=MAX_SUBCATEGORY_LENGTH)
     brand_id: Optional[int] = Field(default=None, gt=0)
     is_active: Optional[bool] = None
 
@@ -131,3 +134,70 @@ class CreatePosMappingRequest(BaseModel):
 
 class UpdatePosMappingRequest(BaseModel):
     is_active: bool
+
+
+# ---------------------------------------------------------------------------
+# Impor dari transaksi POS
+# ---------------------------------------------------------------------------
+
+
+class ImportCandidateResponse(BaseModel):
+    """Satu (brand, ProductID POS) yang masih punya outlet belum dipetakan."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    brand_id: int
+    brand_code: str
+    brand_name: str
+    pos_product_id: int
+    pos_product_name: Optional[str] = None
+    pos_product_group: Optional[str] = None
+    pos_product_dept: Optional[str] = None
+    last_sale_date: Optional[date] = None
+    outlet_codes: List[str]
+    unmapped_outlet_codes: List[str]
+    # ProductID & Product Code produk yang akan dibuat: BRAND-ProductID.
+    proposed_code: str
+    # baru | tambah_outlet | bentrok
+    status: str
+    existing_product_id: Optional[int] = None
+    reason: Optional[str] = None
+
+
+class ImportCandidateListResponse(BaseModel):
+    success: bool = True
+    data: List[ImportCandidateResponse]
+
+
+class ImportItem(BaseModel):
+    brand_id: int = Field(gt=0)
+    pos_product_id: int = Field(gt=0)
+
+
+class ImportProductsRequest(BaseModel):
+    items: List[ImportItem] = Field(min_length=1, max_length=IMPORT_MAX_ITEMS)
+
+
+class ImportResult(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    brand_id: int
+    pos_product_id: int
+    # dibuat | ditambahkan | dilewati
+    status: str
+    product_id: Optional[int] = None
+    code: Optional[str] = None
+    mapped_outlets: List[str] = Field(default_factory=list)
+    reason: Optional[str] = None
+
+
+class ImportSummary(BaseModel):
+    created: int
+    added: int
+    skipped: int
+    results: List[ImportResult]
+
+
+class ImportProductsResponse(BaseModel):
+    success: bool = True
+    data: ImportSummary

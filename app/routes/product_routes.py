@@ -3,6 +3,8 @@
 - `GET   /api/products`, `/{id}`                    → admin & manager
 - `POST  /api/products`, `PATCH /{id}`              → admin
 - `GET   /api/products/pos-candidates`              → admin, ProductID per outlet dari penjualan
+- `GET   /api/products/import-candidates`           → admin, (brand, ProductID) yang bisa diimpor
+- `POST  /api/products/import`                      → admin, buat produk master dari penjualan
 - `POST  /api/products/{id}/pos-mappings`           → admin, petakan (outlet, ProductID)
 - `PATCH /api/products/{id}/pos-mappings/{mapping}` → admin, aktifkan / nonaktifkan
 
@@ -20,6 +22,12 @@ from app.models.user import ROLE_ADMIN, ROLE_MANAGER, User
 from app.schemas.product_schema import (
     CreatePosMappingRequest,
     CreateProductRequest,
+    ImportCandidateListResponse,
+    ImportCandidateResponse,
+    ImportProductsRequest,
+    ImportProductsResponse,
+    ImportResult,
+    ImportSummary,
     PosCandidateListResponse,
     PosCandidateResponse,
     ProductDetailResponse,
@@ -45,6 +53,13 @@ def _tidak_ditemukan() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Produk tidak ditemukan")
 
 
+def _product_code_bentrok(product_code) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Product Code '{product_code}' sudah dipakai produk lain.",
+    )
+
+
 def _detail(row) -> ProductDetailResponse:
     return ProductDetailResponse(data=ProductResponse.model_validate(row))
 
@@ -67,11 +82,11 @@ def create_product(
         row = product_service.create_product(
             db,
             payload.code,
+            payload.product_code,
             payload.name,
-            category=payload.category,
-            unit=payload.unit,
-            price=payload.price,
             brand_id=payload.brand_id,
+            category=payload.category,
+            subcategory=payload.subcategory,
             is_active=payload.is_active,
         )
     except product_service.ProdukSudahAda as exc:
@@ -79,6 +94,8 @@ def create_product(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Produk '{exc}' sudah terdaftar. Aktifkan lewat PATCH kalau sedang nonaktif.",
         )
+    except product_service.ProductCodeSudahAda as exc:
+        raise _product_code_bentrok(exc)
     except (product_service.DataTidakValid, product_service.BrandTidakValid) as exc:
         raise _tidak_valid(exc)
 
@@ -109,6 +126,55 @@ def list_pos_candidates(
     return PosCandidateListResponse(data=[PosCandidateResponse.model_validate(row) for row in rows])
 
 
+@router.get("/import-candidates", response_model=ImportCandidateListResponse)
+def list_import_candidates(
+    brand_id: Optional[int] = Query(None, gt=0, description="Batasi ke satu brand"),
+    q: Optional[str] = Query(None, description="Cari nama produk POS atau ProductID persis"),
+    limit: int = Query(
+        product_service.IMPORT_CANDIDATE_DEFAULT_LIMIT,
+        ge=1,
+        le=product_service.IMPORT_CANDIDATE_MAX_LIMIT,
+    ),
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Produk POS per (brand, ProductID) yang masih punya outlet belum dipetakan.
+
+    Hanya outlet yang sudah dipetakan ke brand aktif yang ikut.
+    """
+    rows = product_service.list_import_candidates(db, brand_id=brand_id, q=q, limit=limit)
+
+    return ImportCandidateListResponse(data=[ImportCandidateResponse.model_validate(row) for row in rows])
+
+
+@router.post("/import", response_model=ImportProductsResponse)
+def import_products(
+    payload: ImportProductsRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Buat produk `BRAND-ProductID` (atau tambah outlet ke produk itu) dari penjualan.
+
+    Item yang tidak bisa diimpor dilewati dengan alasannya; yang lain tetap tersimpan.
+    """
+    hasil = product_service.import_from_pos(db, [(i.brand_id, i.pos_product_id) for i in payload.items])
+    jumlah = {s: sum(1 for h in hasil if h.status == s) for s in ("dibuat", "ditambahkan", "dilewati")}
+
+    logger.info(
+        f"PRODUK DIIMPOR dibuat={jumlah['dibuat']} ditambahkan={jumlah['ditambahkan']} "
+        f"dilewati={jumlah['dilewati']} oleh={admin.email}"
+    )
+
+    return ImportProductsResponse(
+        data=ImportSummary(
+            created=jumlah["dibuat"],
+            added=jumlah["ditambahkan"],
+            skipped=jumlah["dilewati"],
+            results=[ImportResult.model_validate(h) for h in hasil],
+        )
+    )
+
+
 @router.get("/{product_id}", response_model=ProductDetailResponse)
 def get_product(product_id: int, db: Session = Depends(get_db), _user: User = Depends(require_reader)):
     row = product_service.get_by_id(db, product_id)
@@ -125,11 +191,13 @@ def update_product(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """Ubah field yang dikirim. `null` untuk category / unit / brand_id mengosongkannya."""
+    """Ubah field yang dikirim. `null` untuk category / subcategory mengosongkannya."""
     try:
         row = product_service.update_product(db, product_id, payload.changes())
     except product_service.ProdukTidakDitemukan:
         raise _tidak_ditemukan()
+    except product_service.ProductCodeSudahAda as exc:
+        raise _product_code_bentrok(exc)
     except (product_service.DataTidakValid, product_service.BrandTidakValid) as exc:
         raise _tidak_valid(exc)
 

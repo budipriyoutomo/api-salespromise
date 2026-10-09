@@ -262,3 +262,28 @@ def test_migrasi_014_hanya_membuat_tabel_produk():
         "ORDERDETAIL",
     ]:
         assert terlarang not in sql, terlarang
+
+
+def test_migrasi_015_hanya_menambah_kolom_produk():
+    """Product Code & subkategori: ADD COLUMN saja, unit/price tidak dihapus."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "015_products_code_subcategory.sql").read_text(encoding="utf-8"))
+
+    for harus in [
+        "ADD COLUMN IF NOT EXISTS PRODUCT_CODE VARCHAR(50)",
+        "ADD COLUMN IF NOT EXISTS SUBCATEGORY  VARCHAR(100)",
+        "CK_PRODUCTS_PRODUCT_CODE_NORMAL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS UQ_PRODUCTS_PRODUCT_CODE",
+    ]:
+        assert harus in sql, harus
+    for terlarang in [
+        "INSERT",
+        "UPDATE ",
+        "DELETE",
+        "TRUNCATE",
+        "DROP",
+        "NOT NULL",
+        "API_KEYS",
+        "ORDERTRANSACTION",
+        "ORDERDETAIL",
+    ]:
+        assert terlarang not in sql, terlarang
