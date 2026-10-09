@@ -300,15 +300,20 @@ def get_report(db, closing_report_id, outlet=None) -> dict | None:
 class ProdukPerbandingan:
     product_id: int
     product_name: str | None
+    # Group POS (dinormalisasi) dari penjualan di rentang ini; None kalau tidak terjual.
+    product_group: str | None
     multiplier: int
+    # Dipetakan ke salah satu menu colorplate (mapping aktif).
+    is_mapped: bool
 
 
 @dataclass
 class BarisPerbandingan:
     """Satu menu colorplate per outlet & tanggal produksi, berdampingan dengan POS.
 
-    Baris tanpa menu (`menu_id` None, angka colorplate None) = produk POS
-    terpetakan yang terjual tetapi tidak satu pun menunya ada di colorplate.
+    Baris tanpa menu (`menu_id` None, angka colorplate None) = produk POS yang
+    terjual tetapi qty-nya tidak tampil di baris menu mana pun — belum
+    dipetakan, bukan colorplate, atau menunya tidak ada di colorplate hari itu.
     """
 
     outlet_code: str
@@ -338,9 +343,10 @@ def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_de
     - Tanggal produksi item dicocokkan dengan tanggal transaksi POS; item tanpa
       tanggal produksi memakai tanggal closing.
     - Menu yang belum dipetakan tetap tampil dengan `pos_qty` kosong.
-    - Produk terpetakan yang terjual di POS tanpa satu pun menunya di colorplate
-      outlet/tanggal itu tampil sebagai baris tanpa menu, supaya kedua sistem
-      bisa dikonsolidasi.
+    - Setiap produk POS yang terjual di outlet/tanggal itu tetapi qty-nya tidak
+      tampil di baris menu mana pun — belum dipetakan, bukan colorplate, atau
+      menunya tidak ada di colorplate — tampil sebagai baris tanpa menu, supaya
+      kedua sistem bisa dikonsolidasi.
     - Hanya pasangan (outlet, tanggal) yang punya colorplate yang ditampilkan.
     - Transaksi `Deleted=1` dibuang kecuali `include_deleted`.
     """
@@ -378,26 +384,33 @@ def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_de
     pasangan = {(o, d) for o, d, _ in closing}
     mapping = closing_menu_service.active_mappings(db)
     menus = {m.menu_id: m for m in db.query(ClosingMenu).filter(ClosingMenu.menu_id.in_({k[2] for k in closing})).all()}
-    pos = _qty_pos(db, mapping, pasangan, include_deleted)
+    pos, info_pos = _penjualan_pos(db, pasangan, include_deleted)
 
-    # Snapshot nama kosong → nama terakhir di data penjualan.
-    nama_produk: dict[int, str | None] = {}
+    # Nama: snapshot mapping → penjualan di rentang ini → penjualan terakhir.
+    nama_produk: dict[int, str | None] = {pid: nama for pid, (nama, _) in info_pos.items()}
     for produk in mapping.values():
         for product_id, _, nama in produk:
-            if nama_produk.get(product_id) is None:
+            if nama:
                 nama_produk[product_id] = nama
-    for product_id, nama in list(nama_produk.items()):
-        if not nama:
+    terpetakan = {pid for produk in mapping.values() for pid, _, _ in produk}
+    for product_id in terpetakan:
+        if not nama_produk.get(product_id):
             info = product_menu_service._info_terbaru(db, product_id)
             nama_produk[product_id] = (info.product_name or None) if info else None
+
+    def info_produk(product_id, multiplier):
+        return ProdukPerbandingan(
+            product_id=product_id,
+            product_name=nama_produk.get(product_id),
+            product_group=info_pos.get(product_id, (None, None))[1],
+            multiplier=multiplier,
+            is_mapped=product_id in terpetakan,
+        )
 
     hasil = []
     for (o, d, menu_id), c in closing.items():
         m = menus.get(menu_id)
-        produk = [
-            ProdukPerbandingan(product_id=pid, product_name=nama_produk.get(pid), multiplier=mult)
-            for pid, mult, _ in mapping.get(menu_id, [])
-        ]
+        produk = [info_produk(pid, mult) for pid, mult, _ in mapping.get(menu_id, [])]
         pos_qty = sum(pos.get((o, d, p.product_id), 0.0) for p in produk) if produk else None
         hasil.append(
             BarisPerbandingan(
@@ -432,37 +445,39 @@ def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_de
                 adjustment=None,
                 compensation=None,
                 # Pengali milik pasangan menu–produk; tanpa menu tidak ada yang berlaku.
-                products=[ProdukPerbandingan(product_id=product_id, product_name=nama_produk.get(product_id), multiplier=1)],
+                products=[info_produk(product_id, 1)],
                 pos_qty=qty,
             )
         )
 
-    # Baris tanpa menu di belakang menu-menu outlet/tanggal yang sama.
-    hasil.sort(
-        key=lambda b: (
-            b.production_date,
-            b.outlet_code,
-            b.menu_id is None,
-            b.menu_name or "",
-            b.products[0].product_id if b.menu_id is None else 0,
-            str(b.menu_id),
-        )
-    )
+    # Baris tanpa menu di belakang menu-menu outlet/tanggal yang sama, urut nama produk.
+    def urutan(b):
+        if b.menu_id is None:
+            p = b.products[0]
+            return (b.production_date, b.outlet_code, True, p.product_name or "", p.product_id, "")
+        return (b.production_date, b.outlet_code, False, b.menu_name or "", 0, str(b.menu_id))
+
+    hasil.sort(key=urutan)
     return hasil
 
 
-def _qty_pos(db, mapping, pasangan, include_deleted) -> dict:
-    """(outlet, tanggal, product_id) → qty POS, hanya untuk pasangan yang punya closing."""
-    product_ids = sorted({pid for produk in mapping.values() for pid, _, _ in produk})
-    if not product_ids:
-        return {}
+def _penjualan_pos(db, pasangan, include_deleted) -> tuple[dict, dict]:
+    """Semua produk POS yang terjual pada pasangan (outlet, tanggal) yang punya closing.
 
+    Mengembalikan ((outlet, tanggal, product_id) → qty, product_id → (nama, group)).
+    """
     tanggal = [d for _, d in pasangan]
     query = (
-        db.query(SalesItems.product_id, Sales.outlet_code, Sales.sale_date, func.sum(SalesItems.qty).label("qty"))
+        db.query(
+            SalesItems.product_id,
+            Sales.outlet_code,
+            Sales.sale_date,
+            func.sum(SalesItems.qty).label("qty"),
+            func.max(func.trim(SalesItems.product_name)).label("nama"),
+            func.max(SalesService._normalized_product_group()).label("grup"),
+        )
         .join(Sales, item_join)
         .filter(
-            SalesItems.product_id.in_(product_ids),
             Sales.outlet_code.in_(sorted({o for o, _ in pasangan})),
             Sales.sale_date >= min(tanggal),
             Sales.sale_date <= max(tanggal),
@@ -470,8 +485,11 @@ def _qty_pos(db, mapping, pasangan, include_deleted) -> dict:
     )
     query = SalesService._active_sales(query, include_deleted=include_deleted)
 
-    hasil = {}
+    qty, info = {}, {}
     for row in query.group_by(SalesItems.product_id, Sales.outlet_code, Sales.sale_date):
-        if (row.outlet_code, row.sale_date) in pasangan:
-            hasil[(row.outlet_code, row.sale_date, row.product_id)] = float(row.qty or 0)
-    return hasil
+        if (row.outlet_code, row.sale_date) not in pasangan:
+            continue
+        qty[(row.outlet_code, row.sale_date, row.product_id)] = float(row.qty or 0)
+        nama, grup = info.get(row.product_id, (None, None))
+        info[row.product_id] = (nama or row.nama or None, grup or row.grup or None)
+    return qty, info

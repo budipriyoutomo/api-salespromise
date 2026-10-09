@@ -739,9 +739,12 @@ Sumber: [docs/jawaban-pengirim-closing.md](docs/jawaban-pengirim-closing.md)
       `compensation` apa adanya + `products[]` (mapping aktif) + `pos_qty` =
       Σ qty orderdetail outlet & tanggal sama dari ProductID yang dipetakan
       (tanpa pengali; null kalau belum dipetakan). `selisih`/`status`/
-      `closing_qty` dihapus atas permintaan pengguna. Untuk konsolidasi, produk
-      terpetakan yang terjual tanpa menunya di colorplate tetap tampil sebagai
-      baris tanpa menu (`menu_id` & angka colorplate null). Tanpa migrasi.
+      `closing_qty` dihapus atas permintaan pengguna. Untuk konsolidasi, SEMUA
+      produk POS yang terjual di outlet/tanggal yang punya colorplate dan
+      qty-nya belum tampil di baris menu (belum dipetakan / bukan colorplate /
+      menunya tidak ada di colorplate) tampil sebagai baris tanpa menu
+      (`menu_id` & angka colorplate null). `products[]` kini juga membawa
+      `product_group` & `is_mapped`. Tanpa migrasi.
 - [x] **7.6b Frontend** — repo sync-frontend, Fase 11 di TODO-nya:
       `/closing` (semua role: perbandingan POS + daftar/detail laporan) dan
       `/closing-menu` (admin: mapping). Lewat catch-all BFF, tanpa route baru.

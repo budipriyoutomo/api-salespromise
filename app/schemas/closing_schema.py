@@ -142,7 +142,11 @@ class ClosingComparisonProduct(BaseModel):
 
     product_id: int
     product_name: Optional[str] = None
+    # Group POS dari penjualan di rentang ini; kosong kalau tidak terjual.
+    product_group: Optional[str] = None
     multiplier: int
+    # Dipetakan ke salah satu menu colorplate.
+    is_mapped: bool
 
 
 class ClosingComparisonRow(BaseModel):
@@ -151,8 +155,9 @@ class ClosingComparisonRow(BaseModel):
     pos_qty = Σ qty orderdetail (outlet & tanggal sama) dari ProductID yang
     dipetakan ke menu ini; kosong kalau menu belum dipetakan.
 
-    Baris tanpa menu (`menu_id` & angka colorplate kosong) = produk POS
-    terpetakan yang terjual tetapi tidak satu pun menunya ada di colorplate.
+    Baris tanpa menu (`menu_id` & angka colorplate kosong) = produk POS yang
+    terjual tetapi qty-nya tidak tampil di baris menu mana pun (belum
+    dipetakan, bukan colorplate, atau menunya tidak ada di colorplate).
     """
 
     model_config = ConfigDict(from_attributes=True)
