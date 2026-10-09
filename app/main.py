@@ -13,6 +13,7 @@ from app.routes.auth_routes import router as auth_router
 from app.routes.brand_routes import router as brand_router
 from app.routes.closing_routes import closing_menu_router, closing_message_router, closing_report_router
 from app.routes.outlet_routes import router as outlet_router
+from app.routes.product_routes import router as product_router
 from app.routes.sales_routes import router as sales_router
 from app.routes.sync_routes import router as sync_router
 from app.utils.logger import logger
@@ -56,6 +57,7 @@ app.include_router(user_router)
 app.include_router(product_group_router)
 app.include_router(product_menu_router)
 app.include_router(brand_router)
+app.include_router(product_router)
 app.include_router(closing_menu_router)
 app.include_router(closing_report_router)
 app.include_router(closing_message_router)

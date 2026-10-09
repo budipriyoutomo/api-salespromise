@@ -240,3 +240,25 @@ def test_migrasi_013_hanya_membuat_tabel_log_pesan_closing():
         "ORDERDETAIL",
     ]:
         assert terlarang not in sql, terlarang
+
+
+def test_migrasi_014_hanya_membuat_tabel_produk():
+    """Master data product: CREATE saja, tanpa seed, tabel lama tidak disentuh."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "014_products.sql").read_text(encoding="utf-8"))
+
+    assert "CREATE TABLE IF NOT EXISTS PRODUCTS " in sql
+    assert "CREATE TABLE IF NOT EXISTS PRODUCT_POS_MAPPINGS " in sql
+    assert "UNIQUE (OUTLET_CODE, POS_PRODUCT_ID)" in sql
+    assert "CREATE INDEX IF NOT EXISTS" in sql
+    for terlarang in [
+        "INSERT",
+        "UPDATE ",
+        "DROP",
+        "DELETE",
+        "TRUNCATE",
+        "ALTER",
+        "API_KEYS",
+        "ORDERTRANSACTION",
+        "ORDERDETAIL",
+    ]:
+        assert terlarang not in sql, terlarang

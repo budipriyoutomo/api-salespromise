@@ -39,6 +39,7 @@ polos tetap hijau di mesin mana pun.
 | `unit/test_sales_service_queries.py` | `get_sales`, `count_sales`, rekap per product group, `get_sales_colorplate`, pagination |
 | `unit/test_product_group_service.py` | Mapping product group — normalisasi nama, tanpa penghapusan |
 | `unit/test_routes_product_groups.py` | `/api/product-groups` (admin), `/api/sales/by-group`, `/api/sales/product-groups` |
+| `unit/test_routes_products.py` | `/api/products` — master data product, kandidat & mapping ProductID POS per outlet |
 | `unit/test_routes_sync.py` | `POST /api/sync/sales` |
 | `unit/test_routes_sales.py` | `GET /api/sales`, `/colorplate`, `POST /publish` |
 | `unit/test_rabbitmq.py` | `RabbitMQClient` (pika di-mock) |
