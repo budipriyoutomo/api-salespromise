@@ -137,43 +137,40 @@ class ClosingReportDetailResponse(BaseModel):
     data: ClosingReportDetail
 
 
-class ClosingComparisonMenu(BaseModel):
+class ClosingComparisonProduct(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    menu_id: UUID
-    menu_code: Optional[str] = None
-    menu_name: str
-    # Pengali mapping; kosong untuk menu yang belum dipetakan.
-    multiplier: Optional[int] = None
-    sold: int
-    waste: int
-    adjustment: int
-    compensation: int
+    product_id: int
+    product_name: Optional[str] = None
+    multiplier: int
 
 
 class ClosingComparisonRow(BaseModel):
-    """Satu produk POS (atau satu menu yang belum dipetakan) per outlet & tanggal.
+    """Satu menu colorplate per outlet & tanggal produksi, berdampingan dengan POS.
 
-    closing_qty = Σ (sold + adjustment + compensation) × pengali menu-menunya;
-    selisih = pos_qty − closing_qty (rumus pengirim).
+    pos_qty = Σ qty orderdetail (outlet & tanggal sama) dari ProductID yang
+    dipetakan ke menu ini; kosong kalau menu belum dipetakan.
+
+    Baris tanpa menu (`menu_id` & angka colorplate kosong) = produk POS
+    terpetakan yang terjual tetapi tidak satu pun menunya ada di colorplate.
     """
 
     model_config = ConfigDict(from_attributes=True)
 
     outlet_code: str
     production_date: date
-    # Kosong = baris menu yang belum dipetakan.
-    product_id: Optional[int] = None
-    product_name: Optional[str] = None
-    menus: List[ClosingComparisonMenu] = Field(default_factory=list)
+    menu_id: Optional[UUID] = None
+    menu_code: Optional[str] = None
+    menu_name: Optional[str] = None
 
-    # Kosong kalau tidak ada menu produk ini di closing outlet/tanggal ini.
-    closing_qty: Optional[int] = None
-    # Kosong kalau menu belum dipetakan.
+    sold: Optional[int] = None
+    waste: Optional[int] = None
+    adjustment: Optional[int] = None
+    compensation: Optional[int] = None
+
+    # Mapping aktif; kosong = belum dipetakan.
+    products: List[ClosingComparisonProduct] = Field(default_factory=list)
     pos_qty: Optional[float] = None
-    selisih: Optional[float] = None
-    # cocok | selisih | belum_dipetakan | tidak_ada_di_closing
-    status: str
 
 
 class ClosingComparisonResponse(BaseModel):

@@ -310,11 +310,10 @@ class TestDetailLaporan:
 
 
 class TestPerbandingan:
-    """Per ProductID POS (diputuskan 2026-10-05): menu yang dipetakan ke produk
-    yang sama dijumlah, lalu dibandingkan dengan qty POS produk itu.
-
-        closing(produk) = Σ (sold + adjustment + compensation) × pengali
-        selisih         = qty POS − closing(produk)        (rumus pengirim)
+    """Per menu colorplate: angka colorplate apa adanya, berdampingan dengan qty
+    POS (orderdetail) outlet & tanggal yang sama dari ProductID yang dipetakan
+    ke menu itu. Pengali mapping tidak diterapkan ke qty POS. Produk terpetakan
+    yang terjual tanpa menunya di colorplate tampil sebagai baris tanpa menu.
     """
 
     URL = "/api/closing-reports/comparison"
@@ -324,72 +323,69 @@ class TestPerbandingan:
         assert res.status_code == 200, res.text
         return res.json()["data"]
 
-    def _produk(self, client, headers, product_id, outlet="OUTLET_001", tanggal="2026-10-02", **params):
+    def _menu(self, client, headers, menu_code="SU-001", outlet="OUTLET_001", tanggal="2026-10-02", **params):
         cocok = [
             b
             for b in self._baris(client, headers, **params)
-            if b["product_id"] == product_id and b["outlet_code"] == outlet and b["production_date"] == tanggal
+            if b["menu_code"] == menu_code and b["outlet_code"] == outlet and b["production_date"] == tanggal
         ]
         assert len(cocok) == 1, cocok
         return cocok[0]
 
-    def test_menu_dengan_produk_sama_dijumlah(self, client, app_db, admin_headers):
-        """Contoh piring: Salmon & Tuna sama-sama piring RED."""
-        kirim_closing(app_db, items=[item(sold=5), item("SU-002", "Tuna Nigiri", sold=3)])
-        petakan(app_db, "SU-001", 200104)
-        petakan(app_db, "SU-002", 200104)
-        jual(app_db, 1, 200104, 8, nama="RED")
-
-        baris = self._produk(client, admin_headers, 200104)
-
-        assert baris["product_name"] == "RED"
-        assert sorted(m["menu_code"] for m in baris["menus"]) == ["SU-001", "SU-002"]
-        assert (baris["closing_qty"], baris["pos_qty"], baris["selisih"], baris["status"]) == (8, 8, 0, "cocok")
-
-    def test_rumus_pengirim_sold_adjustment_compensation(self, client, app_db, admin_headers):
-        kirim_closing(app_db, items=[item(sold=5, adjustment=-1, compensation=2)])
-        petakan(app_db, "SU-001", 200104)
+    def test_angka_colorplate_dan_pos(self, client, app_db, admin_headers):
+        kirim_closing(app_db, items=[item(sold=5, waste=2, adjustment=-1, compensation=3)])
+        petakan(app_db, "SU-001", 200104, multiplier=2)
         jual(app_db, 1, 200104, 4)
 
-        baris = self._produk(client, admin_headers, 200104)
+        baris = self._menu(client, admin_headers)
 
-        # closing = 5 − 1 + 2 = 6; selisih = POS − closing = 4 − 6
-        assert (baris["closing_qty"], baris["pos_qty"], baris["selisih"], baris["status"]) == (6, 4, -2, "selisih")
-        [menu] = baris["menus"]
-        assert (menu["sold"], menu["adjustment"], menu["compensation"], menu["multiplier"]) == (5, -1, 2, 1)
+        assert (baris["menu_name"], baris["sold"], baris["waste"], baris["adjustment"], baris["compensation"]) == (
+            "Salmon Nigiri",
+            5,
+            2,
+            -1,
+            3,
+        )
+        # qty mentah orderdetail, tanpa pengali.
+        assert baris["pos_qty"] == 4
+        assert baris["products"] == [{"product_id": 200104, "product_name": "Salmon HR", "multiplier": 2}]
+        assert "selisih" not in baris and "status" not in baris
 
-    def test_pengali_unit_pos_per_porsi(self, client, app_db, admin_headers):
-        kirim_closing(app_db, items=[item(sold=3)])
-        petakan(app_db, "SU-001", 200104, multiplier=2)
-        jual(app_db, 1, 200104, 6)
-
-        baris = self._produk(client, admin_headers, 200104)
-
-        assert (baris["closing_qty"], baris["status"]) == (6, "cocok")
-
-    def test_satu_menu_ke_dua_produk_jadi_dua_baris(self, client, app_db, admin_headers):
+    def test_menu_ke_dua_produk_pos_dijumlah(self, client, app_db, admin_headers):
         kirim_closing(app_db, items=[item(sold=3)])
         petakan(app_db, "SU-001", 200104)
         petakan(app_db, "SU-001", 200999)
         jual(app_db, 1, 200104, 3)
         jual(app_db, 2, 200999, 1)
 
-        assert self._produk(client, admin_headers, 200104)["status"] == "cocok"
-        assert self._produk(client, admin_headers, 200999)["selisih"] == -2
+        baris = self._menu(client, admin_headers)
 
-    def test_menu_belum_dipetakan_jadi_baris_sendiri(self, client, app_db, admin_headers):
+        assert baris["pos_qty"] == 4
+        assert [p["product_id"] for p in baris["products"]] == [200104, 200999]
+
+    def test_produk_bersama_tampil_di_setiap_menu(self, client, app_db, admin_headers):
+        """Contoh piring: Salmon & Tuna sama-sama piring RED."""
+        kirim_closing(app_db, items=[item(sold=5), item("SU-002", "Tuna Nigiri", sold=3)])
+        petakan(app_db, "SU-001", 200104)
+        petakan(app_db, "SU-002", 200104)
+        jual(app_db, 1, 200104, 8, nama="RED")
+
+        assert self._menu(client, admin_headers, "SU-001")["pos_qty"] == 8
+        assert self._menu(client, admin_headers, "SU-002")["pos_qty"] == 8
+
+    def test_dipetakan_tapi_tidak_terjual_di_pos(self, client, app_db, admin_headers):
+        kirim_closing(app_db)
+        petakan(app_db, "SU-001", 200104)
+
+        assert self._menu(client, admin_headers)["pos_qty"] == 0
+
+    def test_menu_belum_dipetakan_pos_kosong(self, client, app_db, admin_headers):
         kirim_closing(app_db, items=[item(sold=5, adjustment=1)])
 
         [baris] = self._baris(client, admin_headers)
 
-        assert baris["product_id"] is None
-        assert [m["menu_code"] for m in baris["menus"]] == ["SU-001"]
-        assert (baris["closing_qty"], baris["pos_qty"], baris["selisih"], baris["status"]) == (
-            6,
-            None,
-            None,
-            "belum_dipetakan",
-        )
+        assert (baris["menu_code"], baris["sold"], baris["adjustment"]) == ("SU-001", 5, 1)
+        assert (baris["products"], baris["pos_qty"]) == ([], None)
 
     def test_mapping_nonaktif_diabaikan(self, client, app_db, admin_headers):
         kirim_closing(app_db)
@@ -397,35 +393,68 @@ class TestPerbandingan:
         jual(app_db, 1, 200104, 3)
 
         [baris] = self._baris(client, admin_headers)
-        assert baris["status"] == "belum_dipetakan"
+        assert (baris["products"], baris["pos_qty"]) == ([], None)
 
-    def test_terjual_di_pos_tapi_tidak_ada_di_closing(self, client, app_db, admin_headers):
+    def test_terjual_di_pos_tapi_tidak_ada_di_colorplate(self, client, app_db, admin_headers):
+        """Untuk konsolidasi: produk terpetakan yang terjual di POS tetap tampil
+        walau tidak satu pun menunya ada di colorplate outlet/tanggal itu."""
         kirim_closing(app_db, items=[item("SU-002", "Tuna")])
         kirim_closing(app_db, outlet="OUTLET_009", items=[item()])  # SU-001 dikenal dari outlet lain
-        petakan(app_db, "SU-001", 200104)
+        petakan(app_db, "SU-001", 200104, multiplier=3)
         jual(app_db, 1, 200104, 4)
-
-        baris = self._produk(client, admin_headers, 200104)
-
-        assert (baris["closing_qty"], baris["pos_qty"], baris["selisih"], baris["status"]) == (
-            None,
-            4,
-            None,
-            "tidak_ada_di_closing",
-        )
-        assert baris["product_name"] == "Salmon HR"
-        assert baris["menus"] == []
-
-    def test_outlet_tanggal_tanpa_closing_tidak_ditampilkan(self, client, app_db, admin_headers):
-        """Outlet yang belum memakai sistem closing tidak membanjiri laporan."""
-        kirim_closing(app_db)
-        petakan(app_db, "SU-001", 200104)
-        jual(app_db, 1, 200104, 4, outlet="OUTLET_002")
-        jual(app_db, 2, 200104, 4, sale_date=KEMARIN)
 
         baris = self._baris(client, admin_headers)
 
-        assert [(b["outlet_code"], b["production_date"]) for b in baris] == [("OUTLET_001", "2026-10-02")]
+        # Baris tanpa menu di belakang menu-menu outlet/tanggal yang sama.
+        assert [(b["outlet_code"], b["menu_code"], b["menu_id"]) for b in baris][:2] == [
+            ("OUTLET_001", "SU-002", baris[0]["menu_id"]),
+            ("OUTLET_001", None, None),
+        ]
+        hanya_pos = baris[1]
+        assert (hanya_pos["menu_name"], hanya_pos["sold"], hanya_pos["waste"]) == (None, None, None)
+        assert (hanya_pos["adjustment"], hanya_pos["compensation"], hanya_pos["pos_qty"]) == (None, None, 4)
+        assert hanya_pos["products"] == [{"product_id": 200104, "product_name": "Salmon HR", "multiplier": 1}]
+        # Penjualan OUTLET_001 tidak bocor ke baris OUTLET_009.
+        assert self._menu(client, admin_headers, outlet="OUTLET_009")["pos_qty"] == 0
+
+    def test_produk_sudah_tampil_di_menu_lain_tidak_diulang(self, client, app_db, admin_headers):
+        """RED dipetakan ke Salmon & Tuna; Salmon ada di colorplate → tidak ada baris tanpa menu."""
+        kirim_closing(app_db, items=[item(), item("SU-002", "Tuna")])
+        kirim_closing(app_db, outlet="OUTLET_009", items=[item("SU-003", "Ebi")])
+        petakan(app_db, "SU-001", 200104)
+        petakan(app_db, "SU-003", 200104)
+        jual(app_db, 1, 200104, 4)
+
+        menu_id = [b["menu_id"] for b in self._baris(client, admin_headers) if b["outlet_code"] == "OUTLET_001"]
+        assert None not in menu_id
+
+    def test_produk_tidak_terjual_tidak_jadi_baris(self, client, app_db, admin_headers):
+        kirim_closing(app_db, items=[item("SU-002", "Tuna")])
+        kirim_closing(app_db, outlet="OUTLET_009", items=[item()])
+        petakan(app_db, "SU-001", 200104)
+
+        assert all(b["menu_id"] is not None for b in self._baris(client, admin_headers))
+
+    def test_produk_belum_dipetakan_tidak_ikut(self, client, app_db, admin_headers):
+        """Tanpa mapping, produk POS tidak diketahui hubungannya dengan colorplate."""
+        kirim_closing(app_db)
+        jual(app_db, 1, 777777, 9, nama="ES TEH")
+
+        [baris] = self._baris(client, admin_headers)
+        assert baris["menu_code"] == "SU-001"
+
+    def test_pos_per_outlet_dan_tanggal(self, client, app_db, admin_headers):
+        kirim_closing(app_db)
+        petakan(app_db, "SU-001", 200104)
+        jual(app_db, 1, 200104, 4)
+        jual(app_db, 2, 200104, 7, outlet="OUTLET_002")
+        jual(app_db, 3, 200104, 9, sale_date=KEMARIN)
+
+        baris = self._baris(client, admin_headers)
+
+        assert [(b["outlet_code"], b["production_date"], b["pos_qty"]) for b in baris] == [
+            ("OUTLET_001", "2026-10-02", 4)
+        ]
 
     def test_dibandingkan_per_tanggal_produksi(self, client, app_db, admin_headers):
         kirim_closing(app_db, items=[item(sold=2, production_date=KEMARIN), item(sold=5)])
@@ -433,8 +462,10 @@ class TestPerbandingan:
         jual(app_db, 1, 200104, 2, sale_date=KEMARIN)
         jual(app_db, 2, 200104, 5)
 
-        assert self._produk(client, admin_headers, 200104, tanggal="2026-10-01")["status"] == "cocok"
-        assert self._produk(client, admin_headers, 200104, tanggal="2026-10-02")["status"] == "cocok"
+        kemarin = self._menu(client, admin_headers, tanggal="2026-10-01")
+        hari_ini = self._menu(client, admin_headers, tanggal="2026-10-02")
+        assert (kemarin["sold"], kemarin["pos_qty"]) == (2, 2)
+        assert (hari_ini["sold"], hari_ini["pos_qty"]) == (5, 5)
 
     def test_tanggal_produksi_kosong_memakai_tanggal_closing(self, client, app_db, admin_headers):
         """Jawaban pengirim: productionDate null = menu tanpa baris produksi hari itu."""
@@ -442,7 +473,7 @@ class TestPerbandingan:
         petakan(app_db, "SU-001", 200104)
         jual(app_db, 1, 200104, 4)
 
-        assert self._produk(client, admin_headers, 200104)["status"] == "cocok"
+        assert self._menu(client, admin_headers)["pos_qty"] == 4
 
     def test_hanya_revisi_aktif(self, client, app_db, admin_headers):
         rid = kirim_closing(app_db, items=[item(sold=99)])
@@ -451,7 +482,7 @@ class TestPerbandingan:
         )
 
         [baris] = self._baris(client, admin_headers)
-        assert baris["closing_qty"] == 5
+        assert baris["sold"] == 5
 
     def test_transaksi_terhapus_tidak_dihitung_kecuali_diminta(self, client, app_db, admin_headers):
         """Sama dengan laporan dashboard lain: `include_deleted` default false."""
@@ -460,8 +491,8 @@ class TestPerbandingan:
         jual(app_db, 1, 200104, 3)
         jual(app_db, 2, 200104, 10, deleted=1)
 
-        assert self._produk(client, admin_headers, 200104)["pos_qty"] == 3
-        assert self._produk(client, admin_headers, 200104, include_deleted="true")["pos_qty"] == 13
+        assert self._menu(client, admin_headers)["pos_qty"] == 3
+        assert self._menu(client, admin_headers, include_deleted="true")["pos_qty"] == 13
 
     def test_filter_tanggal_produksi(self, client, app_db, admin_headers):
         kirim_closing(app_db, items=[item(production_date=KEMARIN), item()])

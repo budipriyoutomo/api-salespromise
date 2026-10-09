@@ -232,11 +232,6 @@ def _catat_menu(db, event: ClosingReportSubmitted, perbarui_nama: bool):
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
-STATUS_COCOK = "cocok"
-STATUS_SELISIH = "selisih"
-STATUS_BELUM_DIPETAKAN = "belum_dipetakan"
-STATUS_TIDAK_ADA_DI_CLOSING = "tidak_ada_di_closing"
-
 
 def _ringkasan(laporan: ClosingReport) -> dict:
     aktif = next((r for r in laporan.revisions if r.is_current), None)
@@ -302,55 +297,51 @@ def get_report(db, closing_report_id, outlet=None) -> dict | None:
 
 
 @dataclass
-class MenuPerbandingan:
-    menu_id: object
-    menu_code: str | None
-    menu_name: str
-    # Pengali mapping; None untuk menu yang belum dipetakan.
-    multiplier: int | None
-    sold: int
-    waste: int
-    adjustment: int
-    compensation: int
+class ProdukPerbandingan:
+    product_id: int
+    product_name: str | None
+    multiplier: int
 
 
 @dataclass
 class BarisPerbandingan:
+    """Satu menu colorplate per outlet & tanggal produksi, berdampingan dengan POS.
+
+    Baris tanpa menu (`menu_id` None, angka colorplate None) = produk POS
+    terpetakan yang terjual tetapi tidak satu pun menunya ada di colorplate.
+    """
+
     outlet_code: str
     production_date: date
-    # None = baris menu yang belum dipetakan.
-    product_id: int | None
-    product_name: str | None
-    menus: list[MenuPerbandingan]
-    # Σ (sold + adjustment + compensation) × pengali; None kalau tidak ada di closing.
-    closing_qty: int | None
+    menu_id: object | None
+    menu_code: str | None
+    menu_name: str | None
+    sold: int | None
+    waste: int | None
+    adjustment: int | None
+    compensation: int | None
+    # Mapping aktif menu ini (atau satu produk untuk baris tanpa menu); kosong = belum dipetakan.
+    products: list[ProdukPerbandingan]
+    # Σ qty orderdetail produk-produk di atas; None kalau belum dipetakan.
     pos_qty: float | None
-    # qty POS − closing (rumus pengirim).
-    selisih: float | None
-    status: str
-
-
-def _total_closing(c) -> int:
-    """Rumus rekonsiliasi pengirim: sold + adjustment + compensation."""
-    return int(c.sold) + int(c.adjustment) + int(c.compensation)
 
 
 def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_deleted=False) -> list[BarisPerbandingan]:
-    """Closing (revisi aktif) vs penjualan POS, per outlet / tanggal produksi / ProductID.
+    """Colorplate (revisi aktif) vs POS, per outlet / tanggal produksi / menu.
 
-    Diputuskan 2026-10-05 setelah jawaban pengirim (POS menjual sushi per warna
-    piring, jadi beberapa menu bisa berbagi satu produk POS):
-
-        closing(produk) = Σ menu yang dipetakan ke produk itu:
-                              (sold + adjustment + compensation) × pengali
-        selisih         = qty POS − closing(produk)
+    Angka colorplate (sold, waste, adjustment, compensation) ditampilkan apa
+    adanya. POS = Σ qty `orderdetail` dengan outlet & tanggal yang sama untuk
+    ProductID yang dipetakan ke menu itu di `/closing-menu` — qty mentah POS,
+    pengali mapping tidak diterapkan. Produk yang dipetakan ke beberapa menu
+    muncul dengan qty POS yang sama di setiap menunya.
 
     - Tanggal produksi item dicocokkan dengan tanggal transaksi POS; item tanpa
       tanggal produksi memakai tanggal closing.
-    - Menu yang belum dipetakan muncul sebagai baris sendiri (`belum_dipetakan`).
-    - Hanya pasangan (outlet, tanggal) yang punya closing yang ditampilkan.
-    - Produk terpetakan yang terjual di POS tanpa satu pun menunya di closing
-      tampil sebagai `tidak_ada_di_closing`.
+    - Menu yang belum dipetakan tetap tampil dengan `pos_qty` kosong.
+    - Produk terpetakan yang terjual di POS tanpa satu pun menunya di colorplate
+      outlet/tanggal itu tampil sebagai baris tanpa menu, supaya kedua sistem
+      bisa dikonsolidasi.
+    - Hanya pasangan (outlet, tanggal) yang punya colorplate yang ditampilkan.
     - Transaksi `Deleted=1` dibuang kecuali `include_deleted`.
     """
     tanggal = func.coalesce(ClosingReportItem.production_date, ClosingReport.report_date)
@@ -386,90 +377,77 @@ def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_de
 
     pasangan = {(o, d) for o, d, _ in closing}
     mapping = closing_menu_service.active_mappings(db)
-    menus = {m.menu_id: m for m in db.query(ClosingMenu).all()}
+    menus = {m.menu_id: m for m in db.query(ClosingMenu).filter(ClosingMenu.menu_id.in_({k[2] for k in closing})).all()}
     pos = _qty_pos(db, mapping, pasangan, include_deleted)
 
-    # product_id → [(menu_id, multiplier)], dan nama produk dari snapshot mapping.
-    menu_per_produk: dict[int, list] = {}
-    nama_produk: dict[int, str | None] = {}
-    for menu_id, produk in mapping.items():
-        for product_id, mult, nama in produk:
-            menu_per_produk.setdefault(product_id, []).append((menu_id, mult))
-            nama_produk.setdefault(product_id, nama)
     # Snapshot nama kosong → nama terakhir di data penjualan.
+    nama_produk: dict[int, str | None] = {}
+    for produk in mapping.values():
+        for product_id, _, nama in produk:
+            if nama_produk.get(product_id) is None:
+                nama_produk[product_id] = nama
     for product_id, nama in list(nama_produk.items()):
         if not nama:
             info = product_menu_service._info_terbaru(db, product_id)
             nama_produk[product_id] = (info.product_name or None) if info else None
 
-    def info_menu(menu_id, c, mult):
+    hasil = []
+    for (o, d, menu_id), c in closing.items():
         m = menus.get(menu_id)
-        return MenuPerbandingan(
-            menu_id=menu_id,
-            menu_code=m.menu_code if m else None,
-            menu_name=m.menu_name if m else str(menu_id),
-            multiplier=mult,
-            sold=int(c.sold),
-            waste=int(c.waste),
-            adjustment=int(c.adjustment),
-            compensation=int(c.compensation),
+        produk = [
+            ProdukPerbandingan(product_id=pid, product_name=nama_produk.get(pid), multiplier=mult)
+            for pid, mult, _ in mapping.get(menu_id, [])
+        ]
+        pos_qty = sum(pos.get((o, d, p.product_id), 0.0) for p in produk) if produk else None
+        hasil.append(
+            BarisPerbandingan(
+                outlet_code=o,
+                production_date=d,
+                menu_id=menu_id,
+                menu_code=m.menu_code if m else None,
+                menu_name=m.menu_name if m else str(menu_id),
+                sold=int(c.sold),
+                waste=int(c.waste),
+                adjustment=int(c.adjustment),
+                compensation=int(c.compensation),
+                products=produk,
+                pos_qty=pos_qty,
+            )
         )
 
-    hasil = []
-    for o, d in sorted(pasangan):
-        for product_id in sorted(menu_per_produk):
-            ikut = [
-                (menu_id, mult, closing[(o, d, menu_id)])
-                for menu_id, mult in menu_per_produk[product_id]
-                if (o, d, menu_id) in closing
-            ]
-            pos_qty = pos.get((o, d, product_id), 0.0)
-            if not ikut and not pos_qty:
-                continue
-
-            if ikut:
-                closing_qty = sum(_total_closing(c) * mult for _, mult, c in ikut)
-                selisih = pos_qty - closing_qty
-                status = STATUS_COCOK if selisih == 0 else STATUS_SELISIH
-            else:
-                closing_qty, selisih, status = None, None, STATUS_TIDAK_ADA_DI_CLOSING
-
-            hasil.append(
-                BarisPerbandingan(
-                    outlet_code=o,
-                    production_date=d,
-                    product_id=product_id,
-                    product_name=nama_produk.get(product_id),
-                    menus=sorted(
-                        (info_menu(menu_id, c, mult) for menu_id, mult, c in ikut),
-                        key=lambda m: (m.menu_name, str(m.menu_id)),
-                    ),
-                    closing_qty=closing_qty,
-                    pos_qty=pos_qty,
-                    selisih=selisih,
-                    status=status,
-                )
+    # Produk yang qty POS-nya belum tampil di baris menu mana pun.
+    tampil = {(b.outlet_code, b.production_date, p.product_id) for b in hasil for p in b.products}
+    for (o, d, product_id), qty in pos.items():
+        if (o, d, product_id) in tampil or not qty:
+            continue
+        hasil.append(
+            BarisPerbandingan(
+                outlet_code=o,
+                production_date=d,
+                menu_id=None,
+                menu_code=None,
+                menu_name=None,
+                sold=None,
+                waste=None,
+                adjustment=None,
+                compensation=None,
+                # Pengali milik pasangan menu–produk; tanpa menu tidak ada yang berlaku.
+                products=[ProdukPerbandingan(product_id=product_id, product_name=nama_produk.get(product_id), multiplier=1)],
+                pos_qty=qty,
             )
+        )
 
-        belum = [
-            info_menu(menu_id, c, None)
-            for (oo, dd, menu_id), c in closing.items()
-            if (oo, dd) == (o, d) and menu_id not in mapping
-        ]
-        for m in sorted(belum, key=lambda m: (m.menu_name, str(m.menu_id))):
-            hasil.append(
-                BarisPerbandingan(
-                    outlet_code=o,
-                    production_date=d,
-                    product_id=None,
-                    product_name=None,
-                    menus=[m],
-                    closing_qty=m.sold + m.adjustment + m.compensation,
-                    pos_qty=None,
-                    selisih=None,
-                    status=STATUS_BELUM_DIPETAKAN,
-                )
-            )
+    # Baris tanpa menu di belakang menu-menu outlet/tanggal yang sama.
+    hasil.sort(
+        key=lambda b: (
+            b.production_date,
+            b.outlet_code,
+            b.menu_id is None,
+            b.menu_name or "",
+            b.products[0].product_id if b.menu_id is None else 0,
+            str(b.menu_id),
+        )
+    )
     return hasil
 
 

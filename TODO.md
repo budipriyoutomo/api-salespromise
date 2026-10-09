@@ -733,6 +733,15 @@ Sumber: [docs/jawaban-pengirim-closing.md](docs/jawaban-pengirim-closing.md)
         versi 2, bukan JSON, NaN lewat `proses_pesan` sungguhan; dikosongkan lagi.
       - Belum ada pembersihan log lama (sengaja — tidak ada DELETE). Kalau
         nanti membesar, putuskan retensinya dulu.
+- [x] **7.9 Perbandingan per menu Colorplate (2026-10-09)** — mengganti
+      perbandingan per ProductID (7.7). `compare_with_pos` kini satu baris per
+      outlet × tanggal produksi × menu: `sold`/`waste`/`adjustment`/
+      `compensation` apa adanya + `products[]` (mapping aktif) + `pos_qty` =
+      Σ qty orderdetail outlet & tanggal sama dari ProductID yang dipetakan
+      (tanpa pengali; null kalau belum dipetakan). `selisih`/`status`/
+      `closing_qty` dihapus atas permintaan pengguna. Untuk konsolidasi, produk
+      terpetakan yang terjual tanpa menunya di colorplate tetap tampil sebagai
+      baris tanpa menu (`menu_id` & angka colorplate null). Tanpa migrasi.
 - [x] **7.6b Frontend** — repo sync-frontend, Fase 11 di TODO-nya:
       `/closing` (semua role: perbandingan POS + daftar/detail laporan) dan
       `/closing-menu` (admin: mapping). Lewat catch-all BFF, tanpa route baru.

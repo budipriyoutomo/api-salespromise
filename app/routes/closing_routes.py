@@ -167,10 +167,10 @@ def compare_closing_with_pos(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Closing vs POS per outlet / tanggal produksi / ProductID POS.
+    """Colorplate vs POS per outlet / tanggal produksi / menu.
 
-    `closing_qty` = Σ (sold + adjustment + compensation) × pengali dari semua
-    menu yang dipetakan ke produk itu; `selisih` = pos_qty − closing_qty.
+    Angka colorplate apa adanya; `pos_qty` = Σ qty orderdetail outlet & tanggal
+    yang sama dari ProductID yang dipetakan ke menu itu (kosong = belum dipetakan).
     """
     outlet = resolve_outlet_scope(user, outlet)
     rows = closing_report_service.compare_with_pos(
