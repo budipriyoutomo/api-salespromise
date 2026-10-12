@@ -156,11 +156,12 @@ class ImportCandidateResponse(BaseModel):
     last_sale_date: Optional[date] = None
     outlet_codes: List[str]
     unmapped_outlet_codes: List[str]
-    # ProductID & Product Code produk yang akan dibuat: BRAND-ProductID.
+    # ProductID & Product Code produk yang akan dibuat: ProductID POS apa adanya.
     proposed_code: str
     # baru | tambah_outlet | bentrok
     status: str
     existing_product_id: Optional[int] = None
+    # Alasan `bentrok`, atau peringatan untuk `baru` (ProductID sama di brand lain).
     reason: Optional[str] = None
 
 

@@ -545,10 +545,11 @@ class TestImportCandidates:
     def test_digabung_per_brand_dan_productid(self, client, admin_headers, penjualan_brand):
         data = self._data(client, admin_headers)
 
+        # ProductID & Product Code = ProductID POS apa adanya, tanpa awalan brand.
         assert [(d["brand_code"], d["pos_product_id"], d["proposed_code"]) for d in data] == [
-            ("MHR", 101, "MHR-101"),
-            ("MHR", 202, "MHR-202"),
-            ("XYZ", 101, "XYZ-101"),
+            ("MHR", 101, "101"),
+            ("MHR", 202, "202"),
+            ("XYZ", 101, "101"),
         ]
         mhr_101 = data[0]
         # Nama / Group / Dept dari penjualan terakhir di brand itu.
@@ -565,6 +566,20 @@ class TestImportCandidates:
             "2026-01-15",
         )
 
+    def test_productid_sama_di_brand_lain_diberi_peringatan(self, client, admin_headers, penjualan_brand):
+        """101 dijual MHR dan XYZ: hanya satu produk `101` yang bisa dibuat."""
+        alasan = {(d["brand_code"], d["pos_product_id"]): d["reason"] for d in self._data(client, admin_headers)}
+
+        assert alasan[("MHR", 101)] == (
+            "ProductID 101 juga dijual brand XYZ — hanya brand yang diimpor lebih dulu yang mendapat produk ini"
+        )
+        assert alasan[("XYZ", 101)].startswith("ProductID 101 juga dijual brand MHR")
+        assert alasan[("MHR", 202)] is None
+
+        # Tetap diperingatkan walau daftar disaring ke satu brand.
+        [xyz_101] = self._data(client, admin_headers, brand_id=penjualan_brand["XYZ"].id)
+        assert xyz_101["reason"].startswith("ProductID 101 juga dijual brand MHR")
+
     def test_outlet_tanpa_brand_atau_brand_nonaktif_tidak_ikut(self, client, admin_headers, penjualan_brand, app_db):
         penjualan_brand["XYZ"].is_active = False
         app_db.commit()
@@ -577,9 +592,12 @@ class TestImportCandidates:
     def test_filter_brand_dan_pencarian(self, client, admin_headers, penjualan_brand):
         xyz = penjualan_brand["XYZ"].id
 
-        assert [d["proposed_code"] for d in self._data(client, admin_headers, brand_id=xyz)] == ["XYZ-101"]
-        assert [d["proposed_code"] for d in self._data(client, admin_headers, q="cake")] == ["MHR-202"]
-        assert [d["proposed_code"] for d in self._data(client, admin_headers, q="202")] == ["MHR-202"]
+        def kunci(**params):
+            return [(d["brand_code"], d["proposed_code"]) for d in self._data(client, admin_headers, **params)]
+
+        assert kunci(brand_id=xyz) == [("XYZ", "101")]
+        assert kunci(q="cake") == [("MHR", "202")]
+        assert kunci(q="202") == [("MHR", "202")]
 
     def test_outlet_yang_sudah_dipetakan_tidak_dihitung(self, client, admin_headers, penjualan_brand, app_db):
         produk = Product(code="P-001", product_code="P-001", name="Red", brand_id=penjualan_brand["MHR"].id)
@@ -599,28 +617,37 @@ class TestImportCandidates:
         )
 
     def test_produk_dengan_kode_usulan_sudah_ada(self, client, admin_headers, penjualan_brand, app_db):
-        mhr, xyz = penjualan_brand["MHR"].id, penjualan_brand["XYZ"].id
+        mhr = penjualan_brand["MHR"].id
         app_db.add_all(
             [
-                Product(code="MHR-101", product_code="MHR-101", name="Red", brand_id=mhr),
-                Product(code="MHR-202", product_code="LAIN", name="Cake", brand_id=mhr, is_active=False),
-                Product(code="ZZZ", product_code="XYZ-101", name="Lain", brand_id=xyz),
+                Product(code="101", product_code="101", name="Red", brand_id=mhr),
+                Product(code="202", product_code="LAIN", name="Cake", brand_id=mhr, is_active=False),
             ]
         )
         app_db.commit()
 
-        status = {d["proposed_code"]: (d["status"], d["reason"]) for d in self._data(client, admin_headers)}
+        status = {
+            (d["brand_code"], d["pos_product_id"]): (d["status"], d["reason"]) for d in self._data(client, admin_headers)
+        }
 
-        assert status["MHR-101"] == ("tambah_outlet", None)
-        assert status["MHR-202"] == ("bentrok", "Produk MHR-202 sudah ada tetapi nonaktif")
-        assert status["XYZ-101"] == ("bentrok", "Product Code XYZ-101 sudah dipakai produk lain")
+        assert status[("MHR", 101)] == ("tambah_outlet", None)
+        assert status[("MHR", 202)] == ("bentrok", "Produk 202 sudah ada tetapi nonaktif")
+        # Produk 101 milik MHR — XYZ tidak bisa memakainya.
+        assert status[("XYZ", 101)] == ("bentrok", "Produk 101 sudah ada dengan brand lain")
 
-    def test_brand_lain_dengan_kode_sama_bentrok(self, client, admin_headers, penjualan_brand, app_db):
-        app_db.add(Product(code="MHR-202", product_code="MHR-202", name="Cake", brand_id=penjualan_brand["XYZ"].id))
+    def test_product_code_sudah_dipakai_produk_lain(self, client, admin_headers, penjualan_brand, app_db):
+        app_db.add(Product(code="ZZZ", product_code="202", name="Lain", brand_id=penjualan_brand["MHR"].id))
         app_db.commit()
 
         [d] = self._data(client, admin_headers, q="202")
-        assert (d["status"], d["reason"]) == ("bentrok", "Produk MHR-202 sudah ada dengan brand lain")
+        assert (d["status"], d["reason"]) == ("bentrok", "Product Code 202 sudah dipakai produk lain")
+
+    def test_brand_lain_dengan_kode_sama_bentrok(self, client, admin_headers, penjualan_brand, app_db):
+        app_db.add(Product(code="202", product_code="202", name="Cake", brand_id=penjualan_brand["XYZ"].id))
+        app_db.commit()
+
+        [d] = self._data(client, admin_headers, q="202")
+        assert (d["status"], d["reason"]) == ("bentrok", "Produk 202 sudah ada dengan brand lain")
 
     def test_hanya_admin(self, client, manager_headers):
         assert client.get(self.URL, headers=manager_headers).status_code == 403
@@ -645,14 +672,14 @@ class TestImportProducts:
         [hasil] = data["results"]
         assert (hasil["status"], hasil["code"], hasil["mapped_outlets"]) == (
             "dibuat",
-            "MHR-101",
+            "101",
             ["OUTLET_001", "OUTLET_002"],
         )
 
         produk = app_db.get(Product, hasil["product_id"])
         assert (produk.code, produk.product_code, produk.name, produk.category, produk.subcategory) == (
-            "MHR-101",
-            "MHR-101",
+            "101",
+            "101",
             "Red",
             "COLORPLATE",
             "SUSHI",
@@ -667,7 +694,7 @@ class TestImportProducts:
 
         # Sudah dipetakan semua → tidak muncul lagi sebagai kandidat.
         sisa = client.get("/api/products/import-candidates", headers=admin_headers).json()["data"]
-        assert "MHR-101" not in {d["proposed_code"] for d in sisa}
+        assert ("MHR", 101) not in {(d["brand_code"], d["pos_product_id"]) for d in sisa}
 
     def test_outlet_baru_ditambahkan_ke_produk_yang_sudah_ada(
         self, client, admin_headers, penjualan_brand, app_db, map_outlet_brand
@@ -683,7 +710,7 @@ class TestImportProducts:
 
         assert (data["created"], data["added"]) == (0, 1)
         assert data["results"][0]["mapped_outlets"] == ["OUTLET_004"]
-        assert app_db.query(Product).filter_by(code="MHR-101").count() == 1
+        assert app_db.query(Product).filter_by(code="101").count() == 1
         assert app_db.query(ProductPosMapping).filter_by(pos_product_id=101, is_active=True).count() == 3
 
     def test_mapping_nonaktif_dipakai_ulang(self, client, admin_headers, penjualan_brand, app_db):
@@ -696,13 +723,13 @@ class TestImportProducts:
         self._impor(client, admin_headers, (penjualan_brand["MHR"].id, 101))
 
         [row] = app_db.query(ProductPosMapping).filter_by(outlet_code="OUTLET_002", pos_product_id=101).all()
-        assert (row.product.code, row.is_active) == ("MHR-101", True)
+        assert (row.product.code, row.is_active) == ("101", True)
 
     def test_yang_bentrok_atau_basi_dilewati_yang_lain_tetap_tersimpan(
         self, client, admin_headers, penjualan_brand, app_db
     ):
         mhr = penjualan_brand["MHR"].id
-        app_db.add(Product(code="MHR-202", product_code="MHR-202", name="Cake", brand_id=mhr, is_active=False))
+        app_db.add(Product(code="202", product_code="202", name="Cake", brand_id=mhr, is_active=False))
         app_db.commit()
 
         data = self._impor(client, admin_headers, (mhr, 101), (mhr, 202), (mhr, 999)).json()["data"]
@@ -710,9 +737,22 @@ class TestImportProducts:
         assert (data["created"], data["added"], data["skipped"]) == (1, 0, 2)
         alasan = {h["pos_product_id"]: (h["status"], h["reason"]) for h in data["results"]}
         assert alasan[101] == ("dibuat", None)
-        assert alasan[202] == ("dilewati", "Produk MHR-202 sudah ada tetapi nonaktif")
+        assert alasan[202] == ("dilewati", "Produk 202 sudah ada tetapi nonaktif")
         assert alasan[999] == ("dilewati", "Tidak ada outlet brand ini yang belum dipetakan")
-        assert app_db.query(Product).filter_by(code="MHR-101").count() == 1
+        assert app_db.query(Product).filter_by(code="101").count() == 1
+
+    def test_productid_sama_dua_brand_hanya_yang_pertama_dibuat(self, client, admin_headers, penjualan_brand, app_db):
+        mhr, xyz = penjualan_brand["MHR"].id, penjualan_brand["XYZ"].id
+
+        data = self._impor(client, admin_headers, (mhr, 101), (xyz, 101)).json()["data"]
+
+        assert (data["created"], data["skipped"]) == (1, 1)
+        hasil = {h["brand_id"]: (h["status"], h["reason"]) for h in data["results"]}
+        assert hasil[mhr] == ("dibuat", None)
+        assert hasil[xyz] == ("dilewati", "Produk 101 sudah ada dengan brand lain")
+        produk = app_db.query(Product).filter_by(code="101").one()
+        assert produk.brand_id == mhr
+        assert sorted(m.outlet_code for m in produk.pos_mappings) == ["OUTLET_001", "OUTLET_002"]
 
     def test_item_ganda_hanya_diproses_sekali(self, client, admin_headers, penjualan_brand):
         mhr = penjualan_brand["MHR"].id

@@ -2,7 +2,7 @@
 
 Dipakai route `/api/products`. ProductID dinomori POS tiap outlet, jadi yang
 dipetakan adalah pasangan (outlet, ProductID). Produk master juga bisa diimpor
-dari penjualan: satu produk per (brand, ProductID POS), berkode `BRAND-ProductID`.
+dari penjualan: satu produk per (brand, ProductID POS), berkode ProductID POS itu.
 
 Sama seperti master lain, tidak ada fungsi hapus: produk dan mapping dimatikan
 lewat `is_active`.
@@ -416,8 +416,12 @@ class KandidatImpor:
     """Satu (brand, ProductID POS) dari penjualan yang masih punya outlet belum dipetakan.
 
     Outlet-outlet satu brand yang menjual ProductID yang sama digabung jadi
-    satu produk master berkode `BRAND-ProductID` (dipakai juga untuk Product
-    Code). Nama / Group / Dept dari penjualan terakhir di brand itu.
+    satu produk master. ProductID & Product Code-nya = ProductID POS apa
+    adanya, sesuai data transaksi. Nama / Group / Dept dari penjualan terakhir
+    di brand itu.
+
+    Karena kode tidak memuat brand, ProductID POS yang sama di dua brand hanya
+    bisa jadi satu produk: `reason` memperingatkannya selagi statusnya `baru`.
     """
 
     brand_id: int
@@ -451,8 +455,9 @@ class HasilImpor:
     reason: str | None = None
 
 
-def kode_impor(brand_code: str, pos_product_id: int) -> str:
-    return normalize_product_code(f"{brand_code}-{pos_product_id}")
+def kode_impor(pos_product_id: int) -> str:
+    """ProductID & Product Code produk impor: ProductID POS apa adanya."""
+    return normalize_product_code(str(pos_product_id))
 
 
 def _potong(value, max_length: int) -> str | None:
@@ -525,7 +530,7 @@ def _kandidat_impor(db, brand_id=None, q=None, pos_product_id=None) -> list[Kand
         .all()
     }
 
-    usulan = {kode_impor(g["brand"].code, pid) for (_, pid), g in per_brand.items()}
+    usulan = {kode_impor(pid) for (_, pid) in per_brand}
     produk_per_kode = {p.code: p for p in db.query(Product).filter(Product.code.in_(usulan)).all()}
     kode_dipakai = {
         pc: pid for pc, pid in db.query(Product.product_code, Product.id).filter(Product.product_code.in_(usulan)).all()
@@ -540,7 +545,7 @@ def _kandidat_impor(db, brand_id=None, q=None, pos_product_id=None) -> list[Kand
 
         brand = grup["brand"]
         terbaru = grup["terbaru"][1]
-        kode = kode_impor(brand.code, pid)
+        kode = kode_impor(pid)
         status, existing_id, alasan = STATUS_IMPOR_BARU, None, None
 
         produk = produk_per_kode.get(kode)
@@ -577,12 +582,29 @@ def _kandidat_impor(db, brand_id=None, q=None, pos_product_id=None) -> list[Kand
                 },
             )
         )
+    # ProductID POS yang sama di beberapa brand → hanya satu yang bisa dibuat.
+    brand_baru: dict = {}
+    for k in hasil:
+        if k.status == STATUS_IMPOR_BARU:
+            brand_baru.setdefault(k.pos_product_id, []).append(k.brand_code)
+    for k in hasil:
+        lain = [b for b in brand_baru.get(k.pos_product_id, []) if b != k.brand_code]
+        if k.status == STATUS_IMPOR_BARU and lain:
+            k.reason = (
+                f"ProductID {k.pos_product_id} juga dijual brand {', '.join(lain)} — "
+                "hanya brand yang diimpor lebih dulu yang mendapat produk ini"
+            )
     return hasil
 
 
 def list_import_candidates(db, brand_id=None, q=None, limit=IMPORT_CANDIDATE_DEFAULT_LIMIT) -> list[KandidatImpor]:
     limit = max(1, min(limit or IMPORT_CANDIDATE_DEFAULT_LIMIT, IMPORT_CANDIDATE_MAX_LIMIT))
-    return _kandidat_impor(db, brand_id=brand_id, q=q)[:limit]
+    # Brand disaring sesudahnya, supaya peringatan ProductID yang juga dijual
+    # brand lain tetap muncul walau daftar dibatasi ke satu brand.
+    hasil = _kandidat_impor(db, q=q)
+    if brand_id is not None:
+        hasil = [k for k in hasil if k.brand_id == brand_id]
+    return hasil[:limit]
 
 
 def _petakan_outlet(db, product: Product, kandidat: KandidatImpor) -> list[str]:

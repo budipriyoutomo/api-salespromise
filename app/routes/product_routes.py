@@ -153,7 +153,7 @@ def import_products(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """Buat produk `BRAND-ProductID` (atau tambah outlet ke produk itu) dari penjualan.
+    """Buat produk berkode ProductID POS (atau tambah outlet ke produk itu) dari penjualan.
 
     Item yang tidak bisa diimpor dilewati dengan alasannya; yang lain tetap tersimpan.
     """
