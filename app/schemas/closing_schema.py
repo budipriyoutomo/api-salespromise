@@ -232,3 +232,96 @@ class ClosingMessageDetail(ClosingMessageSummary):
 class ClosingMessageDetailResponse(BaseModel):
     success: bool = True
     data: ClosingMessageDetail
+
+
+# ---------------------------------------------------------------------------
+# Kirim rekap closing ke API eksternal (admin, TODO Fase 8)
+# ---------------------------------------------------------------------------
+
+StatusKirim = Literal["mengirim", "terkirim", "duplikat", "gagal"]
+
+
+class SendClosingExportRequest(BaseModel):
+    outlet_code: str = Field(min_length=1, max_length=20)
+    production_date: date
+
+
+class ClosingExportSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    outlet_code: str
+    production_date: date
+    sequence: int
+    message_id: UUID
+    status: StatusKirim
+    attempts: int
+    http_status: Optional[int] = None
+    error: Optional[str] = None
+    item_count: int
+    sent_by: str
+    created_at: datetime
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+
+
+class ClosingExportDetail(ClosingExportSummary):
+    # Body persis seperti yang dikirim ke API tujuan.
+    payload: Dict[str, Any]
+    response_body: Optional[str] = None
+
+
+class ClosingExportListResponse(BaseModel):
+    success: bool = True
+    data: List[ClosingExportSummary]
+    pagination: PaginationMeta
+
+
+class ClosingExportDetailResponse(BaseModel):
+    success: bool = True
+    data: ClosingExportDetail
+
+
+class ClosingExportUnmappedMenu(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    menu_id: UUID
+    menu_code: Optional[str] = None
+    menu_name: Optional[str] = None
+
+
+class ClosingExportDuplicateProduct(BaseModel):
+    """ProductID yang dipetakan ke lebih dari satu menu di outlet + tanggal ini."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    product_id: int
+    product_name: Optional[str] = None
+    menus: List[str]
+
+
+class ClosingExportStatus(BaseModel):
+    """Status kirim satu outlet × tanggal produksi.
+
+    `status` dibanding kiriman terakhir yang sampai: belum_dikirim / terkirim /
+    perlu_kirim_ulang (rekap berubah sejak terkirim). `can_send` false kalau
+    diblokir atau kiriman terakhir masih `mengirim`.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    outlet_code: str
+    production_date: date
+    status: Literal["belum_dikirim", "terkirim", "perlu_kirim_ulang"]
+    can_send: bool
+    item_count: int
+    total_sold: float
+    menu_belum_dipetakan: List[ClosingExportUnmappedMenu]
+    produk_dobel: List[ClosingExportDuplicateProduct]
+    last_attempt: Optional[ClosingExportSummary] = None
+    last_sent: Optional[ClosingExportSummary] = None
+
+
+class ClosingExportStatusResponse(BaseModel):
+    success: bool = True
+    data: List[ClosingExportStatus]

@@ -8,6 +8,9 @@
 - `/api/closing-messages` admin — log setiap pesan RabbitMQ yang diterima
                           consumer (termasuk duplikat dan yang ditolak) beserta
                           JSON aslinya.
+- `/api/closing-exports`  admin — kirim rekap closing per outlet × tanggal
+                          produksi ke API eksternal (TODO Fase 8), status, dan
+                          riwayat kiriman.
 
 Data closing hanya ditulis oleh consumer; tidak ada endpoint tulis laporan.
 """
@@ -25,6 +28,12 @@ from app.models.user import ROLE_ADMIN, User
 from app.schemas.closing_schema import (
     ClosingComparisonResponse,
     ClosingComparisonRow,
+    ClosingExportDetail,
+    ClosingExportDetailResponse,
+    ClosingExportListResponse,
+    ClosingExportStatus,
+    ClosingExportStatusResponse,
+    ClosingExportSummary,
     ClosingMenuListResponse,
     ClosingMenuProductDetailResponse,
     ClosingMenuProductResponse,
@@ -39,10 +48,16 @@ from app.schemas.closing_schema import (
     ClosingReportListResponse,
     ClosingReportSummary,
     CreateClosingMenuProductRequest,
+    SendClosingExportRequest,
     UpdateClosingMenuProductRequest,
 )
 from app.schemas.sales_response import PaginationMeta
-from app.services import closing_menu_service, closing_message_log_service, closing_report_service
+from app.services import (
+    closing_export_service,
+    closing_menu_service,
+    closing_message_log_service,
+    closing_report_service,
+)
 from app.utils.logger import logger
 
 require_admin = require_roles(ROLE_ADMIN)
@@ -236,3 +251,136 @@ def get_closing_message(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pesan tidak ditemukan")
 
     return ClosingMessageDetailResponse(data=ClosingMessageDetail.model_validate(row))
+
+
+# ---------------------------------------------------------------------------
+# Kirim rekap ke API eksternal (admin, TODO Fase 8)
+# ---------------------------------------------------------------------------
+
+closing_export_router = APIRouter(prefix="/api/closing-exports", tags=["Admin - Closing Exports"])
+
+BELUM_DIKONFIGURASI = "Kirim ke API eksternal belum dikonfigurasi (CLOSING_EXPORT_URL / CLOSING_EXPORT_TOKEN)."
+
+
+def _detail_kiriman(log) -> ClosingExportDetailResponse:
+    return ClosingExportDetailResponse(data=ClosingExportDetail.model_validate(log))
+
+
+def _catat_kiriman(aksi, log, admin):
+    logger.info(
+        f"CLOSING EXPORT {aksi} id={log.id} outlet={log.outlet_code} tanggal={log.production_date} "
+        f"seq={log.sequence} status={log.status} http={log.http_status} percobaan={log.attempts} oleh={admin.email}"
+    )
+
+
+# Didaftarkan sebelum `/{log_id}`.
+@closing_export_router.get("/status", response_model=ClosingExportStatusResponse)
+def closing_export_status(
+    outlet: Optional[str] = Query(None, description="Kode outlet"),
+    start_date: Optional[date_type] = Query(None, description="Tanggal produksi awal (inklusif)"),
+    end_date: Optional[date_type] = Query(None, description="Tanggal produksi akhir (inklusif)"),
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Status kirim setiap outlet × tanggal produksi yang punya closing, terbaru dulu."""
+    rows = closing_export_service.status_pasangan(db, outlet=outlet, start_date=start_date, end_date=end_date)
+
+    return ClosingExportStatusResponse(data=[ClosingExportStatus.model_validate(row) for row in rows])
+
+
+@closing_export_router.post("", response_model=ClosingExportDetailResponse, status_code=status.HTTP_201_CREATED)
+def send_closing_export(
+    payload: SendClosingExportRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Kirim rekap satu outlet × tanggal produksi. Kiriman yang gagal tetap 201 dengan `status: gagal`."""
+    try:
+        log = closing_export_service.kirim(db, payload.outlet_code, payload.production_date, admin.email)
+    except closing_export_service.BelumDikonfigurasi:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=BELUM_DIKONFIGURASI)
+    except closing_export_service.TidakAdaClosing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tidak ada closing untuk outlet dan tanggal produksi ini.",
+        )
+    except closing_export_service.Diblokir as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Rekap belum bisa dikirim: petakan semua menu dan pastikan satu ProductID hanya "
+                "dipetakan ke satu menu.",
+                "menu_belum_dipetakan": [
+                    {"menu_id": str(m.menu_id), "menu_code": m.menu_code, "menu_name": m.menu_name}
+                    for m in e.blokir.menu_belum_dipetakan
+                ],
+                "produk_dobel": [
+                    {"product_id": p.product_id, "product_name": p.product_name, "menus": p.menus}
+                    for p in e.blokir.produk_dobel
+                ],
+            },
+        )
+    except closing_export_service.SedangDikirim:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Kiriman untuk outlet dan tanggal ini sedang berjalan. Tunggu, atau ulangi kiriman tersebut.",
+        )
+
+    _catat_kiriman("DIKIRIM", log, admin)
+    return _detail_kiriman(log)
+
+
+@closing_export_router.get("", response_model=ClosingExportListResponse)
+def list_closing_exports(
+    outlet: Optional[str] = Query(None, description="Kode outlet"),
+    start_date: Optional[date_type] = Query(None, description="Tanggal produksi awal (inklusif)"),
+    end_date: Optional[date_type] = Query(None, description="Tanggal produksi akhir (inklusif)"),
+    status_: Optional[Literal["mengirim", "terkirim", "duplikat", "gagal"]] = Query(None, alias="status"),
+    limit: int = Query(closing_export_service.DEFAULT_LIMIT, ge=1, le=closing_export_service.MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Riwayat kiriman terbaru dulu, tanpa payload. Filter tanggal = tanggal produksi."""
+    rows, total = closing_export_service.list_logs(
+        db, outlet=outlet, start_date=start_date, end_date=end_date, status=status_, limit=limit, offset=offset
+    )
+
+    return ClosingExportListResponse(
+        data=[ClosingExportSummary.model_validate(row) for row in rows],
+        pagination=PaginationMeta(limit=limit, offset=offset, total=total, has_more=offset + len(rows) < total),
+    )
+
+
+@closing_export_router.get("/{log_id}", response_model=ClosingExportDetailResponse)
+def get_closing_export(
+    log_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Satu kiriman beserta payload dan response API tujuan."""
+    log = closing_export_service.get_log(db, log_id)
+    if log is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kiriman tidak ditemukan")
+
+    return _detail_kiriman(log)
+
+
+@closing_export_router.post("/{log_id}/retry", response_model=ClosingExportDetailResponse)
+def retry_closing_export(
+    log_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Ulang kiriman yang gagal dengan payload & messageId yang sama."""
+    try:
+        log = closing_export_service.kirim_ulang(db, log_id)
+    except closing_export_service.BelumDikonfigurasi:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=BELUM_DIKONFIGURASI)
+    except closing_export_service.LogTidakDitemukan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kiriman tidak ditemukan")
+    except closing_export_service.TidakBisaDiulang as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Tidak bisa diulang: {e}.")
+
+    _catat_kiriman("DIULANG", log, admin)
+    return _detail_kiriman(log)

@@ -232,3 +232,53 @@ class ClosingMessageLog(Base):
     # JSON apa adanya; body_text hanya kalau body bukan JSON.
     payload = Column(JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"), nullable=True)
     body_text = Column(Text, nullable=True)
+
+
+STATUS_KIRIM = ("mengirim", "terkirim", "duplikat", "gagal")
+# Isi sudah ada di API tujuan.
+STATUS_KIRIM_SAMPAI = ("terkirim", "duplikat")
+
+
+class ClosingExportLog(Base):
+    """Satu kiriman rekap closing ke API eksternal (TODO Fase 8, migrasi 016).
+
+    Kiriman yang gagal diulang di baris yang sama dengan `message_id` yang sama;
+    kiriman baru untuk outlet + tanggal yang sama mendapat `sequence` berikutnya.
+    """
+
+    __tablename__ = "closing_export_logs"
+    __table_args__ = (
+        UniqueConstraint("message_id", name="uq_closing_export_logs_message_id"),
+        UniqueConstraint("outlet_code", "production_date", "sequence", name="uq_closing_export_logs_sequence"),
+        CheckConstraint(
+            "status IN ('mengirim', 'terkirim', 'duplikat', 'gagal')",
+            name="ck_closing_export_logs_status",
+        ),
+        CheckConstraint("sequence > 0", name="ck_closing_export_logs_sequence"),
+        CheckConstraint("attempts >= 0", name="ck_closing_export_logs_attempts"),
+        Index("ix_closing_export_logs_created_at", "created_at"),
+        Index("ix_closing_export_logs_status_created_at", "status", "created_at"),
+    )
+
+    # BIGSERIAL di Postgres; SQLite hanya auto-increment untuk INTEGER.
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+
+    outlet_code = Column(String(20), nullable=False)
+    production_date = Column(Date, nullable=False)
+    sequence = Column(Integer, nullable=False)
+    message_id = Column(Uuid, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    item_count = Column(Integer, nullable=False)
+    payload = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=False)
+
+    status = Column(String(20), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    http_status = Column(Integer, nullable=True)
+    response_body = Column(Text, nullable=True)
+    error = Column(String(255), nullable=True)
+
+    sent_by = Column(String(255), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    # Awal percobaan terakhir — kirim ulang memakai baris yang sama.
+    started_at = Column(DateTime, nullable=False, default=utcnow)
+    finished_at = Column(DateTime, nullable=True)

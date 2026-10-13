@@ -11,7 +11,12 @@ from app.database import get_db
 from app.routes.admin_routes import api_key_router, product_group_router, product_menu_router, user_router
 from app.routes.auth_routes import router as auth_router
 from app.routes.brand_routes import router as brand_router
-from app.routes.closing_routes import closing_menu_router, closing_message_router, closing_report_router
+from app.routes.closing_routes import (
+    closing_export_router,
+    closing_menu_router,
+    closing_message_router,
+    closing_report_router,
+)
 from app.routes.outlet_routes import router as outlet_router
 from app.routes.product_routes import router as product_router
 from app.routes.sales_routes import router as sales_router
@@ -61,6 +66,7 @@ app.include_router(product_router)
 app.include_router(closing_menu_router)
 app.include_router(closing_report_router)
 app.include_router(closing_message_router)
+app.include_router(closing_export_router)
 
 
 @app.get("/", tags=["Health"])

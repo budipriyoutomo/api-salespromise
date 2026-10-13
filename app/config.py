@@ -57,6 +57,15 @@ class Settings:
         self.CLOSING_QUEUE: str = os.getenv("CLOSING_QUEUE", "")
         self.CLOSING_PREFETCH: int = int(os.getenv("CLOSING_PREFETCH", "1"))
 
+        # --- Kirim rekap closing ke API eksternal (TODO Fase 8) ---
+        # URL lengkap endpoint & token dari pemilik API, tanpa default. Kosong =
+        # fitur kirim mati (503); API tetap start.
+        self.CLOSING_EXPORT_URL: str = os.getenv("CLOSING_EXPORT_URL", "").strip()
+        self.CLOSING_EXPORT_TOKEN: str = os.getenv("CLOSING_EXPORT_TOKEN", "")
+        self.CLOSING_EXPORT_TIMEOUT: float = float(os.getenv("CLOSING_EXPORT_TIMEOUT", "10"))
+        # Percobaan tambahan untuk 429 / 5xx / timeout.
+        self.CLOSING_EXPORT_MAX_RETRIES: int = int(os.getenv("CLOSING_EXPORT_MAX_RETRIES", "2"))
+
         # --- Pembatasan percobaan login ---
         # 0 = mematikan pembatasan.
         self.LOGIN_MAX_ATTEMPTS: int = int(os.getenv("LOGIN_MAX_ATTEMPTS", "10"))
@@ -67,6 +76,10 @@ class Settings:
 
         # --- CORS untuk frontend terpisah ---
         self.CORS_ORIGINS: list = _split_csv(os.getenv("CORS_ORIGINS", ""))
+
+    @property
+    def closing_export_configured(self) -> bool:
+        return bool(self.CLOSING_EXPORT_URL and self.CLOSING_EXPORT_TOKEN)
 
     @property
     def DATABASE_URL(self):

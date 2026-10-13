@@ -287,3 +287,30 @@ def test_migrasi_015_hanya_menambah_kolom_produk():
         "ORDERDETAIL",
     ]:
         assert terlarang not in sql, terlarang
+
+
+def test_migrasi_016_hanya_membuat_tabel_log_kirim_closing():
+    """Log kirim rekap closing ke API eksternal (Fase 8): CREATE saja, tabel lain tidak disentuh."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "016_closing_export_logs.sql").read_text(encoding="utf-8"))
+
+    for harus in [
+        "CREATE TABLE IF NOT EXISTS CLOSING_EXPORT_LOGS ",
+        "UQ_CLOSING_EXPORT_LOGS_MESSAGE_ID",
+        "UQ_CLOSING_EXPORT_LOGS_SEQUENCE",
+        "CK_CLOSING_EXPORT_LOGS_STATUS",
+        "CREATE INDEX IF NOT EXISTS",
+    ]:
+        assert harus in sql, harus
+    for terlarang in [
+        "INSERT",
+        "UPDATE ",
+        "DROP",
+        "DELETE",
+        "TRUNCATE",
+        "ALTER",
+        "API_KEYS",
+        "ORDERTRANSACTION",
+        "ORDERDETAIL",
+        "CLOSING_REPORTS ",
+    ]:
+        assert terlarang not in sql, terlarang

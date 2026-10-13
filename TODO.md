@@ -12,6 +12,10 @@ Sisa:
   query pemeriksaan produksi untuk migrasi 010 (0.5).
 - Ditunda atas keputusanmu (2026-10-05): Alembic (3.1), idempotensi publish (3.4),
   bulk upsert (3.5), rate limit endpoint sync (3.8b).
+- **Fase 8 (kirim rekap closing ke API eksternal)** — backend selesai di kode
+  sesuai [usulan kontrak](docs/usulan-kontrak-kirim-closing.md) (2026-10-13).
+  Frontend selesai (sync-frontend Fase 12), test integrasi Postgres selesai.
+  Sisa: deploy (migrasi 016 belum dijalankan) dan jawaban pemilik API.
 - Keputusan arsitektur yang masih terbuka — lihat bagian Keputusan di bawah.
 
 Backend siap dipakai frontend terpisah: CORS aktif, auth user terpisah dari
@@ -749,6 +753,93 @@ Sumber: [docs/jawaban-pengirim-closing.md](docs/jawaban-pengirim-closing.md)
       `/closing` (semua role: perbandingan POS + daftar/detail laporan) dan
       `/closing-menu` (admin: mapping). Lewat catch-all BFF, tanpa route baru.
       E2E Playwright belum ada (sync-frontend TODO 11.6).
+
+---
+
+## Fase 8 — Kirim rekap closing ke API eksternal (dari `/closing`)
+
+Dibuat: 2026-10-13. Arah: keluar, lewat HTTP — berbeda dari Fase 7 (masuk lewat
+RabbitMQ) dan publish colorplate (keluar lewat RabbitMQ).
+
+### 8.0 Keputusan awal (2026-10-13)
+
+- [x] **Data = rekap total** per outlet × tanggal produksi × menu, diambil dari
+      `compare_with_pos`: `totalSold = sold Colorplate + pos_qty`; waste /
+      adjustment / compensation dari Colorplate saja. Angka kosong = 0 — sama
+      dengan `totalBaris` di frontend.
+- [x] **Baris "hanya POS"** (produk POS terjual tanpa menu Colorplate) **ikut
+      dikirim**, dikenali lewat `productId`.
+- [x] **POS qty mentah** — pengali mapping `/closing-menu` tidak diterapkan,
+      sama dengan tabel.
+- [x] **Void tidak pernah dihitung** (Keputusan 5) — switch "Ikutkan transaksi
+      void" di layar diabaikan saat kirim.
+- [x] **Satuan kirim = satu outlet × satu tanggal produksi** per request, berisi
+      semua menunya. Status kirim dilacak per pasangan itu.
+- [x] **Pemicu = tombol manual** di `/closing`. Tidak ada kirim otomatis dari
+      consumer.
+- [x] **Hanya admin** yang boleh mengirim.
+- [x] **Revisi setelah terkirim = ditandai "perlu kirim ulang"**, tidak dikirim
+      ulang otomatis.
+- [x] **Menu belum dipetakan = blokir** — outlet-tanggal yang masih punya menu
+      Colorplate tanpa mapping aktif tidak bisa dikirim.
+- [x] **Kontrak API belum ada** — kita yang mengusulkan:
+      [docs/usulan-kontrak-kirim-closing.md](docs/usulan-kontrak-kirim-closing.md).
+
+### 8.0 Masih terbuka
+
+- [x] **ProductID yang dipetakan ke >1 menu = blokir** (2026-10-13) — di
+      outlet + tanggal yang memuat kedua menu itu, supaya qty POS tidak terkirim
+      dobel. Dibuka lagi kalau ternyata terlalu sering memblokir.
+- [ ] **Jawaban pemilik API** atas usulan kontrak (URL staging/produksi, auth,
+      semantik ganti-penuh, desimal qty, kode outlet). Sementara dikerjakan
+      sesuai usulan; kalau jawabannya berbeda, kontrak + kode diperbarui.
+
+### Implementasi (TDD, 2026-10-13)
+
+- [x] **8.1 Config** `CLOSING_EXPORT_URL` (URL lengkap endpoint),
+      `CLOSING_EXPORT_TOKEN` — tanpa default; kosong = fitur mati (503), API
+      tetap start. `CLOSING_EXPORT_TIMEOUT` (10 dtk), `CLOSING_EXPORT_MAX_RETRIES` (2).
+- [x] **8.2 Migrasi `016_closing_export_logs.sql`** — CREATE saja, tanpa
+      DELETE. **Belum dijalankan ke database mana pun.**
+- [x] **8.3 Model `ClosingExportLog` + skema** — unik `message_id` dan
+      `(outlet_code, production_date, sequence)`; status `mengirim` / `terkirim`
+      / `duplikat` / `gagal`.
+- [x] **8.4 `closing_export_service`** — isi dari `compare_with_pos`
+      (`include_deleted=False`), blokir, `sequence` naik per outlet + tanggal,
+      hash sha256 isi → status `belum_dikirim` / `terkirim` /
+      `perlu_kirim_ulang`. Log dicatat `mengirim` sebelum request berangkat;
+      tidak ada transaksi DB terbuka selama menunggu API tujuan.
+- [x] **8.5 `closing_export_client`** (`httpx`) — 2xx terkirim, 409 duplikat,
+      4xx lain gagal tanpa diulang, 429/5xx/timeout diulang (jeda 1, 2, …
+      dtk atau `Retry-After`, maks 30) dengan body & `Idempotency-Key` sama.
+      Response dipotong 2000 karakter; token tidak dicatat.
+- [x] **8.6 Endpoint admin `/api/closing-exports`**:
+      `GET /status` (per outlet × tanggal produksi, filter outlet/tanggal),
+      `POST` (kirim; 201 juga untuk `status: gagal`; 503 belum dikonfigurasi,
+      404 tanpa closing, 422 diblokir + alasan, 409 sedang dikirim),
+      `GET` (riwayat, tanpa payload), `GET /{id}` (payload + response),
+      `POST /{id}/retry` (hanya kiriman terakhir yang `gagal` atau macet; 409
+      selain itu). Penjaga: `test_closing_export_*.py`,
+      `test_routes_closing_exports.py`.
+- [x] **8.7 Test integrasi** — `tests/integration/test_closing_export_postgres.py`
+      (8 test, hanya mau jalan ke database `sync_test`): migrasi 016 dijalankan
+      di skema terpisah dan dibandingkan dengan model (kolom/tipe/nullable,
+      constraint, index), idempoten, constraint berlaku; qty NUMERIC → angka
+      di JSONB; bentrok `sequence` → `SedangDikirim` dan session tetap hidup;
+      kirim ulang. **Menangkap 1 bug:** `content_hash` CHAR(64) di migrasi vs
+      VARCHAR(64) di model → migrasi diubah ke VARCHAR(64) (belum pernah
+      dijalankan). Integrasi 23/23 lulus.
+- [x] **8.8 Frontend** — sync-frontend Fase 12: tab _Kirim ke API_ di
+      `/closing` (admin), dialog konfirmasi, status + alasan blokir, riwayat +
+      detail payload/response, kirim ulang.
+- [x] **8.10 Kiriman macet** — kolom `started_at` (awal percobaan terakhir).
+      `mengirim` yang dimulai > 5 menit lalu (`BATAS_MACET`) dianggap macet:
+      kiriman baru menandainya `gagal` ("macet: …") lalu menggantikannya, dan
+      kirim ulang diizinkan. `mengirim` yang masih berjalan tidak bisa diulang
+      (409) — supaya tidak ada request kedua ke API tujuan.
+- [ ] **8.9 Deploy** — isi `CLOSING_EXPORT_*` di `.env` (lihat `.env.example`),
+      lalu migrasi 016 ikut jalan otomatis saat container start. **Minta
+      persetujuan sebelum deploy.**
 
 ---
 

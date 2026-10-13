@@ -183,6 +183,38 @@ class TestDefaultEnv:
 
         Settings().validate()
 
+    def test_kirim_closing_ke_api_eksternal_tanpa_url_dan_token(self, monkeypatch):
+        """Fase 8: URL & token dari pemilik API — tanpa default, API tetap start."""
+        for nama in ("CLOSING_EXPORT_URL", "CLOSING_EXPORT_TOKEN", "CLOSING_EXPORT_TIMEOUT", "CLOSING_EXPORT_MAX_RETRIES"):
+            monkeypatch.delenv(nama, raising=False)
+
+        s = Settings()
+        s.validate()
+
+        assert (s.CLOSING_EXPORT_URL, s.CLOSING_EXPORT_TOKEN) == ("", "")
+        assert s.CLOSING_EXPORT_TIMEOUT == 10.0
+        assert s.CLOSING_EXPORT_MAX_RETRIES == 2
+        assert s.closing_export_configured is False
+
+    def test_kirim_closing_aktif_kalau_url_dan_token_terisi(self, monkeypatch):
+        monkeypatch.setenv("CLOSING_EXPORT_URL", "https://api.contoh.id/closing-totals")
+        monkeypatch.setenv("CLOSING_EXPORT_TOKEN", "rahasia")
+        monkeypatch.setenv("CLOSING_EXPORT_TIMEOUT", "5.5")
+        monkeypatch.setenv("CLOSING_EXPORT_MAX_RETRIES", "0")
+
+        s = Settings()
+
+        assert s.closing_export_configured is True
+        assert (s.CLOSING_EXPORT_TIMEOUT, s.CLOSING_EXPORT_MAX_RETRIES) == (5.5, 0)
+
+    @pytest.mark.parametrize("kosong", ["CLOSING_EXPORT_URL", "CLOSING_EXPORT_TOKEN"])
+    def test_kirim_closing_butuh_url_dan_token(self, monkeypatch, kosong):
+        monkeypatch.setenv("CLOSING_EXPORT_URL", "https://api.contoh.id/closing-totals")
+        monkeypatch.setenv("CLOSING_EXPORT_TOKEN", "rahasia")
+        monkeypatch.setenv(kosong, "")
+
+        assert Settings().closing_export_configured is False
+
     def test_env_dibaca_ulang_tiap_instansiasi(self, monkeypatch):
         monkeypatch.setenv("DB_HOST", "host-a")
         assert Settings().DB_HOST == "host-a"
