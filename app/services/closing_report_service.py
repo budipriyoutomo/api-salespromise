@@ -12,7 +12,11 @@ docs/jawaban-pengirim-closing.md):
 
 Saat ini pengirim tidak punya alur revisi (messageId = closingReportId), jadi
 praktis hanya BARU / DUPLIKAT yang terjadi. Jalur revisi dipertahankan untuk
-`version` berikutnya.
+`version` berikutnya. Akibatnya pesan v2 hasil susun ulang dengan messageId
+yang sama seperti pesan v1 dianggap DUPLIKAT.
+
+Rincian `wasteByCategory` (version 2) belum punya tabel sendiri; tersimpan
+di `raw_payload`.
 
 Menu yang belum pernah terlihat otomatis masuk `closing_menus` — kuncinya
 menuId; menuCode hanya atribut (bisa berubah, unik per brand, bisa null).

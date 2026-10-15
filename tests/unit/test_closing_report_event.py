@@ -101,7 +101,7 @@ class TestEnvelope:
         with pytest.raises(ValidationError):
             ClosingReportSubmitted.model_validate(dict(PAYLOAD, event="closingreport.deleted"))
 
-    @pytest.mark.parametrize("version", [0, 2, "2"])
+    @pytest.mark.parametrize("version", [0, 3, "2"])
     def test_versi_tidak_dikenal_ditolak(self, version):
         with pytest.raises(ValidationError):
             ClosingReportSubmitted.model_validate(dict(PAYLOAD, version=version))
@@ -287,3 +287,97 @@ class TestItem:
         event = ClosingReportSubmitted.model_validate(data)
 
         assert [i.menu_code for i in event.data.items] == ["SU-001", "SU-002"]
+
+
+def payload_v2(*rincian):
+    """PAYLOAD versi 2 dengan `wasteByCategory` di item pertama."""
+    hasil = copy.deepcopy(PAYLOAD)
+    hasil["version"] = 2
+    hasil["data"]["items"][0]["wasteByCategory"] = [
+        {"categoryCode": kode, "categoryName": kode.title(), "quantity": qty} for kode, qty in rincian
+    ]
+    return hasil
+
+
+class TestWasteByCategory:
+    """Versi 2: rincian waste per kategori (docs/bi-closing-report-v2-waste-category.md)."""
+
+    def test_contoh_v2_diterima(self):
+        event = ClosingReportSubmitted.model_validate(payload_v2(("DEFAULT_WASTE", 2), ("UNCATEGORIZED", 1)))
+
+        assert event.version == 2
+        item = event.data.items[0]
+        assert [(k.category_code, k.category_name, k.quantity) for k in item.waste_by_category] == [
+            ("DEFAULT_WASTE", "Default_Waste", 2),
+            ("UNCATEGORIZED", "Uncategorized", 1),
+        ]
+        assert not item.waste_kategori_selisih
+
+    def test_v2_tanpa_waste_boleh_array_kosong(self):
+        data = payload_v2()
+        data["data"]["items"][0]["waste"] = 0
+
+        item = ClosingReportSubmitted.model_validate(data).data.items[0]
+
+        assert item.waste_by_category == []
+        assert not item.waste_kategori_selisih
+
+    @pytest.mark.parametrize("isi", ["hilang", None])
+    def test_v2_tanpa_rincian_ditolak(self, isi):
+        data = payload_v2(("DEFAULT_WASTE", 3))
+        if isi == "hilang":
+            data["data"]["items"][0].pop("wasteByCategory")
+        else:
+            data["data"]["items"][0]["wasteByCategory"] = None
+
+        with pytest.raises(ValidationError) as exc:
+            ClosingReportSubmitted.model_validate(data)
+
+        assert MENU_ID in str(exc.value)
+
+    def test_v1_tanpa_rincian_tetap_diterima(self):
+        assert ClosingReportSubmitted.model_validate(PAYLOAD).data.items[0].waste_by_category is None
+
+    def test_v1_dengan_rincian_ikut_dibaca(self):
+        """Kalau pengirim memilih menambah field di v1 (opsi B)."""
+        data = payload_v2(("DEFAULT_WASTE", 3))
+        data["version"] = 1
+
+        item = ClosingReportSubmitted.model_validate(data).data.items[0]
+
+        assert item.waste_by_category[0].category_code == "DEFAULT_WASTE"
+
+    def test_total_tidak_sama_tetap_diterima(self):
+        """Laporan tidak dibuang; consumer mencatat warning."""
+        item = ClosingReportSubmitted.model_validate(payload_v2(("DEFAULT_WASTE", 2))).data.items[0]
+
+        assert item.waste_kategori_selisih
+
+    def test_kategori_dobel_ditolak(self):
+        with pytest.raises(ValidationError) as exc:
+            ClosingReportSubmitted.model_validate(payload_v2(("DEFAULT_WASTE", 2), ("DEFAULT_WASTE", 1)))
+
+        assert "DEFAULT_WASTE" in str(exc.value)
+
+    @pytest.mark.parametrize("qty", [0, -1, 1.5])
+    def test_quantity_harus_bulat_positif(self, qty):
+        with pytest.raises(ValidationError):
+            ClosingReportSubmitted.model_validate(payload_v2(("DEFAULT_WASTE", qty)))
+
+    @pytest.mark.parametrize("field", ["categoryCode", "categoryName", "quantity"])
+    def test_field_kategori_wajib(self, field):
+        data = payload_v2(("DEFAULT_WASTE", 3))
+        data["data"]["items"][0]["wasteByCategory"][0].pop(field)
+
+        with pytest.raises(ValidationError):
+            ClosingReportSubmitted.model_validate(data)
+
+    @pytest.mark.parametrize("kode", ["", "   ", "X" * 51])
+    def test_category_code_kosong_atau_terlalu_panjang_ditolak(self, kode):
+        with pytest.raises(ValidationError):
+            ClosingReportSubmitted.model_validate(payload_v2((kode, 3)))
+
+    def test_category_code_di_trim_tanpa_ubah_huruf(self):
+        item = ClosingReportSubmitted.model_validate(payload_v2((" Default_Waste ", 3))).data.items[0]
+
+        assert item.waste_by_category[0].category_code == "Default_Waste"

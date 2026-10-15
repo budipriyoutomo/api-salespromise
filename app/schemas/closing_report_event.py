@@ -58,6 +58,8 @@ def _kosong_jadi_none(value):
 
 Qty = Annotated[int, Field(ge=0)]
 
+MAX_CATEGORY_CODE_LENGTH = 50
+
 
 class _Kontrak(BaseModel):
     # Field tambahan dari pengirim diabaikan supaya kontrak bisa bertambah
@@ -75,6 +77,14 @@ class ClosingOutlet(_Kontrak):
 class ClosingBrand(_Kontrak):
     code: Annotated[str, AfterValidator(_brand_code)]
     name: _wajib_isi(MAX_NAME_LENGTH)
+
+
+class ClosingWasteCategory(_Kontrak):
+    # Kunci stabil dari pengirim; huruf tidak diubah. `categoryName` hanya
+    # nama tampilan saat pesan disusun dan bisa berubah.
+    category_code: _wajib_isi(MAX_CATEGORY_CODE_LENGTH)
+    category_name: _wajib_isi(MAX_NAME_LENGTH)
+    quantity: Annotated[int, Field(gt=0)]
 
 
 class ClosingReportItem(_Kontrak):
@@ -97,6 +107,25 @@ class ClosingReportItem(_Kontrak):
     # Seharusnya >= 0, tapi pengirim belum memvalidasinya per menu. Diterima;
     # consumer mencatat warning untuk nilai negatif.
     compensation: int
+    # Wajib di versi 2, tidak ada di versi 1. Kosong kalau waste = 0.
+    waste_by_category: Optional[List[ClosingWasteCategory]] = None
+
+    @model_validator(mode="after")
+    def _kategori_tidak_dobel(self):
+        kode = [k.category_code for k in self.waste_by_category or []]
+        dobel = sorted({k for k in kode if kode.count(k) > 1})
+        if dobel:
+            raise ValueError(f"wasteByCategory: kategori {', '.join(dobel)} muncul lebih dari sekali")
+        return self
+
+    @property
+    def waste_kategori_selisih(self) -> bool:
+        """Total per kategori tidak sama dengan `waste`. Pengirim menjaminnya
+        sama; kalau tidak, laporan tetap disimpan dan consumer mencatat warning
+        — angka `waste` sendiri tetap dipakai."""
+        if self.waste_by_category is None:
+            return False
+        return sum(k.quantity for k in self.waste_by_category) != self.waste
 
 
 class ClosingReportData(_Kontrak):
@@ -121,8 +150,17 @@ class ClosingReportData(_Kontrak):
 
 class ClosingReportSubmitted(_Kontrak):
     event: Literal["closingreport.submitted"]
-    version: Literal[1]
+    # Versi 2 menambah `items[].wasteByCategory` (docs/bi-closing-report-v2-waste-category.md).
+    version: Literal[1, 2]
     message_id: _wajib_isi(MAX_MESSAGE_ID_LENGTH)
     # Wajib ber-offset: tanpa itu tidak bisa diketahui WIB atau UTC.
     sent_at: Annotated[AwareDatetime, AfterValidator(_ke_utc_naive)]
     data: ClosingReportData
+
+    @model_validator(mode="after")
+    def _v2_wajib_rincian_waste(self):
+        if self.version >= 2:
+            tanpa = [str(i.menu_id) for i in self.data.items if i.waste_by_category is None]
+            if tanpa:
+                raise ValueError(f"version {self.version}: wasteByCategory wajib ada di setiap item ({', '.join(tanpa)})")
+        return self

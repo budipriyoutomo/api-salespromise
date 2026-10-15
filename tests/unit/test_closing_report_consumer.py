@@ -356,6 +356,53 @@ class TestCompensationNegatif:
         assert not [r for r in caplog.records if "compensation negatif" in r.getMessage()]
 
 
+class TestWasteByCategorySelisih:
+    """Total wasteByCategory harus sama dengan waste. Kalau tidak, laporan tetap
+    disimpan dan consumer mencatat warning."""
+
+    def _v2(self, qty):
+        pesan = copy.deepcopy(PAYLOAD)
+        pesan["version"] = 2
+        pesan["data"]["items"][0]["wasteByCategory"] = [
+            {"categoryCode": "DEFAULT_WASTE", "categoryName": "Default Waste", "quantity": qty}
+        ]
+        return json.dumps(pesan).encode()
+
+    def test_v2_cocok_disimpan_tanpa_peringatan(self, db_session, factory):
+        assert proses_pesan(self._v2(3), factory) is Keputusan.ACK
+
+        revisi = db_session.query(ClosingReportRevision).one()
+        assert revisi.version == 2
+        assert revisi.raw_payload["data"]["items"][0]["wasteByCategory"][0]["quantity"] == 3
+        assert db_session.query(ClosingMessageLog).one().warnings == ["outlet belum terdaftar di api_keys"]
+
+    def test_v2_selisih_disimpan_dan_dicatat(self, db_session, factory, caplog):
+        with caplog.at_level("WARNING", logger="sync-api"):
+            assert proses_pesan(self._v2(2), factory) is Keputusan.ACK
+
+        assert db_session.query(ClosingReport).count() == 1
+        peringatan = [r for r in caplog.records if "wasteByCategory" in r.getMessage()]
+        assert len(peringatan) == 1
+        assert peringatan[0].menu_ids == ["0a1b2c3d-4e5f-4a7b-8c9d-0e1f2a3b4c5d"]
+        assert db_session.query(ClosingMessageLog).one().warnings == [
+            "outlet belum terdaftar di api_keys",
+            "wasteByCategory tidak sama dengan waste: 1 menu",
+        ]
+
+    def test_v2_setelah_v1_dengan_message_id_sama_duplikat(self, db_session, factory):
+        """Susun ulang (--rebuild) di pengirim membawa messageId yang sama."""
+        proses_pesan(BODY, factory)
+
+        assert proses_pesan(self._v2(3), factory) is Keputusan.ACK
+
+        [revisi] = db_session.query(ClosingReportRevision).all()
+        assert revisi.version == 1
+        assert [log.status for log in db_session.query(ClosingMessageLog).order_by(ClosingMessageLog.id)] == [
+            "baru",
+            "duplikat",
+        ]
+
+
 class TestLogPesan:
     """Setiap pesan yang diputuskan (ack / DLQ) tercatat di `closing_message_logs`
     supaya admin bisa melihat isi pesan dan alasan penolakan dari dashboard."""
@@ -432,7 +479,7 @@ class TestLogPesan:
 
     def test_gagal_validasi_menyimpan_error_dan_identitas_dari_payload(self, db_session, factory):
         rusak = copy.deepcopy(PAYLOAD)
-        rusak["version"] = 2
+        rusak["version"] = 3
 
         proses_pesan(json.dumps(rusak).encode(), factory)
 

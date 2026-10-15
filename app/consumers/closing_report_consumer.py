@@ -242,6 +242,15 @@ def _proses(db, body: bytes) -> Keputusan:
                 extra={"closing_report_id": str(event.data.closing_report_id), "menu_ids": negatif},
             )
             peringatan.append(f"compensation negatif: {len(negatif)} menu")
+        selisih = [str(i.menu_id) for i in event.data.items if i.waste_kategori_selisih]
+        if selisih:
+            # Pengirim menjamin total per kategori = waste. Kalau tidak, laporan
+            # tetap disimpan — angka waste-nya sendiri tidak terpengaruh.
+            logger.warning(
+                "CLOSING REPORT: total wasteByCategory tidak sama dengan waste",
+                extra={"closing_report_id": str(event.data.closing_report_id), "menu_ids": selisih},
+            )
+            peringatan.append(f"wasteByCategory tidak sama dengan waste: {len(selisih)} menu")
 
         _catat(
             db,
