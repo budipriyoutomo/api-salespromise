@@ -33,6 +33,7 @@ from enum import Enum
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from app.core.time import utcnow
 from app.models.api_key import ApiKey
@@ -237,7 +238,8 @@ DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
 
-def _ringkasan(laporan: ClosingReport) -> dict:
+def _ringkasan(laporan: ClosingReport, jumlah_item: dict | None = None) -> dict:
+    """`jumlah_item` (revision_id → jumlah) dipakai daftar, yang tidak memuat item."""
     aktif = next((r for r in laporan.revisions if r.is_current), None)
     return {
         "closing_report_id": laporan.closing_report_id,
@@ -249,7 +251,9 @@ def _ringkasan(laporan: ClosingReport) -> dict:
         "sent_at": aktif.sent_at if aktif else None,
         "received_at": aktif.received_at if aktif else None,
         "revision_count": len(laporan.revisions),
-        "item_count": aktif.item_count if aktif else 0,
+        "item_count": (
+            0 if aktif is None else jumlah_item.get(aktif.id, 0) if jumlah_item is not None else aktif.item_count
+        ),
     }
 
 
@@ -268,12 +272,24 @@ def list_reports(db, outlet=None, start_date=None, end_date=None, limit=DEFAULT_
     query = _filter_laporan(db.query(ClosingReport), outlet, start_date, end_date)
     total = query.count()
     rows = (
-        query.order_by(ClosingReport.report_date.desc(), ClosingReport.outlet_code, ClosingReport.id)
+        # Ringkasan cukup `item_count` — item tiap revisi tidak perlu dimuat.
+        query.options(selectinload(ClosingReport.revisions).noload(ClosingReportRevision.items))
+        .order_by(ClosingReport.report_date.desc(), ClosingReport.outlet_code, ClosingReport.id)
         .limit(limit)
         .offset(offset)
         .all()
     )
-    return [_ringkasan(r) for r in rows], total
+
+    aktif = [rev.id for r in rows for rev in r.revisions if rev.is_current]
+    jumlah_item = {}
+    if aktif:
+        jumlah_item = dict(
+            db.query(ClosingReportItem.revision_id, func.count(ClosingReportItem.id))
+            .filter(ClosingReportItem.revision_id.in_(aktif))
+            .group_by(ClosingReportItem.revision_id)
+            .all()
+        )
+    return [_ringkasan(r, jumlah_item) for r in rows], total
 
 
 def _urutan_item(i: ClosingReportItem):
@@ -397,10 +413,11 @@ def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_de
             if nama:
                 nama_produk[product_id] = nama
     terpetakan = {pid for produk in mapping.values() for pid, _, _ in produk}
-    for product_id in terpetakan:
-        if not nama_produk.get(product_id):
-            info = product_menu_service._info_terbaru(db, product_id)
-            nama_produk[product_id] = (info.product_name or None) if info else None
+    tanpa_nama = [pid for pid in terpetakan if not nama_produk.get(pid)]
+    info_terbaru = product_menu_service._info_terbaru_banyak(db, tanpa_nama)
+    for product_id in tanpa_nama:
+        info = info_terbaru.get(product_id)
+        nama_produk[product_id] = (info.product_name or None) if info else None
 
     def info_produk(product_id, multiplier):
         return ProdukPerbandingan(

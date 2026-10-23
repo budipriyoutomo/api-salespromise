@@ -2,7 +2,8 @@
 
 import pytest
 
-from app.database import Base, engine, get_db
+from app.config import Settings
+from app.database import Base, engine, engine_options, get_db
 
 
 class TestGetDb:
@@ -68,9 +69,39 @@ class TestEngine:
         """Tanpa ini, koneksi yang sudah diputus server bikin request pertama gagal."""
         assert engine.pool._pre_ping is True
 
-    def test_ukuran_pool(self):
-        assert engine.pool.size() == 10
-        assert engine.pool._max_overflow == 20
+    def test_ukuran_pool_dari_settings(self):
+        assert engine.pool.size() == 5
+        assert engine.pool._max_overflow == 5
+        assert engine.pool._timeout == 10
+
+
+class TestEngineOptions:
+
+    def _settings(self, **nilai):
+        s = Settings()
+        for nama, v in nilai.items():
+            setattr(s, nama, v)
+        return s
+
+    def test_meneruskan_ukuran_pool_dan_timeout(self):
+        opsi = engine_options(
+            self._settings(DB_POOL_SIZE=3, DB_MAX_OVERFLOW=2, DB_POOL_TIMEOUT=7, DB_POOL_RECYCLE=900)
+        )
+
+        assert opsi["pool_pre_ping"] is True
+        assert (opsi["pool_size"], opsi["max_overflow"]) == (3, 2)
+        assert (opsi["pool_timeout"], opsi["pool_recycle"]) == (7, 900)
+
+    def test_statement_timeout_dikirim_saat_connect(self):
+        """Satu query berat tidak boleh menahan koneksi pool sampai semua request antre."""
+        opsi = engine_options(self._settings(DB_STATEMENT_TIMEOUT_MS=30000))
+
+        assert opsi["connect_args"] == {"options": "-c statement_timeout=30000"}
+
+    def test_statement_timeout_nol_berarti_tanpa_batas(self):
+        opsi = engine_options(self._settings(DB_STATEMENT_TIMEOUT_MS=0))
+
+        assert "connect_args" not in opsi
 
     def test_semua_model_terdaftar_di_metadata(self):
         """Dipakai init_db.py dan test — pastikan tidak ada model yang lupa di-import."""

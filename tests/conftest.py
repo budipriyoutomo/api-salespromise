@@ -46,6 +46,17 @@ from app.models.sales import Sales  # noqa: E402
 from app.models.sales_items import SalesItems  # noqa: E402
 from app.models.user import User  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _kosongkan_cache():
+    """Cache TTL (app/core/cache.py) hidup selama proses — jangan bocor antar-test."""
+    from app.core.cache import clear_all
+
+    clear_all()
+    yield
+    clear_all()
+
+
 # ---------------------------------------------------------------------------
 # Database in-memory (SQLite)
 # ---------------------------------------------------------------------------

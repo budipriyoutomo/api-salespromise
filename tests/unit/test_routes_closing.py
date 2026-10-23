@@ -267,6 +267,24 @@ class TestDaftarLaporan:
         assert laporan["item_count"] == 1
         assert laporan["sent_at"] == "2026-10-02T16:00:00"
 
+    def test_daftar_tidak_memuat_item_laporan(self, client, app_db, admin_headers):
+        """Ringkasan cukup `item_count`; memuat semua item tiap revisi memperlambat daftar."""
+        from sqlalchemy import event
+
+        kirim_closing(app_db, items=[item(menu_code=f"SU-{i:03}") for i in range(5)])
+
+        sql = []
+        listener = lambda conn, cursor, statement, *a: sql.append(statement)  # noqa: E731
+        event.listen(app_db.get_bind(), "before_cursor_execute", listener)
+        try:
+            res = client.get("/api/closing-reports", headers=admin_headers)
+        finally:
+            event.remove(app_db.get_bind(), "before_cursor_execute", listener)
+
+        assert res.json()["data"][0]["item_count"] == 5
+        # Jumlah item boleh dihitung (COUNT), barisnya tidak dimuat.
+        assert not [s for s in sql if "closing_report_items.menu_id" in s]
+
 
 class TestDetailLaporan:
 
@@ -538,3 +556,45 @@ class TestPerbandingan:
 
         assert {b["outlet_code"] for b in self._baris(client, outlet_headers)} == {"OUTLET_001"}
         assert client.get(self.URL, params={"outlet": "OUTLET_002"}, headers=outlet_headers).status_code == 403
+
+    def test_nama_produk_dari_penjualan_terakhir_di_luar_rentang(self, client, app_db, admin_headers):
+        """Produk dipetakan tapi tidak terjual di rentang ini — nama dari penjualan terakhirnya."""
+        kirim_closing(app_db)
+        petakan(app_db, "SU-001", 200104)
+        petakan(app_db, "SU-001", 200105)
+        jual(app_db, 1, 200104, 1, sale_date=date(2026, 9, 1), nama="Salmon Lama")
+        jual(app_db, 2, 200104, 1, sale_date=date(2026, 9, 5), nama="Salmon Baru")
+        jual(app_db, 3, 200105, 1, sale_date=date(2026, 9, 2), nama="Tuna")
+
+        baris = self._menu(client, admin_headers, start_date="2026-10-02", end_date="2026-10-02")
+
+        assert {p["product_id"]: p["product_name"] for p in baris["products"]} == {
+            200104: "Salmon Baru",
+            200105: "Tuna",
+        }
+
+    def test_jumlah_query_tidak_bertambah_per_produk(self, client, app_db, admin_headers):
+        """Dulu satu query per produk tanpa nama (N+1) — lambat saat mapping banyak."""
+        from sqlalchemy import event
+
+        def hitung_query(jumlah_produk):
+            app_db.query(ClosingMenuProduct).delete()
+            app_db.commit()
+            for i in range(jumlah_produk):
+                petakan(app_db, "SU-001", 300000 + i)
+                jual(app_db, 1000 + len(hitung_query.dipakai), 300000 + i, 1, sale_date=date(2026, 9, 1))
+                hitung_query.dipakai.append(i)
+
+            jumlah = []
+            listener = lambda *a, **k: jumlah.append(1)  # noqa: E731
+            event.listen(app_db.get_bind(), "before_cursor_execute", listener)
+            try:
+                self._baris(client, admin_headers, start_date="2026-10-02", end_date="2026-10-02")
+            finally:
+                event.remove(app_db.get_bind(), "before_cursor_execute", listener)
+            return len(jumlah)
+
+        hitung_query.dipakai = []
+        kirim_closing(app_db)
+
+        assert hitung_query(1) == hitung_query(6)

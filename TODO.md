@@ -841,6 +841,47 @@ RabbitMQ) dan publish colorplate (keluar lewat RabbitMQ).
       lalu migrasi 016 ikut jalan otomatis saat container start. **Minta
       persetujuan sebelum deploy.**
 
+## Fase 9 — Performa & error saat data besar (2026-10-23)
+
+Keluhan: dashboard kadang error dan lambat setelah data menumpuk. DB lokal hanya
+14 transaksi, jadi perbaikan di bawah berasal dari membaca kode — **belum diukur
+di produksi** (lihat 9.0). Frontend: sync-frontend Fase 13.
+
+- [ ] **9.0 Ukur di produksi (read-only):** log `status >= 500` / `duration_ms > 2000`,
+      jumlah baris `ordertransaction`/`orderdetail`, `max_connections`, dan
+      `EXPLAIN ANALYZE` query dashboard di salinan `pg_dump`.
+- [x] **9.1 Index `orderdetail`** — migrasi `017_orderdetail_report_indexes.sql`:
+      `(TransactionID, outlet_code)`, `(SaleDate, outlet_code)`, `(upper(trim("Group")))`,
+      `(ProductID, SaleDate DESC, TransactionID DESC)`. Hanya `CREATE INDEX CONCURRENTLY
+      IF NOT EXISTS` — tidak ada baris/kolom/constraint yang disentuh, tabel tetap bisa
+      ditulis selama dibangun. `migrate.py` punya mode `-- migrate:no-transaction` dan
+      berhenti kalau menemukan index INVALID. Diuji di `sync_test`: jumlah baris sama,
+      index valid, dipakai planner. **Belum dijalankan di produksi** — container API
+      baru start setelah index selesai dibangun (bisa beberapa menit di tabel besar);
+      jalankan saat sepi atau lebih dulu lewat `python migrate.py`.
+- [x] **9.2** `/api/sales/product-groups` menerima `start_date`/`end_date`, dan
+      membaca `orderdetail` saja (tanpa join). Dashboard mengirim rentang filter.
+- [x] **9.3** Query kandidat produk / menu / impor tanpa join ke `ordertransaction`
+      (`orderdetail` sudah punya `outlet_code`). `limit` masih di Python — kandidat
+      impor butuh semua baris untuk peringatan lintas brand.
+- [x] **9.4** `compare_with_pos`: nama produk dari satu query `row_number()`
+      (`_info_terbaru_banyak`), bukan satu query per produk.
+- [x] **9.5** Daftar closing report tidak memuat item; `item_count` dari satu `COUNT`.
+- [x] **9.6** `/api/outlets/sync-status` di-cache 30 detik per scope outlet (`app/core/cache.py`).
+- [x] **9.7** Export CSV: hanya 10 kolom export yang di-query, CSV dikirim per 2000 baris.
+      Streaming langsung dari DB tidak bisa — FastAPI 0.111 menutup session sebelum
+      body dikirim.
+- [x] **9.8** Rentang tanggal laporan maks `REPORT_MAX_RANGE_DAYS` (366) → 422, hanya
+      kalau kedua tanggal dikirim.
+- [x] **9.9** Pool DB bisa diatur (`DB_POOL_SIZE`=5, `DB_MAX_OVERFLOW`=5,
+      `DB_POOL_TIMEOUT`=10). Sebelumnya 4 worker × (10+20) = 120 koneksi, melewati
+      `max_connections` default 100. `DB_STATEMENT_TIMEOUT_MS`=30000; `migrate.py`
+      mematikannya untuk sesi migrasi.
+- [x] **9.10** Query kena `statement_timeout`, pool penuh, atau koneksi DB putus →
+      503 JSON + `request_id` + `Retry-After` (`app/core/errors.py`), bukan 500 teks.
+- [ ] **9.11 (ditunda, = 3.5)** Bulk upsert `sync_sales`.
+
+
 ---
 
 ## Keputusan

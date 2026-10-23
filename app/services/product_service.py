@@ -17,9 +17,8 @@ from sqlalchemy.exc import IntegrityError
 from app.core.time import utcnow
 from app.models.brand import Brand, OutletBrandMapping
 from app.models.product import Product, ProductPosMapping
-from app.models.sales import Sales
 from app.models.sales_items import SalesItems
-from app.services.sales_service import SalesService, item_join
+from app.services.sales_service import SalesService
 
 MAX_PRODUCT_CODE_LENGTH = 50
 MAX_PRODUCT_NAME_LENGTH = 255
@@ -252,19 +251,18 @@ def list_pos_candidates(db, outlet=None, q=None, limit=CANDIDATE_DEFAULT_LIMIT) 
 
     query = (
         db.query(
-            Sales.outlet_code.label("outlet_code"),
+            SalesItems.outlet_code.label("outlet_code"),
             SalesItems.product_id.label("product_id"),
             name_expr.label("product_name"),
             group_expr.label("product_group"),
             func.max(SalesItems.sale_date).label("last_sale_date"),
             func.max(SalesItems.transaction_id).label("last_transaction_id"),
         )
-        .join(Sales, item_join)
         .filter(SalesItems.product_id > 0)
     )
 
     if outlet:
-        query = query.filter(Sales.outlet_code == outlet)
+        query = query.filter(SalesItems.outlet_code == outlet)
 
     kata = (q or "").strip()
     if kata:
@@ -273,7 +271,7 @@ def list_pos_candidates(db, outlet=None, q=None, limit=CANDIDATE_DEFAULT_LIMIT) 
             syarat.append(SalesItems.product_id == int(kata))
         query = query.filter(or_(*syarat))
 
-    rows = query.group_by(Sales.outlet_code, SalesItems.product_id, name_expr, group_expr).all()
+    rows = query.group_by(SalesItems.outlet_code, SalesItems.product_id, name_expr, group_expr).all()
 
     # Satu kandidat per (outlet, ProductID) — varian nama yang paling akhir terjual menang.
     terbaru: dict = {}
@@ -316,8 +314,7 @@ def _info_pos_terbaru(db, outlet_code: str, pos_product_id: int):
             func.trim(SalesItems.product_name).label("product_name"),
             SalesService._normalized_product_group().label("product_group"),
         )
-        .join(Sales, item_join)
-        .filter(Sales.outlet_code == outlet_code, SalesItems.product_id == pos_product_id)
+        .filter(SalesItems.outlet_code == outlet_code, SalesItems.product_id == pos_product_id)
         .order_by(SalesItems.sale_date.desc(), SalesItems.transaction_id.desc())
         .first()
     )
@@ -484,7 +481,7 @@ def _kandidat_impor(db, brand_id=None, q=None, pos_product_id=None) -> list[Kand
 
     query = (
         db.query(
-            Sales.outlet_code.label("outlet_code"),
+            SalesItems.outlet_code.label("outlet_code"),
             SalesItems.product_id.label("product_id"),
             name_expr.label("product_name"),
             group_expr.label("product_group"),
@@ -492,8 +489,7 @@ def _kandidat_impor(db, brand_id=None, q=None, pos_product_id=None) -> list[Kand
             func.max(SalesItems.sale_date).label("last_sale_date"),
             func.max(SalesItems.transaction_id).label("last_transaction_id"),
         )
-        .join(Sales, item_join)
-        .filter(SalesItems.product_id > 0, Sales.outlet_code.in_(sorted(outlet_brand)))
+        .filter(SalesItems.product_id > 0, SalesItems.outlet_code.in_(sorted(outlet_brand)))
     )
     if pos_product_id is not None:
         query = query.filter(SalesItems.product_id == pos_product_id)
@@ -505,7 +501,7 @@ def _kandidat_impor(db, brand_id=None, q=None, pos_product_id=None) -> list[Kand
             syarat.append(SalesItems.product_id == int(kata))
         query = query.filter(or_(*syarat))
 
-    rows = query.group_by(Sales.outlet_code, SalesItems.product_id, name_expr, group_expr, dept_expr).all()
+    rows = query.group_by(SalesItems.outlet_code, SalesItems.product_id, name_expr, group_expr, dept_expr).all()
 
     # Per (outlet, ProductID): varian nama terakhir. Per (brand, ProductID): yang terakhir di brand itu.
     per_outlet: dict = {}

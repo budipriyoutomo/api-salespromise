@@ -250,3 +250,32 @@ class TestCorsOrigins:
         monkeypatch.setenv("CORS_ORIGINS", "http://a.id,,http://b.id,")
 
         assert Settings().CORS_ORIGINS == ["http://a.id", "http://b.id"]
+
+
+class TestPoolDatabase:
+    """Pool per worker gunicorn. 4 worker x (10+20) dulu = 120 koneksi, melewati
+    `max_connections` default Postgres (100) -> "too many clients" acak saat ramai."""
+
+    def test_default_pool_kecil_dan_timeout_singkat(self, monkeypatch):
+        for nama in ("DB_POOL_SIZE", "DB_MAX_OVERFLOW", "DB_POOL_TIMEOUT", "DB_POOL_RECYCLE", "DB_STATEMENT_TIMEOUT_MS"):
+            monkeypatch.delenv(nama, raising=False)
+
+        s = Settings()
+
+        assert s.DB_POOL_SIZE == 5
+        assert s.DB_MAX_OVERFLOW == 5
+        assert s.DB_POOL_TIMEOUT == 10
+        assert s.DB_POOL_RECYCLE == 1800
+        assert s.DB_STATEMENT_TIMEOUT_MS == 30000
+
+    def test_bisa_diatur_lewat_env(self, monkeypatch):
+        monkeypatch.setenv("DB_POOL_SIZE", "3")
+        monkeypatch.setenv("DB_MAX_OVERFLOW", "0")
+        monkeypatch.setenv("DB_POOL_TIMEOUT", "5")
+        monkeypatch.setenv("DB_POOL_RECYCLE", "600")
+        monkeypatch.setenv("DB_STATEMENT_TIMEOUT_MS", "0")
+
+        s = Settings()
+
+        assert (s.DB_POOL_SIZE, s.DB_MAX_OVERFLOW, s.DB_POOL_TIMEOUT) == (3, 0, 5)
+        assert (s.DB_POOL_RECYCLE, s.DB_STATEMENT_TIMEOUT_MS) == (600, 0)

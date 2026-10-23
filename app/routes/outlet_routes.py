@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.core.cache import TtlCache
 from app.database import get_db
 from app.dependencies.auth import get_current_user, require_roles, resolve_outlet_scope
 from app.models.user import ROLE_ADMIN, ROLE_MANAGER, User
@@ -16,6 +17,10 @@ from app.services import brand_service
 from app.services.sales_service import SalesService
 
 router = APIRouter(prefix="/api/outlets", tags=["Outlets"])
+
+# Halaman status sync polling tiap 60 detik per user; satu query per outlet
+# scope per 30 detik sudah cukup segar untuk mendeteksi outlet yang mati.
+_cache_sync_status = TtlCache(ttl_seconds=30)
 
 
 @router.get("", response_model=OutletListResponse)
@@ -50,6 +55,9 @@ def sync_status(
     """
     outlet = resolve_outlet_scope(user, None)
 
-    rows = SalesService.get_sync_status(db=db, outlet=outlet)
+    data = _cache_sync_status.get_or_set(
+        outlet,
+        lambda: [SyncStatusRow.model_validate(row) for row in SalesService.get_sync_status(db=db, outlet=outlet)],
+    )
 
-    return SyncStatusListResponse(data=[SyncStatusRow.model_validate(row) for row in rows])
+    return SyncStatusListResponse(data=data)

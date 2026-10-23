@@ -22,6 +22,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.rentang_tanggal import cek_rentang_tanggal
 from app.database import get_db
 from app.dependencies.auth import get_current_user, require_roles, resolve_outlet_scope
 from app.models.user import ROLE_ADMIN, User
@@ -187,6 +188,7 @@ def compare_closing_with_pos(
     Angka colorplate apa adanya; `pos_qty` = Σ qty orderdetail outlet & tanggal
     yang sama dari ProductID yang dipetakan ke menu itu (kosong = belum dipetakan).
     """
+    cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
     rows = closing_report_service.compare_with_pos(
         db, outlet=outlet, start_date=start_date, end_date=end_date, include_deleted=include_deleted
@@ -283,6 +285,7 @@ def closing_export_status(
     _admin: User = Depends(require_admin),
 ):
     """Status kirim setiap outlet × tanggal produksi yang punya closing, terbaru dulu."""
+    cek_rentang_tanggal(start_date, end_date)
     rows = closing_export_service.status_pasangan(db, outlet=outlet, start_date=start_date, end_date=end_date)
 
     return ClosingExportStatusResponse(data=[ClosingExportStatus.model_validate(row) for row in rows])

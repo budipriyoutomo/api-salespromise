@@ -138,7 +138,9 @@ def test_advisory_lock_diambil_sebelum_migrasi(folder):
 
     migrate.jalankan(conn, migrate.daftar_migrasi(folder))
 
-    assert conn.log[0].startswith("SELECT pg_advisory_lock")
+    lock = next(i for i, sql in enumerate(conn.log) if sql.startswith("SELECT pg_advisory_lock"))
+    pertama = next(i for i, sql in enumerate(conn.log) if sql.startswith("-- 001"))
+    assert lock < pertama
 
 
 def test_migrasi_007_idempoten_tanpa_seed():
@@ -313,4 +315,117 @@ def test_migrasi_016_hanya_membuat_tabel_log_kirim_closing():
         "ORDERDETAIL",
         "CLOSING_REPORTS ",
     ]:
+        assert terlarang not in sql, terlarang
+
+
+def test_statement_timeout_dimatikan_sebelum_lock_dan_migrasi(folder):
+    """Engine aplikasi memasang statement_timeout; migrasi (bangun index) dan
+    menunggu advisory lock bisa jauh lebih lama dari itu."""
+    conn = KoneksiPalsu()
+
+    migrate.jalankan(conn, migrate.daftar_migrasi(folder))
+
+    assert conn.log[0] == "SET statement_timeout = 0"
+
+
+# ---------------------------------------------------------------------------
+# File tanpa transaksi (CREATE INDEX CONCURRENTLY, migrasi 017)
+# ---------------------------------------------------------------------------
+
+
+class CursorTanpaTransaksi(CursorPalsu):
+    def execute(self, sql, params=None):
+        if sql.startswith("SELECT i.indisvalid"):
+            self.db.log.append(sql)
+            nama = params[0]
+            self._hasil = [(False,)] if nama in self.db.invalid else ([(True,)] if nama in self.db.ada else [])
+            return
+        if "CONCURRENTLY" in sql:
+            # Postgres menolak CONCURRENTLY di dalam blok transaksi.
+            assert self.db.autocommit is True, "CONCURRENTLY dijalankan di dalam transaksi"
+            self.db.ada.add(sql.split("IF NOT EXISTS")[1].split()[0])
+        super().execute(sql, params)
+
+    def fetchone(self):
+        return self._hasil[0] if self._hasil else None
+
+
+class KoneksiTanpaTransaksi(KoneksiPalsu):
+    def __init__(self, invalid=(), **kw):
+        super().__init__(**kw)
+        self.autocommit = False
+        self.invalid = set(invalid)
+        self.ada = set()
+
+    def cursor(self):
+        return CursorTanpaTransaksi(self)
+
+
+@pytest.fixture()
+def folder_index(tmp_path):
+    (tmp_path / "001_pertama.sql").write_text("-- 001\nSELECT 1;", encoding="utf-8")
+    (tmp_path / "002_index.sql").write_text(
+        "-- migrate:no-transaction\n"
+        "-- komentar; dengan titik koma\n"
+        'CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_a ON t ("A");\n\n'
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_b\n    ON t (upper(trim(\"B\")));\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_file_tanpa_transaksi_dijalankan_per_statement_dalam_autocommit(folder_index):
+    conn = KoneksiTanpaTransaksi()
+
+    dijalankan = migrate.jalankan(conn, migrate.daftar_migrasi(folder_index))
+
+    assert dijalankan == ["001_pertama.sql", "002_index.sql"]
+    concurrently = [sql for sql in conn.log if "CONCURRENTLY" in sql]
+    assert len(concurrently) == 2
+    assert conn.ada == {"ix_a", "ix_b"}
+    assert conn.tercatat == ["001_pertama.sql", "002_index.sql"]
+    # Kembali ke mode transaksi biasa untuk file berikutnya.
+    assert conn.autocommit is False
+
+
+def test_index_invalid_sisa_kegagalan_tidak_dilewati_diam_diam(folder_index):
+    """`IF NOT EXISTS` akan melewati index INVALID — padahal index itu tidak dipakai planner."""
+    conn = KoneksiTanpaTransaksi(invalid={"ix_b"})
+
+    with pytest.raises(RuntimeError, match="ix_b"):
+        migrate.jalankan(conn, migrate.daftar_migrasi(folder_index))
+
+    assert "002_index.sql" not in conn.tercatat
+    assert conn.autocommit is False
+
+
+def test_statement_gagal_tidak_dicatat(folder_index):
+    conn = KoneksiTanpaTransaksi(gagal_pada="ix_b")
+
+    with pytest.raises(RuntimeError):
+        migrate.jalankan(conn, migrate.daftar_migrasi(folder_index))
+
+    assert "002_index.sql" not in conn.tercatat
+    assert conn.autocommit is False
+
+
+def test_pecah_statement_mengabaikan_komentar():
+    sql = "-- migrate:no-transaction\n-- a; b\nCREATE INDEX x ON t (a);\n\n-- c\nCREATE INDEX y ON t (b);\n"
+
+    assert migrate.pecah_statement(sql) == ["CREATE INDEX x ON t (a)", "CREATE INDEX y ON t (b)"]
+
+
+def test_migrasi_017_hanya_menambah_index_tanpa_mengunci_tabel():
+    """Index orderdetail untuk query dashboard (TODO 9.1). Tidak ada baris yang disentuh."""
+    path = migrate.MIGRATIONS_DIR / "017_orderdetail_report_indexes.sql"
+    teks = path.read_text(encoding="utf-8")
+    sql = _tanpa_komentar(teks)
+    statements = migrate.pecah_statement(teks)
+
+    assert migrate.tanpa_transaksi(teks)
+    assert len(statements) == 4
+    for s in statements:
+        assert s.upper().startswith("CREATE INDEX CONCURRENTLY IF NOT EXISTS "), s
+        assert " ON ORDERDETAIL " in s.upper().replace("\n", " ")
+    for terlarang in ["INSERT", "UPDATE ", "DROP", "DELETE", "TRUNCATE", "ALTER", "UNIQUE"]:
         assert terlarang not in sql, terlarang

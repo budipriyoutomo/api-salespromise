@@ -492,3 +492,16 @@ class TestListProductGroups:
 
     def test_database_kosong(self, db_session):
         assert SalesService.list_product_groups(db=db_session) == []
+
+    def test_rentang_tanggal(self, seeded):
+        """Dashboard mengirim rentang filter — tanpa itu seluruh orderdetail dipindai."""
+        assert SalesService.list_product_groups(
+            db=seeded, start_date=date(2026, 1, 15), end_date=date(2026, 1, 15)
+        ) == ["COLORPLATE", "FOOD"]
+        assert SalesService.list_product_groups(db=seeded, start_date=date(2026, 1, 16)) == ["DRINK"]
+        assert SalesService.list_product_groups(db=seeded, end_date=date(2026, 1, 10)) == ["COLORPLATE"]
+
+    def test_rentang_tanggal_dan_outlet_digabung(self, seeded):
+        assert SalesService.list_product_groups(
+            db=seeded, outlet="OUTLET_002", start_date=date(2026, 1, 20), end_date=date(2026, 1, 20)
+        ) == ["DRINK"]

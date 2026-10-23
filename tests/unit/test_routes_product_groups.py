@@ -261,5 +261,14 @@ class TestDaftarProductGroup:
 
         assert response.json()["data"] == ["COLORPLATE", "FOOD"]
 
+    def test_rentang_tanggal(self, client, admin_headers, data_penjualan):
+        response = client.get(
+            "/api/sales/product-groups",
+            params={"start_date": "2026-01-10", "end_date": "2026-01-10"},
+            headers=admin_headers,
+        )
+
+        assert response.json()["data"] == ["COLORPLATE"]
+
     def test_butuh_autentikasi(self, client):
         assert client.get("/api/sales/product-groups").status_code == 401

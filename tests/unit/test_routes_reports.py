@@ -284,6 +284,37 @@ class TestExportCsv:
 
         assert len(baris) == 2  # header + 1 transaksi
 
+    def test_isi_baris_tidak_berubah(self, client, seeded, admin_headers):
+        """Dikunci sebelum export diubah ke query kolom + kirim bertahap."""
+        isi = client.get("/api/sales/export", headers=admin_headers).text
+
+        assert isi == (
+            "transaction_id,outlet_code,sale_date,paid_time,receipt_id,reference_no,"
+            "receipt_total_amount,receipt_pay_price,receipt_discount,transaction_status_id\r\n"
+            "3,OUTLET_002,2026-01-15,,0,,1.0000,300000.0000,0.0000,1\r\n"
+            "2,OUTLET_001,2026-01-15,,0,,17.0000,200000.0000,0.0000,1\r\n"
+            "1,OUTLET_001,2026-01-10,,0,,2.0000,100000.0000,10000.0000,1\r\n"
+        )
+
+    def test_dikirim_bertahap_isi_tetap_utuh(self, client, seeded, admin_headers, monkeypatch):
+        monkeypatch.setattr("app.routes.sales_routes.EXPORT_CHUNK_ROWS", 1)
+
+        baris = client.get("/api/sales/export", headers=admin_headers).text.strip().splitlines()
+
+        assert len(baris) == 4
+        assert [b.split(",")[0] for b in baris[1:]] == ["3", "2", "1"]
+
+    def test_hanya_kolom_export_yang_diambil(self, app_db, seeded):
+        """Objek ORM penuh (40+ kolom) untuk ratusan ribu baris memakan memori & waktu."""
+        from app.models.sales import Sales
+        from app.routes.sales_routes import EXPORT_COLUMNS
+        from app.services.sales_service import SalesService
+
+        rows = SalesService.get_sales_for_export(app_db, kolom=[getattr(Sales, c) for c in EXPORT_COLUMNS])
+
+        assert not isinstance(rows[0], Sales)
+        assert list(rows[0]._fields) == EXPORT_COLUMNS
+
     def test_butuh_autentikasi(self, client, seeded):
         assert client.get("/api/sales/export").status_code == 401
 
@@ -316,3 +347,30 @@ class TestSyncStatus:
 
     def test_butuh_autentikasi(self, client, seeded):
         assert client.get("/api/outlets/sync-status").status_code == 401
+
+    def test_hasil_di_cache_sebentar(self, client, seeded, admin_headers, monkeypatch):
+        """Halaman status sync polling tiap 60 detik per user — COUNT seluruh
+        ordertransaction tidak perlu diulang untuk setiap user."""
+        from app.services.sales_service import SalesService
+
+        asli = SalesService.get_sync_status
+        dipanggil = []
+
+        def hitung(*args, **kwargs):
+            dipanggil.append(kwargs.get("outlet"))
+            return asli(*args, **kwargs)
+
+        monkeypatch.setattr(SalesService, "get_sync_status", staticmethod(hitung))
+
+        pertama = client.get("/api/outlets/sync-status", headers=admin_headers).json()
+        kedua = client.get("/api/outlets/sync-status", headers=admin_headers).json()
+
+        assert pertama == kedua
+        assert len(dipanggil) == 1
+
+    def test_cache_terpisah_per_outlet(self, client, seeded, admin_headers, outlet_headers):
+        semua = client.get("/api/outlets/sync-status", headers=admin_headers).json()["data"]
+        outlet = client.get("/api/outlets/sync-status", headers=outlet_headers).json()["data"]
+
+        assert len(semua) == 2
+        assert [row["outlet_code"] for row in outlet] == ["OUTLET_001"]

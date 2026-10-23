@@ -29,6 +29,16 @@ class Settings:
         self.DB_PORT: str = os.getenv("DB_PORT", "5432")
         self.DB_NAME: str = os.getenv("DB_NAME", "")
 
+        # Pool per worker gunicorn — total = worker x (size + overflow), harus
+        # di bawah max_connections Postgres (default 100).
+        self.DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "5"))
+        self.DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "5"))
+        # Detik menunggu koneksi kosong sebelum menyerah.
+        self.DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "10"))
+        self.DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+        # Batas waktu satu query (ms). 0 = tanpa batas.
+        self.DB_STATEMENT_TIMEOUT_MS: int = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "30000"))
+
         self.LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
         # json: satu objek per baris untuk agregator log; text: untuk dibaca manusia.
         self.LOG_FORMAT: str = os.getenv("LOG_FORMAT", "json").strip().lower()
@@ -70,6 +80,9 @@ class Settings:
         # 0 = mematikan pembatasan.
         self.LOGIN_MAX_ATTEMPTS: int = int(os.getenv("LOGIN_MAX_ATTEMPTS", "10"))
         self.LOGIN_WINDOW_SECONDS: int = int(os.getenv("LOGIN_WINDOW_SECONDS", "300"))
+
+        # --- Batas rentang tanggal laporan (hari); 0 = tanpa batas ---
+        self.REPORT_MAX_RANGE_DAYS: int = int(os.getenv("REPORT_MAX_RANGE_DAYS", "366"))
 
         # --- Batas payload sync ---
         self.MAX_SALES_PER_REQUEST: int = int(os.getenv("MAX_SALES_PER_REQUEST", "1000"))

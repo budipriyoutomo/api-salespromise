@@ -426,23 +426,29 @@ class SalesService:
         )
 
     @staticmethod
-    def list_product_groups(db, outlet=None):
+    def list_product_groups(db, outlet=None, start_date=None, end_date=None):
         """Nama group (bentuk normal) yang pernah muncul di data penjualan.
 
         Untuk dropdown dashboard, dan untuk menemukan group baru dari POS yang
         belum dipetakan di `product_group_mappings`.
+
+        Dibaca dari `orderdetail` saja — tabel itu punya `outlet_code` dan
+        `SaleDate` sendiri, jadi join ke `ordertransaction` tidak perlu.
+        Dashboard mengirim rentang filternya; tanpa rentang (halaman admin)
+        seluruh tabel dipindai.
         """
         group_expr = SalesService._normalized_product_group()
 
-        query = (
-            db.query(group_expr.label("product_group"))
-            .join(Sales, item_join)
-            # TRIM(NULL) = NULL, dan NULL <> '' tidak bernilai benar —
-            # jadi baris tanpa group ikut tersaring di sini.
-            .filter(group_expr != "")
-        )
+        # TRIM(NULL) = NULL, dan NULL <> '' tidak bernilai benar —
+        # jadi baris tanpa group ikut tersaring di sini.
+        query = db.query(group_expr.label("product_group")).filter(group_expr != "")
 
-        query = SalesService._filter_sales(query, outlet=outlet)
+        if outlet:
+            query = query.filter(SalesItems.outlet_code == outlet)
+        if start_date:
+            query = query.filter(SalesItems.sale_date >= start_date)
+        if end_date:
+            query = query.filter(SalesItems.sale_date <= end_date)
 
         # Diurutkan di Python: PostgreSQL rewel soal ORDER BY ekspresi pada
         # hasil GROUP BY / DISTINCT, dan daftarnya kecil.
@@ -670,14 +676,20 @@ class SalesService:
         return query.group_by(Sales.outlet_code).order_by(Sales.outlet_code).all()
 
     @staticmethod
-    def get_sales_for_export(db, outlet=None, start_date=None, end_date=None, include_deleted=False, brand=None):
+    def get_sales_for_export(
+        db, outlet=None, start_date=None, end_date=None, include_deleted=False, brand=None, kolom=None
+    ):
         """Seluruh baris hasil filter, tanpa pagination — khusus export CSV.
 
         Sengaja terpisah dari `get_sales` supaya batas pagination di sana tidak
         perlu dilonggarkan hanya demi export.
+
+        `kolom` (atribut `Sales`) membatasi kolom yang diambil — export hanya
+        butuh beberapa kolom, dan objek ORM penuh untuk ratusan ribu baris
+        memakan memori dan waktu. Tanpa `kolom`, objek `Sales` dikembalikan.
         """
         query = SalesService._report_query(
-            db.query(Sales),
+            db.query(*kolom) if kolom else db.query(Sales),
             outlet=outlet,
             start_date=start_date,
             end_date=end_date,

@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.errors import pasang_handler
 from app.core.request_logging import RequestIdMiddleware
 from app.database import get_db
 from app.routes.admin_routes import api_key_router, product_group_router, product_menu_router, user_router
@@ -50,6 +51,9 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # Ditambahkan TERAKHIR = paling luar: request_id sudah ada sebelum lapisan lain
 # mencatat log, dan durasi di access log mencakup GZip/CORS.
 app.add_middleware(RequestIdMiddleware)
+
+# Database sibuk / query terlalu lama -> 503 JSON (lihat app/core/errors.py).
+pasang_handler(app)
 
 # Autentikasi dipasang per-router / per-route lewat dependency, bukan middleware
 # global — lihat app/dependencies/auth.py.

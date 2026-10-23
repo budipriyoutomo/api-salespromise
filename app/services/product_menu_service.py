@@ -15,10 +15,9 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utcnow
 from app.models.product_menu_mapping import ProductMenuColorplate, ProductMenuMapping
-from app.models.sales import Sales
 from app.models.sales_items import SalesItems
 from app.services.product_group_service import normalize_product_group
-from app.services.sales_service import SalesService, color_key, item_join
+from app.services.sales_service import SalesService, color_key
 
 CANDIDATE_DEFAULT_LIMIT = 100
 CANDIDATE_MAX_LIMIT = 500
@@ -194,15 +193,14 @@ def list_candidates(db, outlet=None, product_group=None, q=None, limit=CANDIDATE
             SalesItems.product_id.label("product_id"),
             name_expr.label("product_name"),
             group_expr.label("product_group"),
-            Sales.outlet_code.label("outlet_code"),
+            SalesItems.outlet_code.label("outlet_code"),
             func.max(SalesItems.sale_date).label("last_sale_date"),
         )
-        .join(Sales, item_join)
         .filter(SalesItems.product_id > 0)
     )
 
     if outlet:
-        query = query.filter(Sales.outlet_code == outlet)
+        query = query.filter(SalesItems.outlet_code == outlet)
 
     normal_group = normalize_product_group(product_group)
     if normal_group:
@@ -215,7 +213,7 @@ def list_candidates(db, outlet=None, product_group=None, q=None, limit=CANDIDATE
             syarat.append(SalesItems.product_id == int(kata))
         query = query.filter(or_(*syarat))
 
-    rows = query.group_by(SalesItems.product_id, name_expr, group_expr, Sales.outlet_code).all()
+    rows = query.group_by(SalesItems.product_id, name_expr, group_expr, SalesItems.outlet_code).all()
 
     # Outlet digabung di Python: `string_agg` / `group_concat` berbeda antara
     # PostgreSQL dan SQLite, dan daftar kandidatnya kecil.
@@ -262,6 +260,39 @@ def _info_terbaru(db, product_id: int):
         .order_by(SalesItems.sale_date.desc(), SalesItems.transaction_id.desc())
         .first()
     )
+
+
+def _info_terbaru_banyak(db, product_ids) -> dict:
+    """`_info_terbaru` untuk banyak ProductID dalam SATU query.
+
+    Mengembalikan product_id → baris (product_name, product_group). ProductID
+    yang belum pernah terjual tidak ada di hasil. Urutan "terbaru" sama dengan
+    `_info_terbaru`: tanggal jual, lalu nomor transaksi.
+    """
+    ids = sorted({int(i) for i in product_ids})
+    if not ids:
+        return {}
+
+    urutan = (
+        func.row_number()
+        .over(
+            partition_by=SalesItems.product_id,
+            order_by=(SalesItems.sale_date.desc(), SalesItems.transaction_id.desc()),
+        )
+        .label("urutan")
+    )
+    sub = (
+        db.query(
+            SalesItems.product_id.label("product_id"),
+            func.trim(SalesItems.product_name).label("product_name"),
+            SalesService._normalized_product_group().label("product_group"),
+            urutan,
+        )
+        .filter(SalesItems.product_id.in_(ids))
+        .subquery()
+    )
+    rows = db.query(sub.c.product_id, sub.c.product_name, sub.c.product_group).filter(sub.c.urutan == 1).all()
+    return {row.product_id: row for row in rows}
 
 
 def create_mapping(db, product_id: int, is_active: bool = True):

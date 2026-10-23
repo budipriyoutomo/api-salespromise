@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from app.core.errors import ERROR_DATABASE_SEMENTARA
+from app.core.rentang_tanggal import cek_rentang_tanggal
 from app.database import get_db
 from app.dependencies.auth import (
     get_current_user,
@@ -16,6 +18,7 @@ from app.dependencies.auth import (
     require_roles,
     resolve_outlet_scope,
 )
+from app.models.sales import Sales
 from app.models.user import ROLE_ADMIN, ROLE_MANAGER, User
 from app.schemas.sales_event import PublishSalesRequest
 from app.schemas.sales_response import (
@@ -84,6 +87,7 @@ def get_sales(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    cek_rentang_tanggal(start_date, end_date)
     # Outlet ditentukan identitas, bukan query param — user 'outlet' tidak bisa
     # membaca data outlet lain sekalipun mengirim ?outlet=
     outlet = resolve_outlet_scope(user, outlet)
@@ -106,6 +110,8 @@ def get_sales(
             brand=brand,
         )
 
+    except ERROR_DATABASE_SEMENTARA:
+        raise
     except Exception as e:
         logger.error(f"GET SALES ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch sales")
@@ -129,6 +135,7 @@ def get_sales_colorplate(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
     try:
@@ -139,6 +146,8 @@ def get_sales_colorplate(
             end_date=end_date,
         )
 
+    except ERROR_DATABASE_SEMENTARA:
+        raise
     except Exception as e:
         logger.error(f"GET COLORPLATE SALES ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch colorplate sales")
@@ -160,6 +169,7 @@ def get_sales_by_group(
     user: User = Depends(get_current_user),
 ):
     """Rekap qty terjual per product group — versi dinamis dari `/colorplate`."""
+    cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
     if not any(product_group_service.normalize_product_group(g) for g in product_group):
@@ -183,6 +193,8 @@ def get_sales_by_group(
 @router.get("/product-groups", response_model=ProductGroupListResponse)
 def list_product_groups(
     outlet: Optional[str] = Query(None, description="Kode outlet; diabaikan untuk role 'outlet'"),
+    start_date: Optional[date_type] = Query(None, description="Tanggal awal (inklusif); kosong = sejak awal"),
+    end_date: Optional[date_type] = Query(None, description="Tanggal akhir (inklusif); kosong = sampai sekarang"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -190,10 +202,15 @@ def list_product_groups(
 
     Berbeda dari `/api/product-groups` (admin): itu daftar group yang
     DIPUBLISH, ini daftar group yang ADA di data.
+
+    Dashboard sebaiknya mengirim rentang filternya — tanpa rentang, seluruh
+    `orderdetail` dipindai.
     """
     outlet = resolve_outlet_scope(user, outlet)
 
-    return ProductGroupListResponse(data=SalesService.list_product_groups(db=db, outlet=outlet))
+    return ProductGroupListResponse(
+        data=SalesService.list_product_groups(db=db, outlet=outlet, start_date=start_date, end_date=end_date)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +232,7 @@ def get_summary(
     user: User = Depends(get_current_user),
 ):
     """Kartu ringkasan di atas dashboard. Transaksi terhapus tidak dihitung."""
+    cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
     hasil = SalesService.get_summary(db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand)
@@ -232,6 +250,7 @@ def get_daily(
     user: User = Depends(get_current_user),
 ):
     """Time series harian untuk grafik."""
+    cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
     rows = SalesService.get_daily_sales(
@@ -250,6 +269,7 @@ def get_by_outlet(
     _user: User = Depends(require_roles(ROLE_ADMIN, ROLE_MANAGER)),
 ):
     """Perbandingan antar outlet — bukan hak user yang terikat satu outlet."""
+    cek_rentang_tanggal(start_date, end_date)
     rows = SalesService.get_sales_by_outlet(db=db, start_date=start_date, end_date=end_date, brand=brand)
 
     return OutletSalesListResponse(data=[OutletSalesRow.model_validate(row) for row in rows])
@@ -270,6 +290,7 @@ def get_top_products(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
     rows = SalesService.get_top_products(
@@ -299,6 +320,25 @@ EXPORT_COLUMNS = [
 ]
 
 
+# Baris per potongan yang dikirim — CSV tidak perlu disusun utuh di memori.
+EXPORT_CHUNK_ROWS = 2000
+
+
+def _csv_bertahap(rows):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(EXPORT_COLUMNS)
+
+    for i, row in enumerate(rows, start=1):
+        writer.writerow(row)
+        if i % EXPORT_CHUNK_ROWS == 0:
+            yield buffer.getvalue()
+            buffer.seek(0)
+            buffer.truncate()
+
+    yield buffer.getvalue()
+
+
 @router.get("/export")
 def export_sales(
     outlet: Optional[str] = Query(None),
@@ -313,6 +353,7 @@ def export_sales(
     Tidak memakai pagination — ini memang dimaksudkan untuk menarik seluruh
     hasil filter. Batasi dengan rentang tanggal untuk data yang besar.
     """
+    cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
     rows = SalesService.get_sales_for_export(
@@ -321,20 +362,13 @@ def export_sales(
         start_date=start_date,
         end_date=end_date,
         brand=brand,
+        kolom=[getattr(Sales, column) for column in EXPORT_COLUMNS],
     )
 
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(EXPORT_COLUMNS)
-
-    for row in rows:
-        writer.writerow([getattr(row, column, "") for column in EXPORT_COLUMNS])
-
-    buffer.seek(0)
     nama_file = f"sales-{outlet or 'semua'}-{datetime.now(timezone.utc).date()}.csv"
 
     return StreamingResponse(
-        iter([buffer.getvalue()]),
+        _csv_bertahap(rows),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{nama_file}"'},
     )

@@ -22,6 +22,12 @@ Aturan:
   di-rollback utuh, tidak dicatat, dan proses keluar dengan kode 1 sehingga
   gunicorn tidak ikut start di atas skema setengah jadi.
 - Advisory lock mencegah dua container menjalankan migrasi bersamaan.
+- File yang diawali `-- migrate:no-transaction` dijalankan di luar transaksi,
+  statement per statement — wajib untuk `CREATE INDEX CONCURRENTLY`, yang
+  ditolak Postgres di dalam blok transaksi. File seperti ini hanya boleh berisi
+  statement idempoten tanpa `DO $$`. Gagal di tengah tidak bisa di-rollback;
+  statement yang sudah jalan tetap ada, file tidak dicatat, dan start berikutnya
+  mengulangnya (IF NOT EXISTS melewati yang sudah jadi).
 """
 
 import argparse
@@ -79,10 +85,80 @@ def _cetak_notice(conn):
         del notices[:]
 
 
+PENANDA_TANPA_TRANSAKSI = "-- migrate:no-transaction"
+POLA_INDEX_CONCURRENTLY = re.compile(r"CREATE\s+INDEX\s+CONCURRENTLY\s+IF\s+NOT\s+EXISTS\s+(\w+)", re.IGNORECASE)
+
+SQL_INDEX_VALID = """SELECT i.indisvalid
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname = %s AND n.nspname = current_schema()
+"""
+
+
+def tanpa_transaksi(sql: str) -> bool:
+    baris = [b.strip() for b in sql.splitlines() if b.strip()]
+    return bool(baris) and baris[0] == PENANDA_TANPA_TRANSAKSI
+
+
+def pecah_statement(sql: str) -> list[str]:
+    """Pecah file tanpa transaksi per `;`. Komentar baris (`--`) dibuang dulu.
+
+    Sengaja sederhana: file seperti ini hanya berisi CREATE INDEX, tanpa
+    string literal atau blok `DO $$` yang bisa memuat `;`.
+    """
+    tanpa_komentar = "\n".join(b for b in sql.splitlines() if not b.strip().startswith("--"))
+    return [s.strip() for s in tanpa_komentar.split(";") if s.strip()]
+
+
+def _set_autocommit(conn, nilai: bool):
+    # `engine.raw_connection()` membungkus koneksi psycopg2; atributnya di sana.
+    getattr(conn, "dbapi_connection", conn).autocommit = nilai
+
+
+def _index_valid(cur, nama: str):
+    """True/False dari pg_index; None kalau index belum ada."""
+    cur.execute(SQL_INDEX_VALID, (nama,))
+    baris = cur.fetchone()
+    return None if baris is None else bool(baris[0])
+
+
+def _pastikan_index_tidak_invalid(cur, nama: str):
+    if _index_valid(cur, nama) is False:
+        raise RuntimeError(
+            f"Index {nama} INVALID — sisa CREATE INDEX CONCURRENTLY yang gagal. "
+            f"Index itu tidak dipakai query dan IF NOT EXISTS akan melewatinya. "
+            f"Periksa penyebabnya, lalu (setelah disetujui) jalankan "
+            f"`DROP INDEX CONCURRENTLY {nama};` dan ulangi migrasi. Data tabel tidak terpengaruh."
+        )
+
+
+def _jalankan_tanpa_transaksi(conn, cur, f: Path, sql: str):
+    # Transaksi implisit dari query sebelumnya harus ditutup sebelum autocommit.
+    conn.commit()
+    _set_autocommit(conn, True)
+    try:
+        for statement in pecah_statement(sql):
+            nama = POLA_INDEX_CONCURRENTLY.search(statement)
+            if nama:
+                _pastikan_index_tidak_invalid(cur, nama.group(1))
+            cur.execute(statement)
+            if nama:
+                _pastikan_index_tidak_invalid(cur, nama.group(1))
+    finally:
+        _set_autocommit(conn, False)
+
+    cur.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (f.name,))
+    conn.commit()
+
+
 def jalankan(conn, files: list[Path]) -> list[str]:
     """Jalankan file yang belum tercatat. Mengembalikan nama file yang dijalankan."""
     cur = conn.cursor()
     try:
+        # Engine aplikasi memasang statement_timeout; membangun index atau
+        # menunggu lock bisa jauh lebih lama dari itu.
+        cur.execute("SET statement_timeout = 0")
         # Lock level session: tetap dipegang melewati commit per file, dan
         # lepas sendiri saat koneksi ditutup.
         cur.execute("SELECT pg_advisory_lock(%s)", (ADVISORY_LOCK_ID,))
@@ -97,15 +173,25 @@ def jalankan(conn, files: list[Path]) -> list[str]:
                 continue
 
             print(f"[migrate] Menjalankan {f.name} ...")
+            sql = f.read_text(encoding="utf-8-sig")
             try:
-                # Tanpa parameter, psycopg2 mengirim SQL apa adanya — banyak
-                # statement dan blok DO $$ dalam satu file tetap jalan.
-                cur.execute(f.read_text(encoding="utf-8-sig"))
-                cur.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (f.name,))
-                conn.commit()
+                if tanpa_transaksi(sql):
+                    _jalankan_tanpa_transaksi(conn, cur, f, sql)
+                else:
+                    # Tanpa parameter, psycopg2 mengirim SQL apa adanya — banyak
+                    # statement dan blok DO $$ dalam satu file tetap jalan.
+                    cur.execute(sql)
+                    cur.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (f.name,))
+                    conn.commit()
             except Exception:
                 conn.rollback()
-                print(f"[migrate] GAGAL di {f.name} — di-rollback, migrasi setelahnya tidak dijalankan.")
+                if tanpa_transaksi(sql):
+                    print(
+                        f"[migrate] GAGAL di {f.name} — file ini berjalan tanpa transaksi; statement yang "
+                        "sudah selesai tetap ada, file tidak dicatat dan akan diulang. Migrasi setelahnya tidak dijalankan."
+                    )
+                else:
+                    print(f"[migrate] GAGAL di {f.name} — di-rollback, migrasi setelahnya tidak dijalankan.")
                 raise
             finally:
                 _cetak_notice(conn)

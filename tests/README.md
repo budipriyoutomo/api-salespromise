@@ -53,6 +53,8 @@ polos tetap hijau di mesin mana pun.
 | `unit/test_structured_logging.py` | Log JSON/teks, `request_id`, middleware `X-Request-ID`, access log |
 | `unit/test_infrastructure.py` | utcnow, koneksi broker, batas payload, health |
 | `integration/test_sync_postgres.py` | Upsert sungguhan, transaksi, performa |
+| `integration/test_performa_postgres.py` | `row_number()` nama terbaru, product-groups tanpa join, `statement_timeout` → 503 |
+| `integration/test_migrasi_017_postgres.py` | Migrasi 017: `CREATE INDEX CONCURRENTLY` tanpa transaksi, baris tidak berubah, index dipakai planner |
 
 ## Kenapa SQLite untuk sebagian, mock untuk sebagian
 
