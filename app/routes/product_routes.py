@@ -36,6 +36,7 @@ from app.schemas.product_schema import (
     UpdatePosMappingRequest,
     UpdateProductRequest,
 )
+from app.schemas.sales_response import PaginationMeta
 from app.services import product_service
 from app.utils.logger import logger
 
@@ -65,11 +66,22 @@ def _detail(row) -> ProductDetailResponse:
 
 
 @router.get("", response_model=ProductListResponse)
-def list_products(db: Session = Depends(get_db), _user: User = Depends(require_reader)):
-    """Semua produk, termasuk yang nonaktif, beserta mapping POS-nya."""
-    rows = product_service.list_products(db)
+def list_products(
+    q: Optional[str] = Query(
+        None, max_length=255, description="Cari ProductID, Product Code, nama, kategori, subkategori, atau brand"
+    ),
+    limit: int = Query(product_service.LIST_DEFAULT_LIMIT, ge=1, le=product_service.LIST_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_reader),
+):
+    """Produk, termasuk yang nonaktif, beserta mapping POS-nya."""
+    rows, total = product_service.list_products(db, q=q, limit=limit, offset=offset)
 
-    return ProductListResponse(data=[ProductResponse.model_validate(row) for row in rows])
+    return ProductListResponse(
+        data=[ProductResponse.model_validate(row) for row in rows],
+        pagination=PaginationMeta(limit=limit, offset=offset, total=total, has_more=offset + len(rows) < total),
+    )
 
 
 @router.post("", response_model=ProductDetailResponse, status_code=status.HTTP_201_CREATED)

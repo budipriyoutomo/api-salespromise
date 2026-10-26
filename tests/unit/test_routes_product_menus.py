@@ -141,6 +141,18 @@ class TestCandidates:
         assert [r["product_id"] for r in by_name.json()["data"]] == [200300]
         assert [r["product_id"] for r in by_id.json()["data"]] == [309747]
 
+    def test_menu_terdaftar_membawa_mapping_id(self, client, admin_headers, data_promo, make_product_menu):
+        """Aktif atau nonaktif tetap dianggap terdaftar — daftar mapping dipaginasi."""
+        row = make_product_menu(product_id=200300, product_group="PROMO", is_active=False)
+
+        response = client.get("/api/product-menus/candidates", headers=admin_headers)
+
+        assert {r["product_id"]: r["mapping_id"] for r in response.json()["data"]} == {
+            200252: None,
+            200300: row.id,
+            309747: None,
+        }
+
     def test_manager_ditolak(self, client, manager_headers):
         assert client.get("/api/product-menus/candidates", headers=manager_headers).status_code == 403
 
@@ -200,6 +212,35 @@ class TestListDanUpdate:
 
     def test_id_tidak_dikenal_404(self, client, admin_headers):
         assert client.patch("/api/product-menus/999", json={"is_active": False}, headers=admin_headers).status_code == 404
+
+    def test_paginasi(self, client, admin_headers, make_product_menu):
+        for i in range(5):
+            make_product_menu(product_id=200300 + i, product_name=f"Menu {i}", product_group="PROMO")
+
+        body = client.get("/api/product-menus", params={"limit": 2, "offset": 4}, headers=admin_headers).json()
+
+        assert [r["product_id"] for r in body["data"]] == [200304]
+        assert body["pagination"] == {"limit": 2, "offset": 4, "total": 5, "has_more": False}
+
+    def test_limit_di_atas_maksimum_ditolak(self, client, admin_headers):
+        assert client.get("/api/product-menus", params={"limit": 201}, headers=admin_headers).status_code == 422
+
+    def test_detail(self, client, admin_headers, make_product_menu, make_menu_colorplate):
+        row = make_product_menu(product_id=200300)
+        make_menu_colorplate(row, platecolor="Red", multiplier=2)
+
+        response = client.get(f"/api/product-menus/{row.id}", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["product_id"] == 200300
+        assert [(c["platecolor"], c["multiplier"]) for c in data["colorplates"]] == [("Red", 2)]
+
+    def test_detail_tidak_dikenal_404(self, client, admin_headers):
+        assert client.get("/api/product-menus/999", headers=admin_headers).status_code == 404
+
+    def test_detail_manager_ditolak(self, client, manager_headers):
+        assert client.get("/api/product-menus/1", headers=manager_headers).status_code == 403
 
     def test_tidak_ada_endpoint_hapus(self, client, admin_headers, make_product_menu, app_db):
         row = make_product_menu(product_id=200300)

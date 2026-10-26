@@ -19,6 +19,9 @@ from app.models.sales_items import SalesItems
 from app.services.product_group_service import normalize_product_group
 from app.services.sales_service import SalesService, color_key
 
+LIST_DEFAULT_LIMIT = 50
+LIST_MAX_LIMIT = 200
+
 CANDIDATE_DEFAULT_LIMIT = 100
 CANDIDATE_MAX_LIMIT = 500
 
@@ -37,6 +40,8 @@ class KandidatMenu:
     product_group: str | None
     outlet_codes: list[str] = field(default_factory=list)
     last_sale_date: object = None
+    # Id mapping menu kalau ProductID ini sudah terdaftar (aktif atau tidak).
+    mapping_id: int | None = None
 
 
 class MenuSudahAda(Exception):
@@ -63,12 +68,17 @@ class KonversiTidakDitemukan(Exception):
     pass
 
 
-def list_mappings(db):
-    return (
-        db.query(ProductMenuMapping)
-        .order_by(ProductMenuMapping.product_group, ProductMenuMapping.product_name, ProductMenuMapping.product_id)
+def list_mappings(db, limit=LIST_DEFAULT_LIMIT, offset=0):
+    """Mapping menu, termasuk yang nonaktif. Mengembalikan (baris, total)."""
+    query = db.query(ProductMenuMapping)
+    total = query.count()
+    rows = (
+        query.order_by(ProductMenuMapping.product_group, ProductMenuMapping.product_name, ProductMenuMapping.product_id)
+        .limit(limit)
+        .offset(offset)
         .all()
     )
+    return rows, total
 
 
 def get_by_id(db, mapping_id: int):
@@ -245,8 +255,20 @@ def list_candidates(db, outlet=None, product_group=None, q=None, limit=CANDIDATE
     hasil = sorted(
         gabungan.values(),
         key=lambda k: (k.product_group or "", k.product_name or "", k.product_id),
-    )
-    return hasil[:limit]
+    )[:limit]
+
+    # Tandai yang sudah terdaftar di sini — daftar mapping dipaginasi, jadi
+    # pemanggil tidak bisa lagi mencocokkannya sendiri.
+    ids = {k.product_id for k in hasil}
+    if ids:
+        terdaftar = dict(
+            db.query(ProductMenuMapping.product_id, ProductMenuMapping.id)
+            .filter(ProductMenuMapping.product_id.in_(ids))
+            .all()
+        )
+        for kandidat in hasil:
+            kandidat.mapping_id = terdaftar.get(kandidat.product_id)
+    return hasil
 
 
 def _info_terbaru(db, product_id: int):

@@ -50,6 +50,7 @@ from app.schemas.admin_schema import (
     UserDetailResponse,
     UserListResponse,
 )
+from app.schemas.sales_response import PaginationMeta
 from app.services import api_key_service, product_group_service, product_menu_service, user_service
 from app.utils.logger import logger
 
@@ -303,11 +304,19 @@ product_menu_router = APIRouter(prefix="/api/product-menus", tags=["Admin - Prod
 
 
 @product_menu_router.get("", response_model=ProductMenuMappingListResponse)
-def list_product_menus(db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
-    """Semua mapping menu, termasuk yang nonaktif."""
-    rows = product_menu_service.list_mappings(db)
+def list_product_menus(
+    limit: int = Query(product_menu_service.LIST_DEFAULT_LIMIT, ge=1, le=product_menu_service.LIST_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    """Mapping menu, termasuk yang nonaktif."""
+    rows, total = product_menu_service.list_mappings(db, limit=limit, offset=offset)
 
-    return ProductMenuMappingListResponse(data=[ProductMenuMappingResponse.model_validate(row) for row in rows])
+    return ProductMenuMappingListResponse(
+        data=[ProductMenuMappingResponse.model_validate(row) for row in rows],
+        pagination=PaginationMeta(limit=limit, offset=offset, total=total, has_more=offset + len(rows) < total),
+    )
 
 
 @product_menu_router.get("/candidates", response_model=ProductMenuCandidateListResponse)
@@ -365,6 +374,16 @@ def create_product_menu(
         f"PRODUCT MENU DIBUAT product_id={row.product_id} nama={row.product_name!r} "
         f"group={row.product_group!r} aktif={row.is_active} oleh={admin.email}"
     )
+
+    return ProductMenuMappingDetailResponse(data=ProductMenuMappingResponse.model_validate(row))
+
+
+@product_menu_router.get("/{mapping_id}", response_model=ProductMenuMappingDetailResponse)
+def get_product_menu(mapping_id: int, db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
+    """Satu menu beserta konversi warnanya — dipakai dialog, lepas dari halaman daftar."""
+    row = product_menu_service.get_by_id(db, mapping_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Menu tidak ditemukan")
 
     return ProductMenuMappingDetailResponse(data=ProductMenuMappingResponse.model_validate(row))
 

@@ -9,12 +9,15 @@ berapa unit produk POS untuk 1 porsi menu. Perbandingan dihitung per produk:
 Tidak ada fungsi hapus — mapping dimatikan lewat `is_active`.
 """
 
-from sqlalchemy import func, or_
+from sqlalchemy import exists, func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utcnow
 from app.models.closing_report import ClosingMenu, ClosingMenuProduct
 from app.services import product_menu_service
+
+DEFAULT_LIMIT = 50
+MAX_LIMIT = 200
 
 STATUS_SEMUA = "all"
 STATUS_DIPETAKAN = "mapped"
@@ -38,7 +41,8 @@ class ProductTidakAdaDiData(Exception):
     """ProductID tidak pernah muncul di data penjualan."""
 
 
-def list_menus(db, status: str = STATUS_SEMUA, q: str | None = None):
+def list_menus(db, status: str = STATUS_SEMUA, q: str | None = None, limit=DEFAULT_LIMIT, offset=0):
+    """Menu terurut menuCode. Mengembalikan (baris, total)."""
     query = db.query(ClosingMenu)
 
     q = (q or "").strip()
@@ -46,15 +50,24 @@ def list_menus(db, status: str = STATUS_SEMUA, q: str | None = None):
         pola = f"%{q.lower()}%"
         query = query.filter(or_(func.lower(ClosingMenu.menu_code).like(pola), func.lower(ClosingMenu.menu_name).like(pola)))
 
-    menus = query.order_by(ClosingMenu.menu_code).all()
-
-    # Status dihitung di Python: daftar menu kecil, dan aturannya ("punya
-    # mapping aktif") sama persis dengan `ClosingMenu.is_mapped`.
+    # Aturan yang sama dengan `ClosingMenu.is_mapped`: punya mapping aktif.
+    punya_mapping_aktif = (
+        exists()
+        .where(ClosingMenuProduct.closing_menu_id == ClosingMenu.id)
+        .where(ClosingMenuProduct.is_active.is_(True))
+    )
     if status == STATUS_DIPETAKAN:
-        return [m for m in menus if m.is_mapped]
-    if status == STATUS_BELUM:
-        return [m for m in menus if not m.is_mapped]
-    return menus
+        query = query.filter(punya_mapping_aktif)
+    elif status == STATUS_BELUM:
+        query = query.filter(~punya_mapping_aktif)
+
+    total = query.count()
+    rows = query.order_by(ClosingMenu.menu_code, ClosingMenu.id).limit(limit).offset(offset).all()
+    return rows, total
+
+
+def get_menu(db, menu_id: int):
+    return db.get(ClosingMenu, menu_id)
 
 
 def add_product(db, menu_id: int, product_id: int, multiplier: int = 1, is_active: bool = True):

@@ -27,6 +27,9 @@ MAX_SUBCATEGORY_LENGTH = 100
 # Sama dengan panjang `api_keys.outlet_code`.
 MAX_OUTLET_CODE_LENGTH = 20
 
+LIST_DEFAULT_LIMIT = 50
+LIST_MAX_LIMIT = 200
+
 CANDIDATE_DEFAULT_LIMIT = 100
 CANDIDATE_MAX_LIMIT = 500
 
@@ -92,8 +95,37 @@ def normalize_product_code(value) -> str:
 # ---------------------------------------------------------------------------
 
 
-def list_products(db):
-    return db.query(Product).order_by(Product.code).all()
+def list_products(db, q=None, limit=LIST_DEFAULT_LIMIT, offset=0):
+    """Produk terurut ProductID, termasuk yang nonaktif. Mengembalikan (baris, total).
+
+    `q` dicari (tidak peka huruf besar/kecil) di ProductID, Product Code, nama,
+    kategori, subkategori, serta kode dan nama brand.
+    """
+    query = db.query(Product)
+
+    q = (q or "").strip()
+    if q:
+        pola = f"%{q.lower()}%"
+        query = query.outerjoin(Brand, Product.brand_id == Brand.id).filter(
+            or_(
+                *(
+                    func.lower(kolom).like(pola)
+                    for kolom in (
+                        Product.code,
+                        Product.product_code,
+                        Product.name,
+                        Product.category,
+                        Product.subcategory,
+                        Brand.code,
+                        Brand.name,
+                    )
+                )
+            )
+        )
+
+    total = query.count()
+    rows = query.order_by(Product.code).limit(limit).offset(offset).all()
+    return rows, total
 
 
 def get_by_id(db, product_id: int):

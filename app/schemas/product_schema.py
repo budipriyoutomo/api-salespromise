@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.sales_response import PaginationMeta
 from app.services.product_service import (
     IMPORT_MAX_ITEMS,
     MAX_CATEGORY_LENGTH,
@@ -59,6 +60,7 @@ class ProductResponse(BaseModel):
 class ProductListResponse(BaseModel):
     success: bool = True
     data: List[ProductResponse]
+    pagination: PaginationMeta
 
 
 class ProductDetailResponse(BaseModel):

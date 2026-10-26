@@ -139,6 +139,41 @@ class TestDaftarMenu:
     def test_status_tidak_dikenal_ditolak(self, client, admin_headers):
         assert client.get("/api/closing-menus", params={"status": "x"}, headers=admin_headers).status_code == 422
 
+    def test_paginasi_mengikuti_filter_status(self, client, app_db, admin_headers):
+        kirim_closing(app_db, items=[item(f"SU-00{i}", f"Menu {i}") for i in range(1, 6)])
+        petakan(app_db, "SU-002", 200104)
+
+        res = client.get(
+            "/api/closing-menus", params={"status": "unmapped", "limit": 2, "offset": 2}, headers=admin_headers
+        )
+
+        body = res.json()
+        assert [m["menu_code"] for m in body["data"]] == ["SU-004", "SU-005"]
+        assert body["pagination"] == {"limit": 2, "offset": 2, "total": 4, "has_more": False}
+
+    def test_limit_di_atas_maksimum_ditolak(self, client, admin_headers):
+        assert client.get("/api/closing-menus", params={"limit": 201}, headers=admin_headers).status_code == 422
+
+
+class TestDetailMenu:
+
+    def test_detail_beserta_mapping(self, client, app_db, admin_headers):
+        kirim_closing(app_db)
+        menu = petakan(app_db, "SU-001", 200104, multiplier=2)
+
+        res = client.get(f"/api/closing-menus/{menu.id}", headers=admin_headers)
+
+        assert res.status_code == 200
+        data = res.json()["data"]
+        assert (data["menu_code"], data["is_mapped"]) == ("SU-001", True)
+        assert [(p["product_id"], p["multiplier"]) for p in data["products"]] == [(200104, 2)]
+
+    def test_tidak_ada(self, client, admin_headers):
+        assert client.get("/api/closing-menus/999", headers=admin_headers).status_code == 404
+
+    def test_hanya_admin(self, client, manager_headers):
+        assert client.get("/api/closing-menus/1", headers=manager_headers).status_code == 403
+
 
 class TestMappingMenu:
 

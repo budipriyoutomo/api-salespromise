@@ -46,6 +46,12 @@ class ClosingMenuResponse(BaseModel):
 class ClosingMenuListResponse(BaseModel):
     success: bool = True
     data: List[ClosingMenuResponse]
+    pagination: PaginationMeta
+
+
+class ClosingMenuDetailResponse(BaseModel):
+    success: bool = True
+    data: ClosingMenuResponse
 
 
 class ClosingMenuProductDetailResponse(BaseModel):

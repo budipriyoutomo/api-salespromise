@@ -35,6 +35,7 @@ from app.schemas.closing_schema import (
     ClosingExportStatus,
     ClosingExportStatusResponse,
     ClosingExportSummary,
+    ClosingMenuDetailResponse,
     ClosingMenuListResponse,
     ClosingMenuProductDetailResponse,
     ClosingMenuProductResponse,
@@ -75,13 +76,28 @@ closing_menu_router = APIRouter(prefix="/api/closing-menus", tags=["Admin - Clos
 def list_closing_menus(
     status_: Literal["all", "mapped", "unmapped"] = Query("all", alias="status"),
     q: Optional[str] = Query(None, max_length=100, description="Cari menuCode atau nama menu"),
+    limit: int = Query(closing_menu_service.DEFAULT_LIMIT, ge=1, le=closing_menu_service.MAX_LIMIT),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
 ):
     """menuCode yang pernah muncul di closing report. `unmapped` = belum punya mapping aktif."""
-    rows = closing_menu_service.list_menus(db, status=status_, q=q)
+    rows, total = closing_menu_service.list_menus(db, status=status_, q=q, limit=limit, offset=offset)
 
-    return ClosingMenuListResponse(data=[ClosingMenuResponse.model_validate(row) for row in rows])
+    return ClosingMenuListResponse(
+        data=[ClosingMenuResponse.model_validate(row) for row in rows],
+        pagination=PaginationMeta(limit=limit, offset=offset, total=total, has_more=offset + len(rows) < total),
+    )
+
+
+@closing_menu_router.get("/{menu_id}", response_model=ClosingMenuDetailResponse)
+def get_closing_menu(menu_id: int, db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
+    """Satu menu beserta mapping-nya — dipakai dialog mapping, lepas dari halaman daftar."""
+    row = closing_menu_service.get_menu(db, menu_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Menu closing tidak ditemukan")
+
+    return ClosingMenuDetailResponse(data=ClosingMenuResponse.model_validate(row))
 
 
 @closing_menu_router.post(

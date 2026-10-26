@@ -182,6 +182,36 @@ class TestListProduct:
 
         assert (data["code"], data["product_code"], data["brand"], data["subcategory"]) == ("LAMA", None, None, None)
 
+    def test_paginasi(self, client, admin_headers):
+        for i in range(1, 6):
+            _buat(client, admin_headers, code=f"P-00{i}")
+
+        body = client.get("/api/products", params={"limit": 2, "offset": 2}, headers=admin_headers).json()
+
+        assert [p["code"] for p in body["data"]] == ["P-003", "P-004"]
+        assert body["pagination"] == {"limit": 2, "offset": 2, "total": 5, "has_more": True}
+
+    def test_cari_di_kode_nama_kategori_dan_brand(self, client, admin_headers, make_brand):
+        brand = make_brand("SSH", "Sushi House")
+        _buat(client, admin_headers, code="P-001", name="Red Plate", category="Piring")
+        _buat(client, admin_headers, code="P-002", name="Ocha", brand_id=brand.id)
+        _buat(client, admin_headers, code="P-003", name="Green Tea", subcategory="Minuman Dingin")
+
+        def kode(q):
+            res = client.get("/api/products", params={"q": q}, headers=admin_headers)
+            return [p["code"] for p in res.json()["data"]]
+
+        assert kode("red") == ["P-001"]
+        assert kode("piring") == ["P-001"]
+        assert kode("sushi") == ["P-002"]
+        assert kode("ssh") == ["P-002"]
+        assert kode("dingin") == ["P-003"]
+        assert kode("pc-p-00") == ["P-001", "P-002", "P-003"]
+        assert kode("tidak-ada") == []
+
+    def test_limit_di_atas_maksimum_ditolak(self, client, admin_headers):
+        assert client.get("/api/products", params={"limit": 201}, headers=admin_headers).status_code == 422
+
     def test_manager_boleh_membaca(self, client, manager_headers):
         assert client.get("/api/products", headers=manager_headers).status_code == 200
 

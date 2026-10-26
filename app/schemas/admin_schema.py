@@ -6,6 +6,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.models.user import ROLE_ADMIN, ROLE_MANAGER, ROLE_OUTLET
+from app.schemas.sales_response import PaginationMeta
 from app.services.product_group_service import MAX_PRODUCT_GROUP_LENGTH
 from app.services.user_service import MIN_PASSWORD_LENGTH
 
@@ -190,6 +191,7 @@ class ProductMenuMappingResponse(BaseModel):
 class ProductMenuMappingListResponse(BaseModel):
     success: bool = True
     data: List[ProductMenuMappingResponse]
+    pagination: PaginationMeta
 
 
 class ProductMenuMappingDetailResponse(BaseModel):
@@ -251,6 +253,8 @@ class ProductMenuCandidate(BaseModel):
     # berlaku untuk semua outlet.
     outlet_codes: List[str] = Field(default_factory=list)
     last_sale_date: Optional[date] = None
+    # Id mapping menu kalau sudah terdaftar (aktif atau tidak); null = belum.
+    mapping_id: Optional[int] = None
 
 
 class ProductMenuCandidateListResponse(BaseModel):
