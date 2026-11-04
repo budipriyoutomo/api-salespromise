@@ -74,7 +74,7 @@ Idempotency-Key: <sama dengan messageId>
 | `menuId` / `menuCode` / `menuName` | Identitas menu closing. `menuId` (UUID) adalah kunci yang stabil; `menuCode` bisa berubah atau kosong. Kosong untuk `pos_only`. |
 | `productId` / `productName` | Produk POS. Hanya diisi untuk `pos_only`. |
 | `colorplateSold` | Jumlah terjual menurut laporan closing. |
-| `posQty` | Jumlah terjual menurut POS untuk outlet & tanggal yang sama. Transaksi void tidak dihitung. |
+| `posQty` | Jumlah terjual menurut POS untuk outlet & tanggal yang sama. Transaksi void tidak dihitung. `0` juga untuk menu closing yang memang tidak dijual di POS. |
 | `totalSold` | `colorplateSold + posQty`. |
 | `waste` / `adjustment` / `compensation` | Dari laporan closing. `adjustment` bisa negatif; untuk `pos_only` selalu 0. |
 

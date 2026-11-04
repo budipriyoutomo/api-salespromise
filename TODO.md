@@ -781,7 +781,8 @@ RabbitMQ) dan publish colorplate (keluar lewat RabbitMQ).
 - [x] **Revisi setelah terkirim = ditandai "perlu kirim ulang"**, tidak dikirim
       ulang otomatis.
 - [x] **Menu belum dipetakan = blokir** — outlet-tanggal yang masih punya menu
-      Colorplate tanpa mapping aktif tidak bisa dikirim.
+      Colorplate tanpa mapping aktif tidak bisa dikirim. Pengecualian sejak
+      8.11: menu yang ditandai admin "tidak ada di POS".
 - [x] **Kontrak API belum ada** — kita yang mengusulkan:
       [docs/usulan-kontrak-kirim-closing.md](docs/usulan-kontrak-kirim-closing.md).
 
@@ -840,6 +841,25 @@ RabbitMQ) dan publish colorplate (keluar lewat RabbitMQ).
 - [ ] **8.9 Deploy** — isi `CLOSING_EXPORT_*` di `.env` (lihat `.env.example`),
       lalu migrasi 016 ikut jalan otomatis saat container start. **Minta
       persetujuan sebelum deploy.**
+- [x] **8.11 Menu Colorplate yang tidak ada di POS** (2026-11-04) — ada menu
+      Colorplate tanpa produk POS sama sekali, jadi tidak pernah bisa
+      dipetakan dan memblokir kirim selamanya. Keputusan pengguna:
+      - tanda per menu `closing_menus.not_in_pos` (+ `_by` / `_at`), migrasi
+        `018_closing_menu_not_in_pos.sql` (ADD COLUMN saja, default FALSE);
+      - menu bertanda tidak memblokir; terkirim sebagai `source: closing`
+        dengan `posQty` 0, **tanpa field payload baru** — hash isi tidak
+        berubah;
+      - tanda dan mapping aktif tidak boleh bersamaan, **admin memilih dari
+        frontend**: `PATCH /api/closing-menus/{id}` `{not_in_pos,
+        deactivate_products}`; tambah / aktifkan mapping di menu bertanda
+        butuh `clear_not_in_pos: true`. Tanpa pilihan = 409
+        `detail.code = "not_in_pos_conflict"`;
+      - filter `status=unmapped` tidak lagi memuat menu bertanda;
+        `status=not_in_pos` baru. Baris perbandingan membawa `not_in_pos`.
+      Penjaga: `TestTandaTidakAdaDiPos` (`test_routes_closing.py`),
+      `test_closing_export_service.py`, `test_migrate.py`,
+      `tests/integration/test_migrasi_018_postgres.py`. Frontend: sync-frontend
+      `/closing-menu` (filter, tombol tandai / lepas, dialog pilihan).
 
 ## Fase 9 — Performa & error saat data besar (2026-10-23)
 

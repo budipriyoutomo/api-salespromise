@@ -349,6 +349,8 @@ class BarisPerbandingan:
     products: list[ProdukPerbandingan]
     # Σ qty orderdetail produk-produk di atas; None kalau belum dipetakan.
     pos_qty: float | None
+    # Menu ditandai admin tidak ada di POS (pos_qty tetap None).
+    not_in_pos: bool = False
 
 
 def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_deleted=False) -> list[BarisPerbandingan]:
@@ -446,6 +448,7 @@ def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_de
                 compensation=int(c.compensation),
                 products=produk,
                 pos_qty=pos_qty,
+                not_in_pos=bool(m and m.not_in_pos),
             )
         )
 

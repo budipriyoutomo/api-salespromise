@@ -6,6 +6,12 @@ berapa unit produk POS untuk 1 porsi menu. Perbandingan dihitung per produk:
 
     closing(produk) = Σ menu ke produk itu: (sold + adjustment + compensation) × multiplier
 
+Menu yang memang tidak ada di POS ditandai `not_in_pos` (migrasi 018). Tanda
+dan mapping aktif tidak boleh ada bersamaan; admin memilih dari frontend:
+`set_not_in_pos(deactivate_products=True)` mematikan mapping, mapping baru /
+yang diaktifkan dengan `clear_not_in_pos=True` melepas tanda. Tanpa pilihan
+itu = `TidakAdaDiPosBentrok` (409).
+
 Tidak ada fungsi hapus — mapping dimatikan lewat `is_active`.
 """
 
@@ -22,7 +28,8 @@ MAX_LIMIT = 200
 STATUS_SEMUA = "all"
 STATUS_DIPETAKAN = "mapped"
 STATUS_BELUM = "unmapped"
-STATUS_MENU = (STATUS_SEMUA, STATUS_DIPETAKAN, STATUS_BELUM)
+STATUS_TIDAK_ADA_DI_POS = "not_in_pos"
+STATUS_MENU = (STATUS_SEMUA, STATUS_DIPETAKAN, STATUS_BELUM, STATUS_TIDAK_ADA_DI_POS)
 
 
 class MenuTidakDitemukan(Exception):
@@ -39,6 +46,10 @@ class ProductSudahAda(Exception):
 
 class ProductTidakAdaDiData(Exception):
     """ProductID tidak pernah muncul di data penjualan."""
+
+
+class TidakAdaDiPosBentrok(Exception):
+    """Tanda "tidak ada di POS" dan mapping aktif akan ada bersamaan."""
 
 
 def list_menus(db, status: str = STATUS_SEMUA, q: str | None = None, limit=DEFAULT_LIMIT, offset=0):
@@ -59,7 +70,10 @@ def list_menus(db, status: str = STATUS_SEMUA, q: str | None = None, limit=DEFAU
     if status == STATUS_DIPETAKAN:
         query = query.filter(punya_mapping_aktif)
     elif status == STATUS_BELUM:
-        query = query.filter(~punya_mapping_aktif)
+        # Hanya yang masih perlu tindakan admin.
+        query = query.filter(~punya_mapping_aktif, ClosingMenu.not_in_pos.is_(False))
+    elif status == STATUS_TIDAK_ADA_DI_POS:
+        query = query.filter(ClosingMenu.not_in_pos.is_(True))
 
     total = query.count()
     rows = query.order_by(ClosingMenu.menu_code, ClosingMenu.id).limit(limit).offset(offset).all()
@@ -70,7 +84,49 @@ def get_menu(db, menu_id: int):
     return db.get(ClosingMenu, menu_id)
 
 
-def add_product(db, menu_id: int, product_id: int, multiplier: int = 1, is_active: bool = True):
+def _lepas_tanda(menu: ClosingMenu):
+    menu.not_in_pos = False
+    menu.not_in_pos_by = None
+    menu.not_in_pos_at = None
+
+
+def _cek_tanda_sebelum_mapping_aktif(menu: ClosingMenu, clear_not_in_pos: bool):
+    if not menu.not_in_pos:
+        return
+    if not clear_not_in_pos:
+        raise TidakAdaDiPosBentrok(menu.id)
+    _lepas_tanda(menu)
+
+
+def set_not_in_pos(db, menu_id: int, not_in_pos: bool, by: str, deactivate_products: bool = False):
+    """Tandai / lepas tanda. Menandai menu dengan mapping aktif butuh `deactivate_products`."""
+    menu = db.get(ClosingMenu, menu_id)
+    if menu is None:
+        raise MenuTidakDitemukan(menu_id)
+
+    if not not_in_pos:
+        _lepas_tanda(menu)
+    else:
+        aktif = [p for p in menu.products if p.is_active]
+        if aktif and not deactivate_products:
+            raise TidakAdaDiPosBentrok(menu.id)
+        sekarang = utcnow()
+        for p in aktif:
+            p.is_active = False
+            p.updated_at = sekarang
+        if not menu.not_in_pos:
+            menu.not_in_pos = True
+            menu.not_in_pos_by = by
+            menu.not_in_pos_at = sekarang
+
+    db.commit()
+    db.refresh(menu)
+    return menu
+
+
+def add_product(
+    db, menu_id: int, product_id: int, multiplier: int = 1, is_active: bool = True, clear_not_in_pos: bool = False
+):
     menu = db.get(ClosingMenu, menu_id)
     if menu is None:
         raise MenuTidakDitemukan(menu_id)
@@ -82,6 +138,9 @@ def add_product(db, menu_id: int, product_id: int, multiplier: int = 1, is_activ
     info = product_menu_service._info_terbaru(db, product_id)
     if info is None:
         raise ProductTidakAdaDiData(product_id)
+
+    if is_active:
+        _cek_tanda_sebelum_mapping_aktif(menu, clear_not_in_pos)
 
     row = ClosingMenuProduct(
         closing_menu_id=menu.id,
@@ -103,10 +162,20 @@ def add_product(db, menu_id: int, product_id: int, multiplier: int = 1, is_activ
     return row
 
 
-def update_product(db, menu_id: int, mapping_id: int, multiplier: int | None = None, is_active: bool | None = None):
+def update_product(
+    db,
+    menu_id: int,
+    mapping_id: int,
+    multiplier: int | None = None,
+    is_active: bool | None = None,
+    clear_not_in_pos: bool = False,
+):
     row = db.get(ClosingMenuProduct, mapping_id)
     if row is None or row.closing_menu_id != menu_id:
         raise MappingTidakDitemukan(mapping_id)
+
+    if is_active and not row.is_active:
+        _cek_tanda_sebelum_mapping_aktif(db.get(ClosingMenu, menu_id), clear_not_in_pos)
 
     if multiplier is not None:
         row.multiplier = multiplier

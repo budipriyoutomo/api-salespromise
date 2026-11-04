@@ -1,6 +1,7 @@
 """Endpoint closing report dari RabbitMQ (TODO Fase 7.6).
 
-- `/api/closing-menus`    admin — mapping menuCode → ProductID × pengali.
+- `/api/closing-menus`    admin — mapping menuCode → ProductID × pengali,
+                          atau tanda "tidak ada di POS".
                           Pilihan ProductID: `/api/product-menus/candidates`.
 - `/api/closing-reports`  user dashboard, ter-scope outlet lewat
                           `resolve_outlet_scope` — daftar, detail, dan
@@ -52,6 +53,7 @@ from app.schemas.closing_schema import (
     CreateClosingMenuProductRequest,
     SendClosingExportRequest,
     UpdateClosingMenuProductRequest,
+    UpdateClosingMenuRequest,
 )
 from app.schemas.sales_response import PaginationMeta
 from app.services import (
@@ -74,14 +76,18 @@ closing_menu_router = APIRouter(prefix="/api/closing-menus", tags=["Admin - Clos
 
 @closing_menu_router.get("", response_model=ClosingMenuListResponse)
 def list_closing_menus(
-    status_: Literal["all", "mapped", "unmapped"] = Query("all", alias="status"),
+    status_: Literal["all", "mapped", "unmapped", "not_in_pos"] = Query("all", alias="status"),
     q: Optional[str] = Query(None, max_length=100, description="Cari menuCode atau nama menu"),
     limit: int = Query(closing_menu_service.DEFAULT_LIMIT, ge=1, le=closing_menu_service.MAX_LIMIT),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
 ):
-    """menuCode yang pernah muncul di closing report. `unmapped` = belum punya mapping aktif."""
+    """menuCode yang pernah muncul di closing report.
+
+    `unmapped` = belum punya mapping aktif dan tidak ditandai tidak ada di POS
+    (masih memblokir kirim rekap); `not_in_pos` = ditandai tidak ada di POS.
+    """
     rows, total = closing_menu_service.list_menus(db, status=status_, q=q, limit=limit, offset=offset)
 
     return ClosingMenuListResponse(
@@ -100,6 +106,46 @@ def get_closing_menu(menu_id: int, db: Session = Depends(get_db), _admin: User =
     return ClosingMenuDetailResponse(data=ClosingMenuResponse.model_validate(row))
 
 
+# 409 bentrok tanda vs mapping aktif membawa `code`, supaya frontend bisa
+# membedakannya dari 409 lain (mis. ProductID sudah dipetakan) lalu meminta
+# admin memilih.
+KODE_BENTROK_TIDAK_ADA_DI_POS = "not_in_pos_conflict"
+BENTROK_TANDAI = {
+    "code": KODE_BENTROK_TIDAK_ADA_DI_POS,
+    "message": "Menu ini masih punya mapping ProductID aktif. Pilih tandai tidak ada di POS "
+    "(mapping dinonaktifkan) dengan deactivate_products: true.",
+}
+BENTROK_MAPPING = {
+    "code": KODE_BENTROK_TIDAK_ADA_DI_POS,
+    "message": "Menu ini ditandai tidak ada di POS. Pilih petakan (tanda dilepas) dengan clear_not_in_pos: true.",
+}
+
+
+@closing_menu_router.patch("/{menu_id}", response_model=ClosingMenuDetailResponse)
+def update_closing_menu(
+    menu_id: int,
+    payload: UpdateClosingMenuRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Tandai / lepas tanda "tidak ada di POS". Menu bertanda tidak memblokir kirim rekap closing."""
+    try:
+        row = closing_menu_service.set_not_in_pos(
+            db, menu_id, payload.not_in_pos, by=admin.email, deactivate_products=payload.deactivate_products
+        )
+    except closing_menu_service.MenuTidakDitemukan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Menu closing tidak ditemukan")
+    except closing_menu_service.TidakAdaDiPosBentrok:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=BENTROK_TANDAI)
+
+    logger.info(
+        f"CLOSING MENU TIDAK ADA DI POS menu_id={menu_id} menu_code={row.menu_code} "
+        f"not_in_pos={row.not_in_pos} nonaktifkan_mapping={payload.deactivate_products} oleh={admin.email}"
+    )
+
+    return ClosingMenuDetailResponse(data=ClosingMenuResponse.model_validate(row))
+
+
 @closing_menu_router.post(
     "/{menu_id}/products",
     response_model=ClosingMenuProductDetailResponse,
@@ -114,10 +160,17 @@ def create_closing_menu_product(
     """Hitung menu closing ini dari `product_id` POS × `multiplier`."""
     try:
         row = closing_menu_service.add_product(
-            db, menu_id, payload.product_id, multiplier=payload.multiplier, is_active=payload.is_active
+            db,
+            menu_id,
+            payload.product_id,
+            multiplier=payload.multiplier,
+            is_active=payload.is_active,
+            clear_not_in_pos=payload.clear_not_in_pos,
         )
     except closing_menu_service.MenuTidakDitemukan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Menu closing tidak ditemukan")
+    except closing_menu_service.TidakAdaDiPosBentrok:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=BENTROK_MAPPING)
     except closing_menu_service.ProductSudahAda:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -131,7 +184,7 @@ def create_closing_menu_product(
 
     logger.info(
         f"CLOSING MENU PRODUCT DIBUAT menu_id={menu_id} product_id={row.product_id} "
-        f"x{row.multiplier} aktif={row.is_active} oleh={admin.email}"
+        f"x{row.multiplier} aktif={row.is_active} lepas_tanda={payload.clear_not_in_pos} oleh={admin.email}"
     )
 
     return ClosingMenuProductDetailResponse(data=ClosingMenuProductResponse.model_validate(row))
@@ -148,14 +201,21 @@ def update_closing_menu_product(
     """Ubah pengali / aktifkan / nonaktifkan. Berlaku langsung di laporan perbandingan."""
     try:
         row = closing_menu_service.update_product(
-            db, menu_id, mapping_id, multiplier=payload.multiplier, is_active=payload.is_active
+            db,
+            menu_id,
+            mapping_id,
+            multiplier=payload.multiplier,
+            is_active=payload.is_active,
+            clear_not_in_pos=payload.clear_not_in_pos,
         )
     except closing_menu_service.MappingTidakDitemukan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mapping tidak ditemukan")
+    except closing_menu_service.TidakAdaDiPosBentrok:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=BENTROK_MAPPING)
 
     logger.info(
         f"CLOSING MENU PRODUCT DIUBAH menu_id={menu_id} product_id={row.product_id} "
-        f"x{row.multiplier} aktif={row.is_active} oleh={admin.email}"
+        f"x{row.multiplier} aktif={row.is_active} lepas_tanda={payload.clear_not_in_pos} oleh={admin.email}"
     )
 
     return ClosingMenuProductDetailResponse(data=ClosingMenuProductResponse.model_validate(row))

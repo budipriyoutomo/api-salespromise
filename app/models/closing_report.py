@@ -1,7 +1,7 @@
 """Closing report dari RabbitMQ (`closingreport.submitted`) — TODO Fase 7.
 
 Skema produksi ada di migrations/011_closing_reports.sql, 012_closing_menu_id.sql,
-dan 013_closing_message_logs.sql; constraint di sini harus sama supaya test
+013_closing_message_logs.sql, dan 018_closing_menu_not_in_pos.sql; constraint di sini harus sama supaya test
 SQLite mewakili Postgres.
 
 Tidak ada yang dihapus: revisi baru mendapat baris revisi + item sendiri,
@@ -135,7 +135,8 @@ class ClosingMenu(Base):
     """Menu yang pernah muncul di pesan; tercatat otomatis saat pertama terlihat.
 
     Kuncinya `menu_id` — menuCode bisa berubah, unik hanya per brand, dan bisa
-    null (jawaban pengirim). Belum dipetakan = belum punya `products` aktif.
+    null (jawaban pengirim). Belum dipetakan = belum punya `products` aktif dan
+    tidak ditandai `not_in_pos`.
     """
 
     __tablename__ = "closing_menus"
@@ -151,6 +152,13 @@ class ClosingMenu(Base):
 
     first_seen_at = Column(DateTime, nullable=False, default=utcnow)
     last_seen_at = Column(DateTime, nullable=False, default=utcnow)
+
+    # Admin menyatakan menu ini tidak ada di POS (migrasi 018): tidak memblokir
+    # kirim rekap closing, terkirim dengan posQty 0. Tidak boleh bersamaan
+    # dengan mapping aktif — dijaga closing_menu_service.
+    not_in_pos = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    not_in_pos_by = Column(String(255), nullable=True)
+    not_in_pos_at = Column(DateTime, nullable=True)
 
     products = relationship(
         "ClosingMenuProduct",

@@ -12,7 +12,8 @@ Satu kiriman = satu outlet × satu tanggal produksi, disusun dari
 
 Diblokir kalau ada menu colorplate yang belum dipetakan, atau ProductID yang
 dipetakan ke lebih dari satu menu di outlet + tanggal itu (qty POS-nya akan
-terhitung dobel).
+terhitung dobel). Menu yang ditandai admin "tidak ada di POS" (migrasi 018)
+tidak memblokir: terkirim sebagai `closing` dengan posQty 0, tanpa field baru.
 
 Log dicatat `mengirim` sebelum request berangkat, supaya `message_id` sudah
 tersimpan kalau proses mati di tengah jalan. `mengirim` yang dimulai lebih dari
@@ -162,7 +163,7 @@ def periksa_blokir(baris) -> Blokir:
     for b in baris:
         if b.menu_id is None:
             continue
-        if not b.products:
+        if not b.products and not b.not_in_pos:
             blokir.menu_belum_dipetakan.append(MenuBelumDipetakan(b.menu_id, b.menu_code, b.menu_name))
         for p in b.products:
             menu_per_produk.setdefault(p.product_id, []).append((p, b))

@@ -14,7 +14,15 @@ from app.core.time import utcnow
 from app.models.closing_report import ClosingExportLog, ClosingMenuProduct
 from app.services import closing_export_client, closing_export_service
 from app.services.closing_export_client import HasilKirim
-from tests.unit.test_routes_closing import HARI_INI, KEMARIN, item, jual, kirim_closing, petakan
+from tests.unit.test_routes_closing import (
+    HARI_INI,
+    KEMARIN,
+    item,
+    jual,
+    kirim_closing,
+    petakan,
+    tandai_tidak_ada_di_pos,
+)
 
 ADMIN = "admin@maharasa.id"
 
@@ -209,6 +217,34 @@ class TestDitolak:
         assert exc.value.blokir.produk_dobel == []
         assert api.panggilan == []
         assert db_session.query(ClosingExportLog).count() == 0
+
+    def test_menu_tidak_ada_di_pos_tidak_memblokir(self, db_session, api):
+        """Menu yang ditandai admin terkirim dengan posQty 0; totalSold = colorplate."""
+        kirim_closing(db_session, items=[item(), item("CP-001", "Piring Kosong", sold=7)])
+        petakan(db_session, "SU-001", 200104)
+        tandai_tidak_ada_di_pos(db_session, "CP-001")
+        jual(db_session, 1, 200104, 3)
+
+        log = closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
+
+        assert log.status == "terkirim"
+        piring = next(i for i in api.panggilan[0][0]["items"] if i["menuCode"] == "CP-001")
+        assert (piring["source"], piring["colorplateSold"], piring["posQty"], piring["totalSold"]) == (
+            "closing",
+            7,
+            0,
+            7,
+        )
+        assert set(piring) == set(api.panggilan[0][0]["items"][0])  # tidak ada field tambahan
+
+    def test_menu_bertanda_tidak_menutupi_menu_lain_yang_belum_dipetakan(self, db_session, api):
+        kirim_closing(db_session, items=[item(), item("CP-001", "Piring Kosong")])
+        tandai_tidak_ada_di_pos(db_session, "CP-001")
+
+        with pytest.raises(closing_export_service.Diblokir) as exc:
+            closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
+
+        assert [m.menu_code for m in exc.value.blokir.menu_belum_dipetakan] == ["SU-001"]
 
     def test_produk_dipetakan_ke_dua_menu_diblokir(self, db_session, api):
         kirim_closing(db_session, items=[item(), item("SU-002", "Tuna")])
@@ -450,6 +486,14 @@ class TestStatus:
 
         assert s.can_send is False
         assert [m.menu_code for m in s.menu_belum_dipetakan] == ["SU-001"]
+
+    def test_menu_tidak_ada_di_pos_bisa_dikirim(self, db_session, api):
+        kirim_closing(db_session, items=[item()])
+        tandai_tidak_ada_di_pos(db_session, "SU-001")
+
+        s = self._status(db_session)[("OUTLET_001", HARI_INI)]
+
+        assert (s.can_send, s.menu_belum_dipetakan, s.status) == (True, [], "belum_dikirim")
 
     def test_sedang_mengirim_tidak_bisa_dikirim(self, db_session, api):
         siapkan(db_session)

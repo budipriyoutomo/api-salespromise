@@ -86,6 +86,14 @@ def petakan(db, menu_code, product_id, multiplier=1, is_active=True):
     return menu
 
 
+def tandai_tidak_ada_di_pos(db, menu_code, oleh="admin@maharasa.id"):
+    menu = db.query(ClosingMenu).filter_by(menu_code=menu_code).one()
+    menu.not_in_pos = True
+    menu.not_in_pos_by = oleh
+    db.commit()
+    return menu
+
+
 @pytest.fixture()
 def manager_headers(make_user, token_for):
     return bearer(token_for(make_user(email="manager@maharasa.id", role="manager")))
@@ -120,6 +128,7 @@ class TestDaftarMenu:
             False,
             [],
         )
+        assert (menu["not_in_pos"], menu["not_in_pos_by"], menu["not_in_pos_at"]) == (False, None, None)
 
     def test_filter_status_dan_cari(self, client, app_db, admin_headers):
         kirim_closing(app_db, items=[item(), item("SU-002", "Tuna Nigiri"), item("DR-001", "Ocha")])
@@ -135,6 +144,21 @@ class TestDaftarMenu:
         assert kode(status="unmapped") == ["DR-001", "SU-002"]
         assert kode(q="nigiri") == ["SU-001", "SU-002"]
         assert kode(q="dr-0") == ["DR-001"]
+
+    def test_menu_tidak_ada_di_pos_terpisah_dari_belum_dipetakan(self, client, app_db, admin_headers):
+        kirim_closing(app_db, items=[item(), item("SU-002", "Tuna Nigiri"), item("CP-001", "Piring Kosong")])
+        petakan(app_db, "SU-001", 200104)
+        tandai_tidak_ada_di_pos(app_db, "CP-001")
+
+        def kode(**params):
+            res = client.get("/api/closing-menus", params=params, headers=admin_headers)
+            return [m["menu_code"] for m in res.json()["data"]]
+
+        assert kode() == ["CP-001", "SU-001", "SU-002"]
+        assert kode(status="mapped") == ["SU-001"]
+        # Hanya yang masih perlu tindakan admin.
+        assert kode(status="unmapped") == ["SU-002"]
+        assert kode(status="not_in_pos") == ["CP-001"]
 
     def test_status_tidak_dikenal_ditolak(self, client, admin_headers):
         assert client.get("/api/closing-menus", params={"status": "x"}, headers=admin_headers).status_code == 422
@@ -257,6 +281,128 @@ class TestMappingMenu:
         res = client.patch(f"/api/closing-menus/{menu_id}/products/{dibuat['id']}", json={}, headers=admin_headers)
 
         assert res.status_code == 422
+
+
+class TestTandaTidakAdaDiPos:
+    """Menu colorplate yang memang tidak ada di POS ditandai sekali oleh admin.
+
+    Tanda dan mapping aktif tidak boleh ada bersamaan; mana yang dipakai
+    dipilih admin dari frontend (deactivate_products / clear_not_in_pos).
+    """
+
+    @pytest.fixture()
+    def menu_id(self, app_db):
+        kirim_closing(app_db)
+        jual(app_db, 1, 200104, 2)
+        return app_db.query(ClosingMenu).one().id
+
+    def _tandai(self, client, menu_id, headers, **body):
+        return client.patch(f"/api/closing-menus/{menu_id}", json={"not_in_pos": True, **body}, headers=headers)
+
+    def _mapping(self, client, menu_id, headers, **body):
+        return client.post(
+            f"/api/closing-menus/{menu_id}/products", json={"product_id": 200104, **body}, headers=headers
+        )
+
+    def _menu(self, client, menu_id, headers):
+        return client.get(f"/api/closing-menus/{menu_id}", headers=headers).json()["data"]
+
+    def test_tandai_mencatat_siapa_dan_kapan(self, client, menu_id, admin_headers):
+        res = self._tandai(client, menu_id, admin_headers)
+
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert (data["not_in_pos"], data["not_in_pos_by"], data["is_mapped"]) == (True, "admin@maharasa.id", False)
+        assert data["not_in_pos_at"] is not None
+
+    def test_lepas_tanda(self, client, menu_id, admin_headers):
+        self._tandai(client, menu_id, admin_headers)
+
+        res = client.patch(f"/api/closing-menus/{menu_id}", json={"not_in_pos": False}, headers=admin_headers)
+
+        data = res.json()["data"]
+        assert (res.status_code, data["not_in_pos"], data["not_in_pos_by"], data["not_in_pos_at"]) == (
+            200,
+            False,
+            None,
+            None,
+        )
+
+    def test_menu_dengan_mapping_aktif_ditolak_tanpa_pilihan(self, client, menu_id, admin_headers):
+        self._mapping(client, menu_id, admin_headers)
+
+        res = self._tandai(client, menu_id, admin_headers)
+
+        assert res.status_code == 409
+        assert res.json()["detail"]["code"] == "not_in_pos_conflict"
+        menu = self._menu(client, menu_id, admin_headers)
+        assert (menu["not_in_pos"], menu["is_mapped"]) == (False, True)
+
+    def test_pilih_tidak_ada_di_pos_menonaktifkan_mapping(self, client, menu_id, admin_headers):
+        self._mapping(client, menu_id, admin_headers)
+
+        res = self._tandai(client, menu_id, admin_headers, deactivate_products=True)
+
+        data = res.json()["data"]
+        assert (res.status_code, data["not_in_pos"], data["is_mapped"]) == (200, True, False)
+        # Tidak dihapus, hanya dimatikan.
+        assert [(p["product_id"], p["is_active"]) for p in data["products"]] == [(200104, False)]
+
+    def test_tambah_mapping_ke_menu_bertanda_ditolak_tanpa_pilihan(self, client, menu_id, admin_headers):
+        self._tandai(client, menu_id, admin_headers)
+
+        res = self._mapping(client, menu_id, admin_headers)
+
+        assert res.status_code == 409
+        assert res.json()["detail"]["code"] == "not_in_pos_conflict"
+        menu = self._menu(client, menu_id, admin_headers)
+        assert (menu["not_in_pos"], menu["products"]) == (True, [])
+
+    def test_pilih_petakan_melepas_tanda(self, client, menu_id, admin_headers):
+        self._tandai(client, menu_id, admin_headers)
+
+        res = self._mapping(client, menu_id, admin_headers, clear_not_in_pos=True)
+
+        assert res.status_code == 201, res.text
+        menu = self._menu(client, menu_id, admin_headers)
+        assert (menu["not_in_pos"], menu["not_in_pos_by"], menu["is_mapped"]) == (False, None, True)
+
+    def test_mapping_nonaktif_boleh_ditambah_ke_menu_bertanda(self, client, menu_id, admin_headers):
+        self._tandai(client, menu_id, admin_headers)
+
+        res = self._mapping(client, menu_id, admin_headers, is_active=False)
+
+        assert res.status_code == 201
+        menu = self._menu(client, menu_id, admin_headers)
+        assert (menu["not_in_pos"], menu["is_mapped"]) == (True, False)
+
+    def test_aktifkan_lagi_mapping_di_menu_bertanda(self, client, menu_id, admin_headers):
+        dibuat = self._mapping(client, menu_id, admin_headers).json()["data"]
+        self._tandai(client, menu_id, admin_headers, deactivate_products=True)
+        url = f"/api/closing-menus/{menu_id}/products/{dibuat['id']}"
+
+        ditolak = client.patch(url, json={"is_active": True}, headers=admin_headers)
+        assert (ditolak.status_code, ditolak.json()["detail"]["code"]) == (409, "not_in_pos_conflict")
+        # Ubah pengali mapping nonaktif tidak bentrok dengan tanda.
+        assert client.patch(url, json={"multiplier": 2}, headers=admin_headers).status_code == 200
+
+        res = client.patch(url, json={"is_active": True, "clear_not_in_pos": True}, headers=admin_headers)
+
+        assert (res.status_code, res.json()["data"]["is_active"]) == (200, True)
+        menu = self._menu(client, menu_id, admin_headers)
+        assert (menu["not_in_pos"], menu["is_mapped"]) == (False, True)
+
+    def test_menu_tidak_ada(self, client, admin_headers):
+        assert self._tandai(client, 999, admin_headers).status_code == 404
+
+    @pytest.mark.parametrize("body", [{}, {"not_in_pos": "x"}, {"deactivate_products": True}])
+    def test_body_tidak_valid(self, client, menu_id, admin_headers, body):
+        res = client.patch(f"/api/closing-menus/{menu_id}", json=body, headers=admin_headers)
+
+        assert res.status_code == 422
+
+    def test_hanya_admin(self, client, menu_id, manager_headers):
+        assert self._tandai(client, menu_id, manager_headers).status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +587,15 @@ class TestPerbandingan:
         [baris] = self._baris(client, admin_headers)
 
         assert (baris["menu_code"], baris["sold"], baris["adjustment"]) == ("SU-001", 5, 1)
-        assert (baris["products"], baris["pos_qty"]) == ([], None)
+        assert (baris["products"], baris["pos_qty"], baris["not_in_pos"]) == ([], None, False)
+
+    def test_menu_tidak_ada_di_pos_ditandai(self, client, app_db, admin_headers):
+        kirim_closing(app_db, items=[item(sold=5)])
+        tandai_tidak_ada_di_pos(app_db, "SU-001")
+
+        [baris] = self._baris(client, admin_headers)
+
+        assert (baris["sold"], baris["products"], baris["pos_qty"], baris["not_in_pos"]) == (5, [], None, True)
 
     def test_mapping_nonaktif_diabaikan(self, client, app_db, admin_headers):
         kirim_closing(app_db)

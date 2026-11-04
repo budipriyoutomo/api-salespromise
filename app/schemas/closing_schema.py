@@ -38,6 +38,10 @@ class ClosingMenuResponse(BaseModel):
     brand_code: Optional[str] = None
     # Punya minimal satu mapping ProductID aktif.
     is_mapped: bool
+    # Ditandai admin: menu ini tidak ada di POS, tidak memblokir kirim rekap.
+    not_in_pos: bool = False
+    not_in_pos_by: Optional[str] = None
+    not_in_pos_at: Optional[datetime] = None
     products: List[ClosingMenuProductResponse] = Field(default_factory=list)
     first_seen_at: datetime
     last_seen_at: datetime
@@ -65,6 +69,9 @@ class CreateClosingMenuProductRequest(BaseModel):
     product_id: int = Field(gt=0)
     multiplier: int = Field(default=1, gt=0, le=MAX_MULTIPLIER)
     is_active: bool = True
+    # Menu bertanda "tidak ada di POS": true = admin memilih memetakan, tanda
+    # dilepas. False (default) + mapping aktif ke menu bertanda = 409.
+    clear_not_in_pos: bool = False
 
 
 class UpdateClosingMenuProductRequest(BaseModel):
@@ -72,12 +79,25 @@ class UpdateClosingMenuProductRequest(BaseModel):
 
     multiplier: Optional[int] = Field(default=None, gt=0, le=MAX_MULTIPLIER)
     is_active: Optional[bool] = None
+    # Sama dengan CreateClosingMenuProductRequest — berlaku saat mengaktifkan.
+    clear_not_in_pos: bool = False
 
     @model_validator(mode="after")
     def minimal_satu_field(self):
         if self.multiplier is None and self.is_active is None:
             raise ValueError("Isi multiplier atau is_active")
         return self
+
+
+class UpdateClosingMenuRequest(BaseModel):
+    """Tandai / lepas tanda "tidak ada di POS".
+
+    Menu yang masih punya mapping aktif hanya bisa ditandai dengan
+    `deactivate_products: true` (mapping dimatikan, tidak dihapus); tanpa itu 409.
+    """
+
+    not_in_pos: bool
+    deactivate_products: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +199,11 @@ class ClosingComparisonRow(BaseModel):
     adjustment: Optional[int] = None
     compensation: Optional[int] = None
 
-    # Mapping aktif; kosong = belum dipetakan.
+    # Mapping aktif; kosong = belum dipetakan (atau tidak ada di POS).
     products: List[ClosingComparisonProduct] = Field(default_factory=list)
     pos_qty: Optional[float] = None
+    # Menu ditandai admin tidak ada di POS; pos_qty tetap kosong.
+    not_in_pos: bool = False
 
 
 class ClosingComparisonResponse(BaseModel):
