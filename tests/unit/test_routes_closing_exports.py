@@ -110,6 +110,31 @@ class TestKirim:
         assert [m["menu_code"] for m in detail["menu_belum_dipetakan"]] == ["SU-003"]
         assert [(p["product_id"], p["menus"]) for p in detail["produk_dobel"]] == [(200104, ["SU-001", "SU-002"])]
 
+    def test_brand_tanpa_syarat_tanpa_penjualan_404(self, client, app_db, admin_headers, hasil_api):
+        from tests.unit.test_closing_export_service import brand
+
+        brand(app_db, False)
+
+        res = kirim(client, admin_headers)
+
+        assert res.status_code == 404
+        assert res.json()["detail"] == "Tidak ada penjualan untuk outlet dan tanggal ini."
+
+    def test_diblokir_422_alasan_baru(self, client, app_db, admin_headers, hasil_api):
+        from tests.unit.test_closing_export_service import buka_tanda, contoh_dokumen
+
+        contoh_dokumen(app_db)
+        buka_tanda(app_db, "SU-001")
+        petakan(app_db, "SU-001", 500)
+
+        res = kirim(client, admin_headers)
+
+        assert res.status_code == 422
+        detail = res.json()["detail"]
+        assert detail["produk_colorplate_dipetakan"] == [{"product_id": 500, "product_name": "RED", "menus": ["SU-001"]}]
+        assert detail["produk_belum_master"] == [{"product_id": 300, "product_name": "Ocha"}]
+        assert detail["colorplate_tanpa_closing"] == []
+
     def test_sedang_dikirim_409(self, client, app_db, admin_headers, hasil_api):
         from app.models.closing_report import ClosingExportLog
 
@@ -147,6 +172,20 @@ class TestStatus:
         assert (s["item_count"], s["total_sold"]) == (1, 13)
         assert s["last_sent"]["status"] == "terkirim"
         assert s["menu_belum_dipetakan"] == [] and s["produk_dobel"] == []
+        assert s["has_closing"] is True
+        assert s["produk_colorplate_dipetakan"] == s["produk_belum_master"] == s["colorplate_tanpa_closing"] == []
+
+    def test_brand_tanpa_syarat_tampil_tanpa_closing(self, client, app_db, admin_headers, hasil_api):
+        from tests.unit.test_closing_export_service import brand, master
+
+        brand(app_db, False)
+        jual(app_db, 2, 300, 2, nama="Ocha", product_group="DRINK")
+        master(app_db, "M-OCHA", "Ocha", ("OUTLET_001", 300))
+
+        res = client.get(f"{URL}/status", params={"start_date": "2026-10-02", "end_date": "2026-10-02"}, headers=admin_headers)
+
+        (s,) = res.json()["data"]
+        assert (s["has_closing"], s["can_send"], s["item_count"], s["total_sold"]) == (False, True, 1, 2)
 
     def test_menu_belum_dipetakan(self, client, app_db, admin_headers):
         kirim_closing(app_db, items=[item()])

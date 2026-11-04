@@ -1,0 +1,26 @@
+-- ============================================================
+-- Migration 019: Syarat closing report untuk kirim rekap, per brand
+-- ============================================================
+--
+-- Kirim rekap closing ke API eksternal (Fase 8) selama ini selalu butuh
+-- closing report. Sebagian brand tidak punya colorplate, jadi tidak pernah
+-- mengirim closing; rekapnya cukup dari penjualan POS.
+--
+--   requires_closing  TRUE  = outlet brand ini wajib punya closing report
+--                             sebelum rekap bisa dikirim (perilaku lama).
+--                     FALSE = boleh kirim tanpa closing; item diambil dari
+--                             penjualan POS non-colorplate.
+--
+-- Outlet tanpa brand tetap wajib closing; aturan itu dijaga aplikasi
+-- (closing_export_service), bukan kolom ini.
+--
+-- HANYA ADD COLUMN di brands. Default TRUE: semua brand yang sudah ada tetap
+-- wajib closing seperti sebelumnya. Tidak ada baris yang diubah atau dihapus,
+-- tabel lain tidak disentuh. ADD COLUMN dengan default konstan tidak menulis
+-- ulang tabel (PostgreSQL 11+), tetapi tetap memegang lock singkat
+-- ACCESS EXCLUSIVE di brands.
+--
+-- Idempotent: aman dijalankan ulang.
+-- ============================================================
+
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS requires_closing BOOLEAN NOT NULL DEFAULT TRUE;

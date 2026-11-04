@@ -345,6 +345,33 @@ def test_migrasi_018_hanya_menambah_kolom_tanda_di_closing_menus():
         assert terlarang not in sql, terlarang
 
 
+def test_migrasi_019_hanya_menambah_kolom_syarat_closing_di_brands():
+    """Syarat closing per brand (kirim rekap Fase 8): tambah kolom saja, default TRUE,
+    jadi semua brand yang sudah ada tetap wajib closing seperti sebelumnya."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "019_brand_requires_closing.sql").read_text(encoding="utf-8"))
+
+    assert (
+        "ALTER TABLE BRANDS ADD COLUMN IF NOT EXISTS REQUIRES_CLOSING BOOLEAN NOT NULL DEFAULT TRUE"
+        in " ".join(sql.split())
+    )
+    assert sql.count("ALTER TABLE") == 1
+    for terlarang in [
+        "INSERT",
+        "UPDATE ",
+        "DROP",
+        "DELETE",
+        "TRUNCATE",
+        "CREATE",
+        "OUTLET_BRAND_MAPPINGS",
+        "CLOSING_",
+        "PRODUCTS",
+        "API_KEYS",
+        "ORDERTRANSACTION",
+        "ORDERDETAIL",
+    ]:
+        assert terlarang not in sql, terlarang
+
+
 def test_statement_timeout_dimatikan_sebelum_lock_dan_migrasi(folder):
     """Engine aplikasi memasang statement_timeout; migrasi (bangun index) dan
     menunggu advisory lock bisa jauh lebih lama dari itu."""

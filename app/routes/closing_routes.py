@@ -360,7 +360,11 @@ def closing_export_status(
     db: Session = Depends(get_db),
     _admin: User = Depends(require_admin),
 ):
-    """Status kirim setiap outlet × tanggal produksi yang punya closing, terbaru dulu."""
+    """Status kirim setiap outlet × tanggal produksi, terbaru dulu.
+
+    Memuat tanggal yang punya closing, ditambah — kalau rentang tanggal diisi —
+    tanggal yang punya penjualan untuk outlet brand tanpa syarat closing.
+    """
     cek_rentang_tanggal(start_date, end_date)
     rows = closing_export_service.status_pasangan(db, outlet=outlet, start_date=start_date, end_date=end_date)
 
@@ -383,20 +387,33 @@ def send_closing_export(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tidak ada closing untuk outlet dan tanggal produksi ini.",
         )
+    except closing_export_service.TidakAdaPenjualan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tidak ada penjualan untuk outlet dan tanggal ini.",
+        )
     except closing_export_service.Diblokir as e:
+        b = e.blokir
+
+        def produk_menu(daftar):
+            return [{"product_id": p.product_id, "product_name": p.product_name, "menus": p.menus} for p in daftar]
+
+        def produk_pos(daftar):
+            return [{"product_id": p.product_id, "product_name": p.product_name} for p in daftar]
+
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
-                "message": "Rekap belum bisa dikirim: petakan semua menu dan pastikan satu ProductID hanya "
-                "dipetakan ke satu menu.",
+                "message": "Rekap belum bisa dikirim. Lihat daftar di bawah: mapping menu closing, "
+                "mapping produk colorplate, atau master produk yang belum lengkap.",
                 "menu_belum_dipetakan": [
                     {"menu_id": str(m.menu_id), "menu_code": m.menu_code, "menu_name": m.menu_name}
-                    for m in e.blokir.menu_belum_dipetakan
+                    for m in b.menu_belum_dipetakan
                 ],
-                "produk_dobel": [
-                    {"product_id": p.product_id, "product_name": p.product_name, "menus": p.menus}
-                    for p in e.blokir.produk_dobel
-                ],
+                "produk_dobel": produk_menu(b.produk_dobel),
+                "produk_colorplate_dipetakan": produk_menu(b.produk_colorplate_dipetakan),
+                "produk_belum_master": produk_pos(b.produk_belum_master),
+                "colorplate_tanpa_closing": produk_pos(b.colorplate_tanpa_closing),
             },
         )
     except closing_export_service.SedangDikirim:

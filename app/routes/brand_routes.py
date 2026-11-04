@@ -56,7 +56,9 @@ def create_brand(
     admin: User = Depends(require_admin),
 ):
     try:
-        row = brand_service.create_brand(db, payload.code, payload.name, is_active=payload.is_active)
+        row = brand_service.create_brand(
+            db, payload.code, payload.name, is_active=payload.is_active, requires_closing=payload.requires_closing
+        )
     except brand_service.BrandSudahAda as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -65,7 +67,10 @@ def create_brand(
     except brand_service.DataTidakValid as exc:
         raise _tidak_valid(exc)
 
-    logger.info(f"BRAND DIBUAT code={row.code!r} nama={row.name!r} aktif={row.is_active} oleh={admin.email}")
+    logger.info(
+        f"BRAND DIBUAT code={row.code!r} nama={row.name!r} aktif={row.is_active} "
+        f"wajib_closing={row.requires_closing} oleh={admin.email}"
+    )
 
     return BrandDetailResponse(data=BrandResponse.model_validate(row))
 
@@ -117,14 +122,19 @@ def update_brand(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """Ubah nama / aktifkan / nonaktifkan brand. Mapping outlet-nya tidak ikut berubah."""
+    """Ubah nama / aktifkan / nonaktifkan brand / syarat closing. Mapping outlet-nya tidak ikut berubah."""
     try:
-        row = brand_service.update_brand(db, brand_id, name=payload.name, is_active=payload.is_active)
+        row = brand_service.update_brand(
+            db, brand_id, name=payload.name, is_active=payload.is_active, requires_closing=payload.requires_closing
+        )
     except brand_service.BrandTidakDitemukan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Brand tidak ditemukan")
     except brand_service.DataTidakValid as exc:
         raise _tidak_valid(exc)
 
-    logger.info(f"BRAND DIUBAH code={row.code!r} nama={row.name!r} aktif={row.is_active} oleh={admin.email}")
+    logger.info(
+        f"BRAND DIUBAH code={row.code!r} nama={row.name!r} aktif={row.is_active} "
+        f"wajib_closing={row.requires_closing} oleh={admin.email}"
+    )
 
     return BrandDetailResponse(data=BrandResponse.model_validate(row))

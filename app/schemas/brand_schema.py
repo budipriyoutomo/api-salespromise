@@ -15,6 +15,8 @@ class BrandResponse(BaseModel):
     code: str
     name: str
     is_active: bool
+    # False = outlet brand ini boleh kirim rekap closing tanpa closing report.
+    requires_closing: bool = True
     # Outlet yang dipetakan ke brand ini, terurut.
     outlet_codes: List[str] = Field(default_factory=list)
     created_at: Optional[datetime] = None
@@ -32,6 +34,7 @@ class BrandResponse(BaseModel):
             "code": data.code,
             "name": data.name,
             "is_active": data.is_active,
+            "requires_closing": data.requires_closing,
             "outlet_codes": [o.outlet_code for o in outlets],
             "created_at": data.created_at,
             "updated_at": data.updated_at,
@@ -54,6 +57,7 @@ class CreateBrandRequest(BaseModel):
     code: str = Field(min_length=1, max_length=MAX_BRAND_CODE_LENGTH)
     name: str = Field(min_length=1, max_length=MAX_BRAND_NAME_LENGTH)
     is_active: bool = True
+    requires_closing: bool = True
 
 
 class UpdateBrandRequest(BaseModel):
@@ -61,11 +65,12 @@ class UpdateBrandRequest(BaseModel):
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=MAX_BRAND_NAME_LENGTH)
     is_active: Optional[bool] = None
+    requires_closing: Optional[bool] = None
 
     @model_validator(mode="after")
     def minimal_satu_field(self):
-        if self.name is None and self.is_active is None:
-            raise ValueError("Isi name atau is_active")
+        if self.name is None and self.is_active is None and self.requires_closing is None:
+            raise ValueError("Isi name, is_active, atau requires_closing")
         return self
 
 

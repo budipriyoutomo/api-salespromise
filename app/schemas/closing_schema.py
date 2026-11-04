@@ -328,12 +328,22 @@ class ClosingExportDuplicateProduct(BaseModel):
     menus: List[str]
 
 
+class ClosingExportPosProduct(BaseModel):
+    """ProductID POS yang memblokir kiriman (belum punya master, atau colorplate tanpa closing)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    product_id: int
+    product_name: Optional[str] = None
+
+
 class ClosingExportStatus(BaseModel):
     """Status kirim satu outlet × tanggal produksi.
 
     `status` dibanding kiriman terakhir yang sampai: belum_dikirim / terkirim /
     perlu_kirim_ulang (rekap berubah sejak terkirim). `can_send` false kalau
-    diblokir atau kiriman terakhir masih `mengirim`.
+    diblokir atau kiriman terakhir masih `mengirim`. `has_closing` false =
+    brand tanpa syarat closing, rekap hanya dari penjualan POS.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -344,8 +354,15 @@ class ClosingExportStatus(BaseModel):
     can_send: bool
     item_count: int
     total_sold: float
+    has_closing: bool
     menu_belum_dipetakan: List[ClosingExportUnmappedMenu]
     produk_dobel: List[ClosingExportDuplicateProduct]
+    # Produk colorplate / berkonversi dipetakan ke menu closing.
+    produk_colorplate_dipetakan: List[ClosingExportDuplicateProduct]
+    # Produk non-colorplate tanpa master aktif ber-product_code.
+    produk_belum_master: List[ClosingExportPosProduct]
+    # Tanpa closing, tetapi produk colorplate terjual.
+    colorplate_tanpa_closing: List[ClosingExportPosProduct]
     last_attempt: Optional[ClosingExportSummary] = None
     last_sent: Optional[ClosingExportSummary] = None
 

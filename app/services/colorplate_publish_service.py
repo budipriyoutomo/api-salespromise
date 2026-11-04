@@ -29,11 +29,36 @@ class TidakAdaYangDipublish(Exception):
     """Group COLORPLATE nonaktif dan tidak ada konversi menu aktif."""
 
 
+@dataclass(frozen=True)
+class AturanColorplate:
+    """Satu sumber aturan: baris POS mana yang masuk hitungan colorplate.
+
+    Dipakai publish (di sini) dan kirim rekap closing (closing_export_service),
+    supaya keduanya tidak bisa berbeda aturan.
+    """
+
+    # Group COLORPLATE aktif di product_group_mappings.
+    group_aktif: bool
+    # ProductID → [(platecolor, multiplier)] dari menu & konversi aktif.
+    konversi: dict
+
+    def termasuk(self, product_id: int, product_group: str | None) -> bool:
+        if self.group_aktif and product_group_service.normalize_product_group(product_group) == SalesService.COLORPLATE:
+            return True
+        return product_id in self.konversi
+
+
+def aturan_colorplate(db) -> AturanColorplate:
+    return AturanColorplate(
+        group_aktif=SalesService.COLORPLATE
+        in {product_group_service.normalize_product_group(g) for g in product_group_service.get_active_groups(db)},
+        konversi=product_menu_service.get_active_conversions(db),
+    )
+
+
 def rekap_colorplate(db, outlet=None, start_date=None, end_date=None) -> list[RekapWarna]:
-    colorplate_aktif = SalesService.COLORPLATE in {
-        product_group_service.normalize_product_group(g) for g in product_group_service.get_active_groups(db)
-    }
-    konversi = product_menu_service.get_active_conversions(db)
+    aturan = aturan_colorplate(db)
+    colorplate_aktif, konversi = aturan.group_aktif, aturan.konversi
 
     if not colorplate_aktif and not konversi:
         raise TidakAdaYangDipublish()

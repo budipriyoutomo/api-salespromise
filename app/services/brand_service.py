@@ -89,7 +89,7 @@ def _clean_name(name) -> str:
     return name
 
 
-def create_brand(db, code, name, is_active: bool = True):
+def create_brand(db, code, name, is_active: bool = True, requires_closing: bool = True):
     normal = normalize_brand_code(code)
 
     if not normal:
@@ -102,7 +102,9 @@ def create_brand(db, code, name, is_active: bool = True):
     if get_by_code(db, normal):
         raise BrandSudahAda(normal)
 
-    row = Brand(code=normal, name=name, is_active=is_active, created_at=utcnow())
+    row = Brand(
+        code=normal, name=name, is_active=is_active, requires_closing=requires_closing, created_at=utcnow()
+    )
     db.add(row)
 
     try:
@@ -115,8 +117,8 @@ def create_brand(db, code, name, is_active: bool = True):
     return row
 
 
-def update_brand(db, brand_id: int, name=None, is_active: bool | None = None):
-    """Ubah nama / status. Kode tidak bisa diubah — dipakai sebagai filter laporan."""
+def update_brand(db, brand_id: int, name=None, is_active: bool | None = None, requires_closing: bool | None = None):
+    """Ubah nama / status / syarat closing. Kode tidak bisa diubah — dipakai sebagai filter laporan."""
     row = get_by_id(db, brand_id)
     if not row:
         raise BrandTidakDitemukan(brand_id)
@@ -125,6 +127,8 @@ def update_brand(db, brand_id: int, name=None, is_active: bool | None = None):
         row.name = _clean_name(name)
     if is_active is not None:
         row.is_active = is_active
+    if requires_closing is not None:
+        row.requires_closing = requires_closing
     row.updated_at = utcnow()
 
     db.commit()

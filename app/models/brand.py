@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.orm import relationship
 
 from app.core.time import utcnow
@@ -20,6 +20,8 @@ class Brand(Base):
     code = Column(String(20), nullable=False, unique=True)
     name = Column(String(255), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
+    # False = outlet brand ini boleh kirim rekap closing tanpa closing report (migrasi 019).
+    requires_closing = Column(Boolean, nullable=False, default=True, server_default=text("true"))
 
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=True)

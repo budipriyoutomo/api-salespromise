@@ -15,7 +15,9 @@ Sisa:
 - **Fase 8 (kirim rekap closing ke API eksternal)** — backend selesai di kode
   sesuai [usulan kontrak](docs/usulan-kontrak-kirim-closing.md) (2026-10-13).
   Frontend selesai (sync-frontend Fase 12), test integrasi Postgres selesai.
-  Sisa: deploy (migrasi 016 belum dijalankan) dan jawaban pemilik API.
+  Sisa: deploy (migrasi 016, 018, 019 belum dijalankan) dan jawaban pemilik API.
+  8.12 (2026-11-04): colorplate tidak lagi terhitung dobel, syarat closing per
+  brand — kontrak revisi 2 perlu dikirim ulang ke pemilik API.
 - Keputusan arsitektur yang masih terbuka — lihat bagian Keputusan di bawah.
 
 Backend siap dipakai frontend terpisah: CORS aktif, auth user terpisah dari
@@ -860,6 +862,36 @@ RabbitMQ) dan publish colorplate (keluar lewat RabbitMQ).
       `test_closing_export_service.py`, `test_migrate.py`,
       `tests/integration/test_migrasi_018_postgres.py`. Frontend: sync-frontend
       `/closing-menu` (filter, tombol tandai / lepas, dialog pilihan).
+- [x] **8.12 Colorplate tidak dihitung dobel + syarat closing per brand**
+      (2026-11-04) — rencana dan risiko: [todo_perbaikan.md](todo_perbaikan.md).
+      Rekap lama mengirim produk colorplate POS sebagai `pos_only`, padahal
+      sudah terwakili `sold` menu closing. Keputusan pengguna (aturan A/B/C):
+      - `totalSold` tetap `colorplateSold + posQty`;
+      - produk colorplate (group COLORPLATE aktif, atau ProductID berkonversi
+        aktif) **tidak dikirim** sebagai item. Aturannya satu sumber:
+        `colorplate_publish_service.aturan_colorplate`, dipakai publish juga;
+      - `pos_only` memakai master `products` (`productId` = `products.code`
+        string, `productCode` baru, `productName` dari master); beberapa
+        ProductID ke satu master dijumlah;
+      - kolom `brands.requires_closing` (migrasi
+        `019_brand_requires_closing.sql`, ADD COLUMN saja, default TRUE).
+        FALSE = outlet brand itu boleh kirim tanpa closing (isi hanya
+        `pos_only`). Outlet tanpa brand tetap wajib closing;
+      - blokir baru: `produk_colorplate_dipetakan`, `produk_belum_master`
+        (tanpa master aktif / tanpa `product_code`), `colorplate_tanpa_closing`.
+        404 baru `Tidak ada penjualan…` untuk brand tanpa syarat closing;
+      - status punya `has_closing`; tanggal tanpa closing hanya dicari kalau
+        rentang tanggal diisi. `compare_with_pos` tidak diubah.
+      Penjaga: `TestColorplateTidakDobel`, `TestSyaratClosingPerBrand`,
+      `TestAturanColorplate` (`test_closing_export_service.py`),
+      `test_routes_closing_exports.py`, `test_routes_brands.py`,
+      `test_migrate.py`, `tests/integration/test_migrasi_019_postgres.py`.
+      **Kontrak berubah** → [usulan kontrak](docs/usulan-kontrak-kirim-closing.md)
+      revisi 2, perlu dikirim ulang ke pemilik API. Migrasi 019 belum
+      dijalankan ke database mana pun selain skema uji di `sync_test`.
+      Sebelum deploy: bagian 4 & 10 di `todo_perbaikan.md`, lengkapi master
+      produk non-colorplate (tanpa itu kiriman terblokir). Frontend: sync-frontend
+      Fase 12 item 12.8.
 
 ## Fase 9 — Performa & error saat data besar (2026-10-23)
 

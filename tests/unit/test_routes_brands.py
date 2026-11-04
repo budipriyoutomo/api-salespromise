@@ -83,6 +83,15 @@ class TestCreateBrand:
         assert (data["code"], data["name"], data["is_active"], data["outlet_codes"]) == ("MHR", "Maharasa", True, [])
         assert app_db.query(Brand).one().code == "MHR"
 
+    def test_wajib_closing_default_true_dan_bisa_diset(self, client, admin_headers, app_db):
+        biasa = client.post("/api/brands", json={"code": "MHR", "name": "Maharasa"}, headers=admin_headers)
+        bebas = client.post(
+            "/api/brands", json={"code": "NOC", "name": "Tanpa Closing", "requires_closing": False}, headers=admin_headers
+        )
+
+        assert (biasa.json()["data"]["requires_closing"], bebas.json()["data"]["requires_closing"]) == (True, False)
+        assert {b.code: b.requires_closing for b in app_db.query(Brand)} == {"MHR": True, "NOC": False}
+
     def test_kode_sudah_ada_ditolak_termasuk_yang_nonaktif(self, client, admin_headers, make_brand):
         make_brand("MHR", is_active=False)
 
@@ -124,6 +133,23 @@ class TestUpdateBrand:
         data = response.json()["data"]
         assert (data["code"], data["name"], data["is_active"]) == ("MHR", "Maharasa Baru", False)
         assert data["updated_at"] is not None
+
+    def test_ubah_syarat_closing_saja(self, client, admin_headers, make_brand):
+        brand = make_brand("MHR", "Maharasa")
+
+        response = client.patch(f"/api/brands/{brand.id}", json={"requires_closing": False}, headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert (data["name"], data["is_active"], data["requires_closing"]) == ("Maharasa", True, False)
+
+    def test_syarat_closing_tidak_berubah_kalau_tidak_dikirim(self, client, admin_headers, make_brand):
+        brand = make_brand("MHR", "Maharasa")
+        client.patch(f"/api/brands/{brand.id}", json={"requires_closing": False}, headers=admin_headers)
+
+        response = client.patch(f"/api/brands/{brand.id}", json={"name": "Baru"}, headers=admin_headers)
+
+        assert response.json()["data"]["requires_closing"] is False
 
     def test_kode_tidak_bisa_diubah(self, client, admin_headers, make_brand):
         brand = make_brand("MHR")

@@ -62,7 +62,17 @@ def kirim_closing(
     return report_id
 
 
-def jual(db, transaction_id, product_id, qty, outlet="OUTLET_001", sale_date=HARI_INI, deleted=0, nama="Salmon HR"):
+def jual(
+    db,
+    transaction_id,
+    product_id,
+    qty,
+    outlet="OUTLET_001",
+    sale_date=HARI_INI,
+    deleted=0,
+    nama="Salmon HR",
+    product_group="FOOD",
+):
     db.add(make_sale_row(transaction_id=transaction_id, outlet_code=outlet, sale_date=sale_date, deleted=deleted))
     db.add(
         make_item_row(
@@ -71,7 +81,7 @@ def jual(db, transaction_id, product_id, qty, outlet="OUTLET_001", sale_date=HAR
             outlet_code=outlet,
             sale_date=sale_date,
             product_id=product_id,
-            product_group="FOOD",
+            product_group=product_group,
             product_name=nama,
             qty=qty,
         )
