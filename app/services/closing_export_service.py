@@ -51,7 +51,7 @@ from app.config import settings
 from app.core.time import utcnow
 from app.models.brand import Brand, OutletBrandMapping
 from app.models.closing_report import STATUS_KIRIM_SAMPAI, ClosingExportLog
-from app.models.product import Product, ProductPosMapping
+from app.models.product import Product
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
 from app.services import closing_export_client, closing_report_service, colorplate_publish_service
@@ -285,21 +285,6 @@ def _penjualan_per_group(db, pasangan: set) -> list:
     return [r for r in rows if (r.outlet_code, r.sale_date) in pasangan]
 
 
-def _master_per_pos(db, outlets) -> dict:
-    """(outlet, ProductID POS) → Product, hanya mapping & produk aktif."""
-    rows = (
-        db.query(ProductPosMapping.outlet_code, ProductPosMapping.pos_product_id, Product)
-        .join(Product, Product.id == ProductPosMapping.product_id)
-        .filter(
-            ProductPosMapping.outlet_code.in_(sorted(set(outlets))),
-            ProductPosMapping.is_active.is_(True),
-            Product.is_active.is_(True),
-        )
-        .all()
-    )
-    return {(o, pid): produk for o, pid, produk in rows}
-
-
 def _outlet_tanpa_syarat_closing(db, outlets=None) -> set:
     """Outlet yang brand-nya `requires_closing = FALSE`. Outlet tanpa brand tidak termasuk."""
     query = (
@@ -348,7 +333,8 @@ def susun_rekap(db, outlet=None, start_date=None, end_date=None) -> list[RekapPa
         return []
 
     aturan = colorplate_publish_service.aturan_colorplate(db)
-    master = _master_per_pos(db, {o for o, _ in pasangan})
+    # Sumber yang sama dengan tab Perbandingan.
+    master = closing_report_service._master_per_pos(db, {o for o, _ in pasangan})
     rekap = {
         k: RekapPasangan(k[0], k[1], menu_per_pasangan.get(k, []), blokir=periksa_blokir(menu_per_pasangan.get(k, [])))
         for k in pasangan

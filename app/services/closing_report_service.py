@@ -43,10 +43,11 @@ from app.models.closing_report import (
     ClosingReportItem,
     ClosingReportRevision,
 )
+from app.models.product import Product, ProductPosMapping
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
 from app.schemas.closing_report_event import ClosingReportSubmitted
-from app.services import closing_menu_service, product_menu_service
+from app.services import closing_menu_service, colorplate_publish_service, product_menu_service
 from app.services.sales_service import SalesService, item_join
 
 # Dua consumer bisa menyimpan laporan / menu yang sama bersamaan; yang kalah
@@ -325,6 +326,11 @@ class ProdukPerbandingan:
     multiplier: int
     # Dipetakan ke salah satu menu colorplate (mapping aktif).
     is_mapped: bool
+    # Hanya diisi untuk baris tanpa menu — aturan yang sama dengan kirim rekap:
+    # produk colorplate tidak dikirim; produk lain dikirim lewat master `products`
+    # (mapping ProductID POS outlet itu, keduanya aktif). None = belum ada di master.
+    is_colorplate: bool = False
+    master: Product | None = None
 
 
 @dataclass
@@ -454,9 +460,13 @@ def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_de
 
     # Produk yang qty POS-nya belum tampil di baris menu mana pun.
     tampil = {(b.outlet_code, b.production_date, p.product_id) for b in hasil for p in b.products}
-    for (o, d, product_id), qty in pos.items():
-        if (o, d, product_id) in tampil or not qty:
-            continue
+    sisa = [(k, qty) for k, qty in pos.items() if k not in tampil and qty]
+    aturan = colorplate_publish_service.aturan_colorplate(db) if sisa else None
+    master = _master_per_pos(db, {o for (o, _, _), _ in sisa}) if sisa else {}
+    for (o, d, product_id), qty in sisa:
+        produk = info_produk(product_id, 1)
+        produk.is_colorplate = aturan.termasuk(product_id, produk.product_group)
+        produk.master = master.get((o, product_id))
         hasil.append(
             BarisPerbandingan(
                 outlet_code=o,
@@ -469,7 +479,7 @@ def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_de
                 adjustment=None,
                 compensation=None,
                 # Pengali milik pasangan menu–produk; tanpa menu tidak ada yang berlaku.
-                products=[info_produk(product_id, 1)],
+                products=[produk],
                 pos_qty=qty,
             )
         )
@@ -483,6 +493,21 @@ def compare_with_pos(db, outlet=None, start_date=None, end_date=None, include_de
 
     hasil.sort(key=urutan)
     return hasil
+
+
+def _master_per_pos(db, outlets) -> dict:
+    """(outlet, ProductID POS) → Product master; hanya mapping & produk aktif."""
+    rows = (
+        db.query(ProductPosMapping.outlet_code, ProductPosMapping.pos_product_id, Product)
+        .join(Product, Product.id == ProductPosMapping.product_id)
+        .filter(
+            ProductPosMapping.outlet_code.in_(sorted(set(outlets))),
+            ProductPosMapping.is_active.is_(True),
+            Product.is_active.is_(True),
+        )
+        .all()
+    )
+    return {(o, pid): produk for o, pid, produk in rows}
 
 
 def _penjualan_pos(db, pasangan, include_deleted) -> tuple[dict, dict]:

@@ -163,6 +163,19 @@ class ClosingReportDetailResponse(BaseModel):
     data: ClosingReportDetail
 
 
+class ClosingComparisonMaster(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    # Tampil sebagai "ProductID" di /produk.
+    code: str
+    # Wajib untuk dikirim ke API; kosong = produk lama sebelum migrasi 015.
+    product_code: Optional[str] = None
+    name: str
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+
+
 class ClosingComparisonProduct(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -173,6 +186,11 @@ class ClosingComparisonProduct(BaseModel):
     multiplier: int
     # Dipetakan ke salah satu menu colorplate.
     is_mapped: bool
+    # Hanya untuk baris tanpa menu: produk colorplate (tidak dikirim ke API).
+    is_colorplate: bool = False
+    # Hanya untuk baris tanpa menu: produk master /produk lewat ProductID POS
+    # outlet ini; kosong = belum ada di master (kirim rekap terblokir).
+    master: Optional[ClosingComparisonMaster] = None
 
 
 class ClosingComparisonRow(BaseModel):

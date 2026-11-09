@@ -559,7 +559,16 @@ class TestPerbandingan:
         # qty mentah orderdetail, tanpa pengali.
         assert baris["pos_qty"] == 4
         assert baris["products"] == [
-            {"product_id": 200104, "product_name": "Salmon HR", "product_group": "FOOD", "multiplier": 2, "is_mapped": True}
+            {
+                "product_id": 200104,
+                "product_name": "Salmon HR",
+                "product_group": "FOOD",
+                "multiplier": 2,
+                "is_mapped": True,
+                # Hanya diisi untuk baris tanpa menu.
+                "is_colorplate": False,
+                "master": None,
+            }
         ]
         assert "selisih" not in baris and "status" not in baris
 
@@ -599,6 +608,31 @@ class TestPerbandingan:
         assert (baris["menu_code"], baris["sold"], baris["adjustment"]) == ("SU-001", 5, 1)
         assert (baris["products"], baris["pos_qty"], baris["not_in_pos"]) == ([], None, False)
 
+    def test_baris_tanpa_menu_membawa_master_produk(self, client, app_db, admin_headers):
+        from app.models.product import Product, ProductPosMapping
+
+        kirim_closing(app_db)
+        produk = Product(code="M-OCHA", product_code="PRD-OCHA", name="Ocha Master", category="Minuman", price=0)
+        app_db.add(produk)
+        app_db.flush()
+        app_db.add(ProductPosMapping(product_id=produk.id, outlet_code="OUTLET_001", pos_product_id=300))
+        app_db.commit()
+        jual(app_db, 1, 300, 2, nama="Ocha", product_group="DRINK")
+        jual(app_db, 2, 301, 1, nama="Air", product_group="DRINK")
+
+        tanpa_menu = {b["products"][0]["product_id"]: b["products"][0] for b in self._baris(client, admin_headers) if b["menu_id"] is None}
+
+        assert tanpa_menu[300]["master"] == {
+            "id": produk.id,
+            "code": "M-OCHA",
+            "product_code": "PRD-OCHA",
+            "name": "Ocha Master",
+            "category": "Minuman",
+            "subcategory": None,
+        }
+        assert tanpa_menu[300]["is_colorplate"] is False
+        assert tanpa_menu[301]["master"] is None
+
     def test_menu_tidak_ada_di_pos_ditandai(self, client, app_db, admin_headers):
         kirim_closing(app_db, items=[item(sold=5)])
         tandai_tidak_ada_di_pos(app_db, "SU-001")
@@ -636,7 +670,7 @@ class TestPerbandingan:
         assert (hanya_pos["menu_name"], hanya_pos["sold"], hanya_pos["waste"]) == (None, None, None)
         assert (hanya_pos["adjustment"], hanya_pos["compensation"], hanya_pos["pos_qty"]) == (None, None, 4)
         assert hanya_pos["products"] == [
-            {"product_id": 200104, "product_name": "Salmon HR", "product_group": "FOOD", "multiplier": 1, "is_mapped": True}
+            {"product_id": 200104, "product_name": "Salmon HR", "product_group": "FOOD", "multiplier": 1, "is_mapped": True, "is_colorplate": False, "master": None}
         ]
         # Penjualan OUTLET_001 tidak bocor ke baris OUTLET_009.
         assert self._menu(client, admin_headers, outlet="OUTLET_009")["pos_qty"] == 0
@@ -673,7 +707,7 @@ class TestPerbandingan:
         assert [b["products"][0]["product_name"] for b in (air, teh)] == ["AIR MINERAL", "ES TEH"]
         assert (teh["menu_id"], teh["sold"], teh["pos_qty"]) == (None, None, 9)
         assert teh["products"] == [
-            {"product_id": 777777, "product_name": "ES TEH", "product_group": "FOOD", "multiplier": 1, "is_mapped": False}
+            {"product_id": 777777, "product_name": "ES TEH", "product_group": "FOOD", "multiplier": 1, "is_mapped": False, "is_colorplate": False, "master": None}
         ]
 
     def test_transaksi_pos_outlet_atau_tanggal_tanpa_colorplate_tidak_ikut(self, client, app_db, admin_headers):

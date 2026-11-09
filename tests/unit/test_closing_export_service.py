@@ -744,6 +744,34 @@ class TestColorplateTidakDobel:
 
         assert sorted(b.products[0].product_id for b in baris if b.menu_id is None) == [300, 500, 700]
 
+    def test_compare_with_pos_baris_tanpa_menu_membawa_master_dan_colorplate(self, db_session):
+        """Aturan yang sama dengan kirim rekap: colorplate dilewati, lainnya lewat master."""
+        contoh_dokumen(db_session)
+        jual(db_session, 4, 900, 1, nama="Air Mineral", product_group="DRINK")
+        master(db_session, "M-OCHA", "Ocha Master", (OUTLET, 300))
+        # Mapping outlet lain tidak berlaku untuk outlet ini.
+        master(db_session, "M-AIR", "Air Master", ("OUTLET_LAIN", 900))
+
+        baris = closing_report_service.compare_with_pos(db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI)
+
+        produk = {b.products[0].product_id: b.products[0] for b in baris if b.menu_id is None}
+        assert produk[300].master.code == "M-OCHA"
+        assert produk[300].master.name == "Ocha Master"
+        assert not produk[300].is_colorplate
+        assert produk[900].master is None
+        assert not produk[900].is_colorplate
+        assert produk[500].is_colorplate and produk[700].is_colorplate
+
+    def test_compare_with_pos_master_nonaktif_tidak_dipakai(self, db_session):
+        contoh_dokumen(db_session)
+        master(db_session, "M-OCHA", "Ocha Master", (OUTLET, 300)).is_active = False
+        db_session.commit()
+
+        baris = closing_report_service.compare_with_pos(db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI)
+
+        (ocha,) = [b.products[0] for b in baris if b.menu_id is None and b.products[0].product_id == 300]
+        assert ocha.master is None
+
 
 class TestAturanColorplate:
     """Satu aturan dipakai publish colorplate dan kirim rekap closing."""
