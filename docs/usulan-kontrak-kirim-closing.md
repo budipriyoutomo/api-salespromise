@@ -1,29 +1,30 @@
 # Usulan kontrak: rekap closing harian dari sync-api Maharasa
 
 Halo tim, kami (sync-api Maharasa) akan mengirim rekap closing harian per
-outlet ke API Anda. Belum ada kontrak, jadi di bawah ini usulan kami. Mohon
-dikoreksi bagian yang tidak cocok dengan sistem Anda, lalu jawab pertanyaan di
-bagian 7.
+outlet ke API Anda. Di bawah ini kontraknya. Mohon dikoreksi bagian yang tidak
+cocok dengan sistem Anda.
 
-**Revisi 2 (4 November 2026).** Ada perubahan field dari usulan sebelumnya,
-dirangkum di bagian 6. Kalau Anda sudah mulai membangun penerima dari versi
-sebelumnya, mohon cek bagian itu dulu.
+**Revisi 3 (12 November 2026).** Menindaklanjuti balasan tim ERP Gateway
+tanggal 10 November 2026. Ada tambahan data penjualan (`sales`, `prices`), item
+colorplate per warna, dan pembedaan dua alasan `409`. Perubahannya dirangkum di
+bagian 6.
 
 ## 1. Gambaran
 
-- Satu request = **satu outlet pada satu tanggal produksi**, berisi semua menu
-  hari itu.
+- Satu request = **satu outlet pada satu tanggal produksi**.
 - Dikirim **manual** oleh admin kami, biasanya setelah closing outlet masuk.
 - Data yang sama bisa dikirim lagi kalau closing di outlet itu direvisi.
-  Kiriman yang lebih baru **menggantikan seluruh isi** kiriman sebelumnya untuk
-  outlet dan tanggal itu (bukan ditambahkan).
+  Kiriman dengan `sequence` lebih besar **menggantikan seluruh isi** kiriman
+  sebelumnya untuk outlet dan tanggal itu (bukan ditambahkan).
 - Sebagian brand tidak memakai laporan closing. Untuk outlet brand itu, satu
-  kiriman bisa berisi **hanya item `pos_only`**, tanpa item `closing`.
+  kiriman bisa berisi **tanpa item `closing`**.
+- Penjualan outlet-outlet ini **hanya** dikirim ke ERP lewat jalur ini. POS
+  tidak mengirim penjualan langsung ke ERP (ESB).
 
 ## 2. Request
 
 ```
-POST {BASE_URL}/closing-totals
+POST {BASE_URL}/api/v1/closing-totals
 Authorization: Bearer <token dari Anda>
 Content-Type: application/json
 Idempotency-Key: <sama dengan messageId>
@@ -33,9 +34,30 @@ Idempotency-Key: <sama dengan messageId>
 {
   "messageId": "6f1c2a7e-3b4d-4e8f-9a10-2b3c4d5e6f70",
   "sentAt": "2026-10-13T03:00:00Z",
-  "sequence": 2,
+  "sequence": 3,
   "outlet": { "code": "STTSM" },
   "productionDate": "2026-10-12",
+  "sales": [
+    {
+      "visitPurposeName": "DINE IN",
+      "paxTotal": 4,
+      "flagInclusive": 0,
+      "subtotal": 125000,
+      "discountTotal": 0,
+      "menuDiscountTotal": 0,
+      "promotionDiscount": 0,
+      "otherTaxTotal": 9375,
+      "vatTotal": 13437.5,
+      "otherVatTotal": 0,
+      "deliveryFee": 0,
+      "orderFee": 0,
+      "voucherTotal": 0,
+      "roundingTotal": 0,
+      "grandTotal": 147812.5,
+      "paymentTotal": 147812.5,
+      "payments": []
+    }
+  ],
   "items": [
     {
       "source": "closing",
@@ -50,51 +72,164 @@ Idempotency-Key: <sama dengan messageId>
       "totalSold": 13,
       "waste": 1,
       "adjustment": -1,
-      "compensation": 0
+      "compensation": 0,
+      "prices": [
+        {
+          "visitPurposeName": "DINE IN",
+          "qty": 3,
+          "originalPrice": 15000,
+          "price": 15000,
+          "discount": 0,
+          "discountValue": 0,
+          "otherTax": 7.5,
+          "otherTaxValue": 3375,
+          "vat": 10,
+          "vatValue": 4837.5,
+          "otherVat": 0,
+          "otherVatValue": 0,
+          "otherTaxOnVat": 0,
+          "total": 53212.5
+        }
+      ]
     },
     {
-      "source": "pos_only",
+      "source": "colorplate",
       "menuId": null,
       "menuCode": null,
       "menuName": null,
-      "productId": "456",
-      "productCode": "DRK-OCHA-01",
-      "productName": "Ocha Dingin",
+      "productId": "789",
+      "productCode": "CP-YELLOW",
+      "productName": "Colorplate Yellow",
       "colorplateSold": 0,
-      "posQty": 2,
-      "totalSold": 2,
+      "posQty": 4,
+      "totalSold": 4,
       "waste": 0,
       "adjustment": 0,
-      "compensation": 0
+      "compensation": 0,
+      "prices": [
+        {
+          "visitPurposeName": "DINE IN",
+          "qty": 4,
+          "originalPrice": 20000,
+          "price": 20000,
+          "discount": 0,
+          "discountValue": 0,
+          "otherTax": 7.5,
+          "otherTaxValue": 6000,
+          "vat": 10,
+          "vatValue": 8600,
+          "otherVat": 0,
+          "otherVatValue": 0,
+          "otherTaxOnVat": 0,
+          "total": 94600
+        }
+      ]
     }
   ]
 }
 ```
 
+### 2.1 Field tingkat kiriman
+
 | Field | Arti |
 |---|---|
-| `messageId` | Unik per kiriman. **Sama** kalau kami mengulang kiriman yang sama karena timeout/5xx — mohon diperlakukan sebagai duplikat. |
-| `sentAt` | Waktu kirim, UTC. |
-| `sequence` | Naik 1 setiap kali outlet + tanggal yang sama dikirim lagi dengan isi baru. Kiriman dengan `sequence` lebih kecil dari yang sudah Anda terima sebaiknya ditolak (409). |
+| `messageId` | Unik per kiriman. **Sama** kalau kami mengulang kiriman yang sama karena timeout/5xx. |
+| `sentAt` | Waktu kiriman dibuat, UTC. **Tidak berubah** saat kiriman yang sama diulang. |
+| `sequence` | Naik setiap kali outlet + tanggal yang sama dikirim lagi dengan isi baru. **Boleh loncat** (mis. 3 lalu 5). Yang dijamin hanya: kiriman yang lebih baru punya `sequence` lebih besar. |
 | `outlet.code` | Kode outlet POS, mis. `STTSM`. |
-| `productionDate` | Tanggal produksi (bukan tanggal kirim), `YYYY-MM-DD`. |
-| `items[].source` | `closing` = menu dari laporan closing. `pos_only` = produk lain yang terjual di POS (minuman, side dish, dll.) dan tidak termasuk menu closing. |
-| `menuId` / `menuCode` / `menuName` | Identitas menu closing. `menuId` (UUID) adalah kunci yang stabil; `menuCode` bisa berubah atau kosong. Kosong untuk `pos_only`. |
-| `productId` | **String.** Kode produk di master produk Maharasa. Stabil dan unik di semua outlet. Hanya diisi untuk `pos_only`. |
-| `productCode` | Kode produk (SKU) dari master produk Maharasa. Hanya diisi untuk `pos_only`, dan selalu terisi untuk item itu. |
-| `productName` | Nama produk dari master produk Maharasa, bukan nama di POS. Hanya diisi untuk `pos_only`. |
-| `colorplateSold` | Jumlah terjual menurut laporan closing. `0` untuk `pos_only`. |
-| `posQty` | Jumlah terjual menurut POS untuk outlet & tanggal yang sama. Transaksi void tidak dihitung. `0` juga untuk menu closing yang memang tidak dijual di POS. |
+| `productionDate` | Tanggal produksi (bukan tanggal kirim), `YYYY-MM-DD`. Tanggal bisnis outlet seperti yang dicatat POS dan laporan closing, bukan hasil konversi dari UTC. |
+
+### 2.2 `sales`: penjualan per tujuan kunjungan
+
+Penjualan POS satu outlet + tanggal **dipecah per tujuan kunjungan**
+(`visitPurposeName`). Satu elemen `sales` = satu transaksi penjualan di ERP.
+
+- Satu `visitPurposeName` muncul paling banyak sekali.
+- Field mengikuti usulan Anda. Field yang tidak relevan diisi `0` atau `""`,
+  tidak dihilangkan.
+- `otherTaxTotal` adalah service charge, `vatTotal` adalah PPN.
+- `orderFee` sementara berisi pendapatan lain dari POS (`OtherIncome`), sampai
+  ada kesepakatan field yang tepat.
+- `grandTotal` = `subtotal − discountTotal + otherTaxTotal + vatTotal +
+  orderFee`. Harga POS kami belum termasuk service charge dan PPN, jadi
+  `flagInclusive` selalu `0`.
+- `payments` ada di dalam tiap elemen `sales`. **Untuk sementara selalu `[]`**,
+  karena data pembayaran belum ditarik dari POS (lihat bagian 6). `paymentTotal`
+  tetap diisi sama dengan `grandTotal`.
+- `sales` boleh `[]` kalau tidak ada penjualan POS sama sekali pada outlet +
+  tanggal itu (mis. hanya ada waste).
+
+Pemetaan tujuan kunjungan dari POS:
+
+| Kode POS (`SaleMode`) | `visitPurposeName` |
+|---|---|
+| 1 | ⚠ *menyusul* |
+| 2 | ⚠ *menyusul* |
+| 6 | ⚠ *menyusul* |
+| 8 | ⚠ *menyusul* |
+
+### 2.3 `items`
+
+| Field | Arti |
+|---|---|
+| `source` | `closing` = menu dari laporan closing. `colorplate` = penjualan piring warna di POS, satu item per warna. `pos_only` = produk lain yang terjual di POS (minuman, side dish, dll.). |
+| `menuId` / `menuCode` / `menuName` | Identitas menu closing. `menuId` (UUID) adalah kunci yang stabil. Kosong selain untuk `closing`. |
+| `productId` | **String.** Kode produk di master produk Maharasa. Diisi untuk `colorplate` dan `pos_only`. |
+| `productCode` | Kode produk (SKU) dari master produk. Diisi untuk `colorplate` dan `pos_only`, dan menjadi kuncinya. |
+| `productName` | Nama produk dari master produk, bukan nama di POS. |
+| `colorplateSold` | Jumlah menu terjual lewat colorplate menurut laporan closing. Hanya untuk `closing`, selain itu `0`. |
+| `posQty` | Jumlah terjual menurut POS. Transaksi void tidak dihitung. |
 | `totalSold` | `colorplateSold + posQty`. |
-| `waste` / `adjustment` / `compensation` | Dari laporan closing. `adjustment` bisa negatif; untuk `pos_only` selalu 0. |
+| `waste` / `adjustment` / `compensation` | Dari laporan closing. `adjustment` bisa negatif. Untuk `colorplate` dan `pos_only` selalu `0`. |
+| `prices` | Rincian harga penjualan (bagian 2.4). |
 
-Beberapa hal yang dijamin di sisi kami:
+`menuId` unik per kiriman. `productCode` juga unik per kiriman: kalau beberapa
+produk POS mengarah ke produk master yang sama, qty-nya dijumlah.
 
-- **Tidak ada penjualan yang terhitung dua kali.** Penjualan colorplate
-  (piring warna) sudah ada di `colorplateSold` menu closing, jadi produk
-  colorplate di POS tidak dikirim lagi sebagai `pos_only`.
-- Satu produk master muncul **paling banyak sekali** per kiriman. Kalau beberapa
-  produk POS mengarah ke produk master yang sama, `posQty`-nya dijumlah.
+### 2.4 `prices` dan cara menghindari penjualan dobel
+
+Penjualan colorplate dicatat dua kali di sumber kami: sebagai **jumlah menu**
+di laporan closing (`colorplateSold`), dan sebagai **piring per warna** di POS.
+Harga yang berlaku adalah **harga piring**, jadi pendapatannya dikirim lewat
+item `colorplate`. Akibatnya:
+
+- **`prices` hanya menghitung qty yang benar-benar dibayar di POS**, bukan
+  `totalSold`:
+
+  | `source` | Jumlah `prices[].qty` sama dengan |
+  |---|---|
+  | `closing` | `posQty` (porsi `colorplateSold` tidak punya harga sendiri) |
+  | `colorplate` | `totalSold` |
+  | `pos_only` | `totalSold` |
+
+  Kalau jumlahnya `0`, `prices` berisi `[]`.
+- **Untuk penjualan ERP, mohon pakai `prices`, bukan `totalSold`.** `totalSold`
+  menu closing tetap dikirim untuk item journal (pemakaian bahan), dan sudah
+  termasuk porsi yang pendapatannya ada di item `colorplate`.
+- Tiap elemen `prices` menyebut `visitPurposeName`-nya. Satu item bisa punya
+  beberapa elemen kalau terjual di beberapa tujuan kunjungan atau dengan
+  beberapa harga.
+
+Yang kami jamin, per `visitPurposeName`:
+
+- Jumlah `prices[].total` dari semua item = `sales[].grandTotal −
+  sales[].orderFee`.
+- Jumlah `prices[].qty × prices[].price` = `subtotal`.
+- Jumlah `prices[].vatValue` = `vatTotal`, jumlah `otherTaxValue` =
+  `otherTaxTotal`, jumlah `discountValue` = `discountTotal`.
+
+POS kami mencatat pajak dan diskon per transaksi, bukan per baris. Nilai per
+item (`discountValue`, `otherTaxValue`, `vatValue`) kami bagi secara
+proporsional dari nilai transaksi. Selisih pembulatan ditaruh di baris dengan
+nilai terbesar, supaya jumlahnya tetap sama persis dengan `sales`.
+
+### 2.5 Angka
+
+- Nominal dalam rupiah, sesuai POS.
+- Qty dan nominal **paling banyak 2 digit desimal**.
+
+### 2.6 Jaminan lain
+
 - Kami tidak mengirim rekap yang belum lengkap. Kalau ada produk yang belum
   punya master atau mapping yang belum beres, kiriman ditahan di sisi kami
   sampai admin memperbaikinya.
@@ -103,52 +238,39 @@ Beberapa hal yang dijamin di sisi kami:
 
 | Status | Arti | Yang kami lakukan |
 |---|---|---|
-| `200` / `201` | Diterima. Body bebas; kalau ada ID dari sisi Anda, kami simpan. | Tandai terkirim. |
-| `409` | `messageId` sudah pernah diterima, atau `sequence` lebih lama. | Tandai terkirim (duplikat) / tampilkan ke admin. |
-| `400` / `422` | Payload tidak valid. Mohon sertakan field yang salah di body. | Tandai gagal, tidak diulang otomatis. |
+| `200` / `201` | Diterima. Kalau ada ID dari sisi Anda di body, kami simpan. | Tandai terkirim. |
+| `409` `duplicate_message` | `messageId` sudah pernah diterima. | Tandai terkirim (duplikat). |
+| `409` `stale_sequence` | Anda sudah memegang versi yang lebih baru, kiriman tidak disimpan. | Tandai **ditolak** di layar admin, tidak diulang. Kiriman berikutnya untuk outlet + tanggal itu memakai `sequence` di atas `currentSequence` dari body Anda. |
+| `400` / `422` | Payload tidak valid, `Idempotency-Key` ≠ `messageId`, atau `messageId` yang sudah dikenal datang dengan body berbeda. Mohon sertakan alasannya di body. | Tandai gagal, tidak diulang otomatis. |
 | `401` / `403` | Token salah atau tidak berhak. | Tandai gagal, tidak diulang. |
-| `429` / `5xx` / timeout | Sementara. Kalau ada `Retry-After`, kami ikuti. | Diulang otomatis beberapa kali dengan `messageId` yang sama. |
+| `429` / `5xx` / timeout | Sementara. Kalau ada `Retry-After`, kami ikuti. | Diulang otomatis beberapa kali dengan `messageId` dan body yang sama. |
+
+`409` tanpa `reason` kami perlakukan sebagai `duplicate_message`.
 
 ## 4. Volume
 
-Satu request per outlet per hari, sesekali lebih kalau ada revisi. Jumlah item
-per request mengikuti jumlah menu outlet ditambah produk `pos_only` —
-perkiraan puluhan, jarang lebih dari 200.
+Satu request per outlet per hari, sesekali lebih kalau ada revisi. Item per
+request perkiraan puluhan, jarang lebih dari 200. Dengan `prices`, body
+diperkirakan tetap jauh di bawah 512 KB.
 
 ## 5. Keamanan
 
-Kami simpan token di environment server, tidak di kode. Kalau Anda lebih memilih
-API key di header lain, HMAC, atau daftar IP yang diizinkan, mohon sebutkan.
+Token kami simpan di environment server, tidak di kode.
 
-## 6. Perubahan dari usulan sebelumnya
+## 6. Perubahan dari revisi 2
 
-| Field | Sebelumnya | Sekarang |
+| Bagian | Revisi 2 | Revisi 3 |
 |---|---|---|
-| `productId` | Angka, ProductID dari POS (bisa berbeda antar-outlet) | **String**, kode master produk Maharasa |
-| `productCode` | Tidak ada | **Baru.** Kode produk (SKU) dari master produk |
-| `productName` | Nama dari POS | Nama dari master produk |
-| Isi `pos_only` | Semua produk POS di luar menu closing, termasuk colorplate | Hanya produk non-colorplate |
-| Kiriman tanpa item `closing` | Tidak pernah terjadi | Bisa, untuk brand yang tidak memakai laporan closing |
+| URL | `{BASE_URL}/closing-totals` | `{BASE_URL}/api/v1/closing-totals` |
+| `sales` | Tidak ada | **Baru.** Array, satu elemen per `visitPurposeName` |
+| `payments` | Tidak ada | **Baru**, di dalam tiap elemen `sales`. Sementara selalu `[]` |
+| `items[].prices` | Tidak ada | **Baru.** Jumlah qty mengikuti `posQty`/`totalSold` (bagian 2.4) |
+| Penjualan colorplate | Hanya `colorplateSold` di menu closing | Ditambah item `source: "colorplate"` per warna, membawa harga piring |
+| `409` | Satu arti | Dibedakan `duplicate_message` dan `stale_sequence` |
+| `sentAt` | "Waktu kirim" | Waktu kiriman dibuat, tidak berubah saat diulang |
+| `sequence` | "Naik 1" | Naik, boleh loncat |
 
-Akibatnya, `totalSold` dari kiriman lama bisa lebih besar daripada kiriman
-baru untuk outlet + tanggal yang sama, karena penjualan colorplate dulu
-terhitung dua kali. Kalau Anda sudah menyimpan kiriman lama, kami bisa mengirim
-ulang tanggal-tanggal itu dengan `sequence` baru.
-
-## 7. Pertanyaan
-
-1. **URL** staging dan produksi, serta cara kami mendapatkan token.
-2. **Ganti penuh per outlet + tanggal** (bagian 1) — cocok dengan sistem Anda?
-   Atau Anda butuh per menu?
-3. **`posQty` bisa desimal** kalau POS mencatat qty pecahan. Apakah API Anda
-   menerima desimal, atau harus bilangan bulat?
-4. **Kode outlet** — apakah sistem Anda memakai kode outlet POS yang sama
-   (mis. `STTSM`, termasuk huruf besar/kecil)?
-5. **Identitas produk `pos_only`** — mana yang Anda pakai sebagai kunci:
-   `productId` (kode master kami) atau `productCode` (SKU)? Apakah sistem Anda
-   sudah punya daftar kode yang sama, atau perlu kami kirimkan daftar master
-   produknya? Dan apakah kiriman yang hanya berisi `pos_only` (bagian 1) bisa
-   diterima?
-6. **Batas** ukuran body, rate limit, dan timeout di sisi Anda.
-7. Apakah ada **endpoint untuk mengecek** apa yang sudah Anda terima untuk
-   outlet + tanggal tertentu? Berguna untuk rekonsiliasi.
+**Pembayaran.** Data pembayaran (metode bayar, nominal per metode) tersimpan di
+tabel POS yang belum ditarik oleh agen sinkronisasi kami. Kami akan
+menambahkannya. Sampai saat itu `payments` dikirim `[]`; begitu tersedia,
+kiriman ulang dengan `sequence` baru akan membawa `payments` yang terisi.

@@ -5,17 +5,22 @@ perbaikan rekap: todo_perbaikan.md.
 
 Satu kiriman = satu outlet × satu tanggal produksi. Void tidak pernah dihitung.
 
-    closing   satu item per menu closing (dari `compare_with_pos`):
-              colorplateSold = sold, posQty = qty POS mentah (tanpa pengali)
-    pos_only  produk POS NON-colorplate yang tidak dipetakan ke menu closing,
-              memakai identitas master `products` (code, product_code, name).
-              Beberapa ProductID POS ke satu master dijumlah. colorplateSold = 0.
+    closing     satu item per menu closing (dari `compare_with_pos`):
+                colorplateSold = sold, posQty = qty POS mentah (tanpa pengali)
+    colorplate  produk colorplate POS (piring per warna), memakai identitas
+                master `products`. Membawa harga piring; colorplateSold = 0.
+    pos_only    produk POS NON-colorplate yang tidak dipetakan ke menu closing,
+                memakai identitas master `products` (code, product_code, name).
+    Beberapa ProductID POS ke satu master dijumlah.
     totalSold = colorplateSold + posQty; waste / adjustment / compensation
-                dari colorplate saja. Angka kosong = 0.
+                dari closing saja. Angka kosong = 0.
 
 Produk colorplate — group COLORPLATE aktif, atau ProductID yang punya konversi
-warna aktif (`colorplate_publish_service.aturan_colorplate`) — TIDAK dikirim
-sebagai item: penjualannya sudah terwakili `sold` menu closing.
+warna aktif (`colorplate_publish_service.aturan_colorplate`). Qty-nya sudah
+terwakili `sold` menu closing, jadi item `colorplate` hanya membawa pendapatan
+piring: `prices` menu closing hanya menutup `posQty`.
+
+`sales` (per SaleMode) dan `items[].prices`: lihat `closing_export_penjualan`.
 
 Outlet yang brand-nya `requires_closing = FALSE` (migrasi 019) boleh dikirim
 tanpa closing report: isinya hanya item `pos_only`. Outlet tanpa brand tetap
@@ -25,11 +30,15 @@ Diblokir kalau:
 - menu closing belum dipetakan (kecuali ditandai "tidak ada di POS", migrasi 018);
 - ProductID dipetakan ke lebih dari satu menu di outlet + tanggal itu;
 - produk colorplate dipetakan ke menu closing (qty-nya akan terhitung dobel);
-- produk non-colorplate belum punya master aktif dengan product_code;
+- produk POS (termasuk colorplate) belum punya master aktif dengan product_code;
 - tanpa closing, tetapi produk colorplate terjual (`sold`-nya belum ada).
 
 `compare_with_pos` tidak diubah: tampilan perbandingan `/closing` tetap
 melihat data POS apa adanya.
+
+409 stale_sequence (API tujuan memegang versi lebih baru) dicatat `gagal`
+dan tidak bisa diulang; kiriman baru berikutnya memakai sequence di atas
+`currentSequence` yang dilaporkan API tujuan.
 
 Log dicatat `mengirim` sebelum request berangkat, supaya `message_id` sudah
 tersimpan kalau proses mati di tengah jalan. `mengirim` yang dimulai lebih dari
@@ -54,7 +63,12 @@ from app.models.closing_report import STATUS_KIRIM_SAMPAI, ClosingExportLog
 from app.models.product import Product
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
-from app.services import closing_export_client, closing_report_service, colorplate_publish_service
+from app.services import (
+    closing_export_client,
+    closing_export_penjualan,
+    closing_report_service,
+    colorplate_publish_service,
+)
 from app.services.sales_service import SalesService, item_join
 
 DEFAULT_LIMIT = 50
@@ -116,7 +130,7 @@ class Blokir:
     produk_dobel: list[ProdukDobel] = field(default_factory=list)
     # Produk colorplate / berkonversi dipetakan ke menu: qty-nya sudah ada di `sold`.
     produk_colorplate_dipetakan: list[ProdukDobel] = field(default_factory=list)
-    # Produk non-colorplate tanpa mapping aktif ke master `products` yang punya product_code.
+    # Produk POS tanpa mapping aktif ke master `products` yang punya product_code.
     produk_belum_master: list[ProdukPos] = field(default_factory=list)
     # Kirim tanpa closing, tetapi produk colorplate terjual: `sold`-nya belum ada.
     colorplate_tanpa_closing: list[ProdukPos] = field(default_factory=list)
@@ -171,7 +185,7 @@ def _angka(nilai):
     return nilai
 
 
-def _item_menu(baris) -> dict:
+def _item_menu(baris, prices=()) -> dict:
     colorplate = _angka(baris.sold)
     pos = _angka(baris.pos_qty)
     return {
@@ -188,13 +202,14 @@ def _item_menu(baris) -> dict:
         "waste": _angka(baris.waste),
         "adjustment": _angka(baris.adjustment),
         "compensation": _angka(baris.compensation),
+        "prices": list(prices),
     }
 
 
-def _item_produk(produk: Product, qty) -> dict:
+def _item_produk(produk: Product, qty, prices=(), source="pos_only") -> dict:
     pos = _angka(qty)
     return {
-        "source": "pos_only",
+        "source": source,
         "menuId": None,
         "menuCode": None,
         "menuName": None,
@@ -207,6 +222,7 @@ def _item_produk(produk: Product, qty) -> dict:
         "waste": 0,
         "adjustment": 0,
         "compensation": 0,
+        "prices": list(prices),
     }
 
 
@@ -218,15 +234,22 @@ class RekapPasangan:
     baris_menu: list = field(default_factory=list)
     # Item `pos_only` yang sudah disusun (per master produk).
     items_produk: list = field(default_factory=list)
+    # Item `colorplate` yang sudah disusun (per master produk).
+    items_colorplate: list = field(default_factory=list)
+    # menu_id → `prices` menu closing.
+    harga_menu: dict = field(default_factory=dict)
+    sales: list = field(default_factory=list)
     blokir: Blokir = field(default_factory=Blokir)
 
 
 def susun_isi(rekap: RekapPasangan) -> dict:
     """Bagian payload yang di-hash — tanpa messageId / sentAt / sequence."""
+    menu = [_item_menu(b, rekap.harga_menu.get(b.menu_id, [])) for b in rekap.baris_menu]
     return {
         "outlet": {"code": rekap.outlet_code},
         "productionDate": rekap.production_date.isoformat(),
-        "items": [_item_menu(b) for b in rekap.baris_menu] + rekap.items_produk,
+        "sales": rekap.sales,
+        "items": menu + rekap.items_colorplate + rekap.items_produk,
     }
 
 
@@ -259,7 +282,11 @@ def periksa_blokir(baris) -> Blokir:
 
 
 def _penjualan_per_group(db, pasangan: set) -> list:
-    """Qty POS per (outlet, tanggal, ProductID, group). Void tidak dihitung."""
+    """Qty POS per (outlet, tanggal, ProductID, group, SaleMode, harga). Void tidak dihitung.
+
+    SaleMode diambil dari header transaksi, supaya baris dan total header
+    jatuh ke tujuan kunjungan yang sama.
+    """
     if not pasangan:
         return []
     tanggal = [d for _, d in pasangan]
@@ -270,6 +297,9 @@ def _penjualan_per_group(db, pasangan: set) -> list:
             Sales.sale_date,
             SalesItems.product_id,
             grup.label("grup"),
+            Sales.sale_mode,
+            SalesItems.retail_price,
+            SalesItems.price,
             func.sum(SalesItems.qty).label("qty"),
             func.max(func.trim(SalesItems.product_name)).label("nama"),
         )
@@ -281,8 +311,54 @@ def _penjualan_per_group(db, pasangan: set) -> list:
         )
     )
     query = SalesService._active_sales(query, include_deleted=False)
-    rows = query.group_by(Sales.outlet_code, Sales.sale_date, SalesItems.product_id, grup).all()
+    rows = query.group_by(
+        Sales.outlet_code,
+        Sales.sale_date,
+        SalesItems.product_id,
+        grup,
+        Sales.sale_mode,
+        SalesItems.retail_price,
+        SalesItems.price,
+    ).all()
     return [r for r in rows if (r.outlet_code, r.sale_date) in pasangan]
+
+
+def _header_per_mode(db, pasangan: set) -> dict:
+    """(outlet, tanggal) → {SaleMode: HeaderMode}. Void tidak dihitung."""
+    if not pasangan:
+        return {}
+    tanggal = [d for _, d in pasangan]
+    query = db.query(
+        Sales.outlet_code,
+        Sales.sale_date,
+        Sales.sale_mode,
+        func.sum(Sales.no_customer).label("pax"),
+        func.sum(Sales.receipt_discount).label("diskon"),
+        func.sum(Sales.service_charge).label("service_charge"),
+        func.sum(Sales.transaction_vat).label("ppn"),
+        func.sum(Sales.other_income).label("pendapatan_lain"),
+        func.max(Sales.service_charge_percent).label("persen_service_charge"),
+        func.max(Sales.vat_percent).label("persen_ppn"),
+    ).filter(
+        Sales.outlet_code.in_(sorted({o for o, _ in pasangan})),
+        Sales.sale_date >= min(tanggal),
+        Sales.sale_date <= max(tanggal),
+    )
+    query = SalesService._active_sales(query, include_deleted=False)
+    hasil: dict = {}
+    for r in query.group_by(Sales.outlet_code, Sales.sale_date, Sales.sale_mode):
+        if (r.outlet_code, r.sale_date) not in pasangan:
+            continue
+        hasil.setdefault((r.outlet_code, r.sale_date), {})[r.sale_mode] = closing_export_penjualan.HeaderMode(
+            pax=int(r.pax or 0),
+            diskon=Decimal(r.diskon or 0),
+            service_charge=Decimal(r.service_charge or 0),
+            ppn=Decimal(r.ppn or 0),
+            pendapatan_lain=Decimal(r.pendapatan_lain or 0),
+            persen_service_charge=Decimal(r.persen_service_charge or 0),
+            persen_ppn=Decimal(r.persen_ppn or 0),
+        )
+    return hasil
 
 
 def _outlet_tanpa_syarat_closing(db, outlets=None) -> set:
@@ -313,6 +389,10 @@ def _pasangan_pos(db, outlets, start_date, end_date) -> set:
     return {(o, d) for o, d in SalesService._active_sales(query, include_deleted=False).all()}
 
 
+def _urut_produk(item: dict) -> tuple:
+    return (item["productName"] or "", item["productCode"] or "")
+
+
 def _label_menu(b) -> str:
     return b.menu_code or b.menu_name or str(b.menu_id)
 
@@ -340,33 +420,58 @@ def susun_rekap(db, outlet=None, start_date=None, end_date=None) -> list[RekapPa
         for k in pasangan
     }
 
-    # ProductID yang qty-nya sudah masuk posQty menu closing.
-    tampil = {(k, p.product_id) for k, baris in menu_per_pasangan.items() for b in baris for p in b.products}
+    # ProductID yang qty-nya sudah masuk posQty menu closing → menu_id.
+    menu_produk = {
+        (k, p.product_id): b.menu_id for k, baris in menu_per_pasangan.items() for b in baris for p in b.products
+    }
     colorplate: dict = {}
     produk: dict = {}
+    produk_colorplate: dict = {}
     belum_master: dict = {}
+    # (outlet, tanggal) → item → {(SaleMode, RetailPrice, Price): qty}
+    harga: dict = {}
     for r in _penjualan_per_group(db, pasangan):
-        qty = float(r.qty or 0)
+        qty = Decimal(r.qty or 0)
         if not qty:
             continue
         k = (r.outlet_code, r.sale_date)
+        kunci_harga = (r.sale_mode, Decimal(r.retail_price or 0), Decimal(r.price or 0))
         if aturan.termasuk(r.product_id, r.grup):
             colorplate.setdefault(k, {})[r.product_id] = r.nama
+            tujuan = produk_colorplate
+        elif (k, r.product_id) in menu_produk:
+            item = ("closing", menu_produk[(k, r.product_id)])
+            baris = harga.setdefault(k, {}).setdefault(item, {})
+            baris[kunci_harga] = baris.get(kunci_harga, 0) + qty
             continue
-        if (k, r.product_id) in tampil:
-            continue
+        else:
+            tujuan = produk
         master_produk = master.get((r.outlet_code, r.product_id))
         if master_produk is None or not master_produk.product_code:
             belum_master.setdefault(k, {})[r.product_id] = r.nama
             continue
         # Dua ProductID POS bisa menunjuk satu produk master: qty dijumlah.
-        total = produk.setdefault(k, {}).setdefault(master_produk.id, [master_produk, 0.0])
+        total = tujuan.setdefault(k, {}).setdefault(master_produk.id, [master_produk, 0])
         total[1] += qty
+        item = ("colorplate" if tujuan is produk_colorplate else "pos_only", master_produk.id)
+        baris = harga.setdefault(k, {}).setdefault(item, {})
+        baris[kunci_harga] = baris.get(kunci_harga, 0) + qty
 
+    header = _header_per_mode(db, pasangan)
     for k, isi in rekap.items():
+        prices, isi.sales = closing_export_penjualan.susun(harga.get(k, {}), header.get(k, {}))
+        isi.harga_menu = {m: p for (jenis, m), p in prices.items() if jenis == "closing"}
+
         isi.items_produk = sorted(
-            (_item_produk(p, qty) for p, qty in produk.get(k, {}).values()),
-            key=lambda i: (i["productName"] or "", i["productCode"] or ""),
+            (_item_produk(p, qty, prices.get(("pos_only", p.id), [])) for p, qty in produk.get(k, {}).values()),
+            key=_urut_produk,
+        )
+        isi.items_colorplate = sorted(
+            (
+                _item_produk(p, qty, prices.get(("colorplate", p.id), []), source="colorplate")
+                for p, qty in produk_colorplate.get(k, {}).values()
+            ),
+            key=_urut_produk,
         )
         isi.blokir.produk_belum_master = [ProdukPos(pid, n) for pid, n in sorted(belum_master.get(k, {}).items())]
         if isi.baris_menu:
@@ -384,7 +489,7 @@ def susun_rekap(db, outlet=None, start_date=None, end_date=None) -> list[RekapPa
             ]
 
     # Tanpa closing dan tanpa apa pun untuk dikirim (mis. semua qty 0) tidak ditampilkan.
-    hasil = [r for r in rekap.values() if r.baris_menu or r.items_produk or r.blokir]
+    hasil = [r for r in rekap.values() if r.baris_menu or r.items_produk or r.items_colorplate or r.blokir]
     return sorted(hasil, key=lambda r: (r.production_date, r.outlet_code))
 
 
@@ -415,6 +520,30 @@ def _log_terakhir(db, outlet_code, production_date) -> ClosingExportLog | None:
     )
 
 
+def ditolak_sequence_usang(log: ClosingExportLog) -> bool:
+    """409 stale_sequence: API tujuan memegang versi lebih baru, isi ini tidak disimpan.
+
+    409 lain dicatat `duplikat`, jadi `gagal` + 409 selalu berarti ini.
+    """
+    return log.status == "gagal" and log.http_status == 409
+
+
+def _sequence_berikutnya(db, outlet_code, production_date, terakhir) -> int:
+    """Di atas sequence kita sendiri DAN `currentSequence` yang pernah dilaporkan
+    API tujuan lewat 409 stale_sequence — mis. sequence kita mundur setelah
+    database di-restore. Sequence boleh loncat (kontrak)."""
+    sequence = terakhir.sequence if terakhir else 0
+    ditolak = db.query(ClosingExportLog.response_body).filter(
+        ClosingExportLog.outlet_code == outlet_code,
+        ClosingExportLog.production_date == production_date,
+        ClosingExportLog.status == "gagal",
+        ClosingExportLog.http_status == 409,
+    )
+    for (body,) in ditolak:
+        sequence = max(sequence, closing_export_client.sequence_penerima(body) or 0)
+    return sequence + 1
+
+
 def kirim(db, outlet_code: str, production_date: date, sent_by: str) -> ClosingExportLog:
     _cek_konfigurasi()
 
@@ -437,7 +566,7 @@ def kirim(db, outlet_code: str, production_date: date, sent_by: str) -> ClosingE
 
     isi = susun_isi(rekap)
     message_id = uuid.uuid4()
-    sequence = (terakhir.sequence if terakhir else 0) + 1
+    sequence = _sequence_berikutnya(db, outlet_code, production_date, terakhir)
     payload = {
         "messageId": str(message_id),
         "sentAt": utcnow().isoformat(timespec="seconds") + "Z",
@@ -476,6 +605,9 @@ def kirim_ulang(db, log_id: int) -> ClosingExportLog:
         raise LogTidakDitemukan()
     if log.status in STATUS_KIRIM_SAMPAI:
         raise TidakBisaDiulang("kiriman ini sudah sampai di API tujuan")
+    if ditolak_sequence_usang(log):
+        # Body & sequence yang sama akan ditolak lagi.
+        raise TidakBisaDiulang("API tujuan sudah memegang versi yang lebih baru, kirim rekap baru")
     if _sedang_berjalan(log):
         raise TidakBisaDiulang("kiriman ini masih sedang berjalan")
     if _log_terakhir(db, log.outlet_code, log.production_date).id != log.id:

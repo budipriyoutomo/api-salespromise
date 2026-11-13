@@ -1,9 +1,13 @@
 """HTTP ke API tujuan rekap closing (TODO Fase 8.5).
 
-Aturan response mengikuti docs/usulan-kontrak-kirim-closing.md bagian 3:
+Aturan response mengikuti docs/usulan-kontrak-kirim-closing.md bagian 3,
+dengan 409 dibedakan menurut docs/balasan-kontrak-kirim-closing.md bagian 2.2:
 
     2xx                     terkirim
-    409                     duplikat — isi sudah ada di API tujuan
+    409 duplicate_message   duplikat — isi sudah ada di API tujuan
+    (atau tanpa `reason`)
+    409 stale_sequence      gagal, tidak diulang — API tujuan sudah memegang
+                            versi lebih baru, kiriman ini TIDAK disimpan
     4xx lain                gagal, tidak diulang
     429 / 5xx / timeout /   diulang `max_retries` kali dengan body dan
     koneksi gagal           `Idempotency-Key` yang sama, lalu gagal
@@ -22,6 +26,8 @@ MAX_RESPONSE_BODY = 2000
 # Batas jeda antar percobaan, termasuk yang diminta lewat Retry-After —
 # admin menunggu di depan layar.
 MAX_JEDA = 30
+
+ALASAN_SEQUENCE_USANG = "stale_sequence"
 
 
 @dataclass
@@ -82,12 +88,43 @@ def kirim(
             if 200 <= kode < 300:
                 return _hasil("terkirim", response, None, attempts)
             if kode == 409:
+                if _alasan_409(response.text) == ALASAN_SEQUENCE_USANG:
+                    return _hasil("gagal", response, pesan_sequence_usang(response.text), attempts)
                 return _hasil("duplikat", response, None, attempts)
             if kode != 429 and kode < 500:
                 return _hasil("gagal", response, f"HTTP {kode}", attempts)
             error = f"HTTP {kode}"
 
     return _hasil("gagal", response, error, attempts)
+
+
+def _body_json(teks: str | None) -> dict:
+    try:
+        isi = json.loads(teks or "")
+    except ValueError:
+        return {}
+    return isi if isinstance(isi, dict) else {}
+
+
+def _alasan_409(teks: str | None) -> str | None:
+    alasan = _body_json(teks).get("reason")
+    return alasan if isinstance(alasan, str) else None
+
+
+def sequence_penerima(response_body: str | None) -> int | None:
+    """`currentSequence` dari body 409 stale_sequence; None kalau tidak ada."""
+    isi = _body_json(response_body)
+    if isi.get("reason") != ALASAN_SEQUENCE_USANG:
+        return None
+    nilai = isi.get("currentSequence")
+    # bool turunan int — True bukan sequence.
+    return nilai if isinstance(nilai, int) and not isinstance(nilai, bool) and nilai > 0 else None
+
+
+def pesan_sequence_usang(response_body: str | None) -> str:
+    nilai = sequence_penerima(response_body)
+    pegang = f" (sequence {nilai})" if nilai else ""
+    return f"ditolak: API tujuan sudah memegang versi lebih baru{pegang}, kiriman ini tidak disimpan"
 
 
 def _hasil(status, response: httpx.Response | None, error, attempts) -> HasilKirim:

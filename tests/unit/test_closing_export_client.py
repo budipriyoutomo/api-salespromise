@@ -83,6 +83,48 @@ def test_409_duplikat_tidak_diulang(jeda):
     assert len(server.requests) == 1
 
 
+def test_409_duplicate_message_duplikat(jeda):
+    body = {"reason": "duplicate_message", "message": "messageId sudah diterima", "id": "x"}
+    hasil = kirim(Server(httpx.Response(409, json=body)), jeda)
+
+    assert (hasil.status, hasil.error) == ("duplikat", None)
+
+
+def test_409_stale_sequence_gagal_tidak_diulang(jeda):
+    """Isi TIDAK disimpan API tujuan — jangan sampai tampil seperti sudah sampai."""
+    body = {"reason": "stale_sequence", "message": "sequence lebih lama", "currentSequence": 4}
+    server = Server(httpx.Response(409, json=body))
+
+    hasil = kirim(server, jeda)
+
+    assert (hasil.status, hasil.http_status, hasil.attempts) == ("gagal", 409, 1)
+    assert "sequence 4" in hasil.error and "tidak disimpan" in hasil.error
+    assert json.loads(hasil.response_body) == body
+    assert len(server.requests) == 1
+
+
+def test_409_bukan_json_tetap_duplikat(jeda):
+    assert kirim(Server(httpx.Response(409, text="conflict")), jeda).status == "duplikat"
+
+
+@pytest.mark.parametrize(
+    "body, harapan",
+    [
+        ('{"reason": "stale_sequence", "currentSequence": 7}', 7),
+        ('{"reason": "stale_sequence"}', None),
+        ('{"reason": "stale_sequence", "currentSequence": "7"}', None),
+        ('{"reason": "stale_sequence", "currentSequence": true}', None),
+        ('{"reason": "stale_sequence", "currentSequence": 0}', None),
+        ('{"reason": "duplicate_message", "currentSequence": 7}', None),
+        ("[1, 2]", None),
+        ("bukan json", None),
+        (None, None),
+    ],
+)
+def test_sequence_penerima(body, harapan):
+    assert closing_export_client.sequence_penerima(body) == harapan
+
+
 @pytest.mark.parametrize("kode", [400, 401, 403, 404, 422])
 def test_4xx_gagal_tanpa_diulang(jeda, kode):
     server = Server(httpx.Response(kode, text="payload salah"))

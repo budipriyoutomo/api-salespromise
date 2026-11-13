@@ -4,8 +4,10 @@ Kontrak: docs/usulan-kontrak-kirim-closing.md. Keputusan: TODO.md Fase 8.0.
 HTTP client diganti tiruan — perilaku HTTP-nya diuji di test_closing_export_client.py.
 """
 
+import json
 import uuid
 from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -23,6 +25,7 @@ from app.services import (
     colorplate_publish_service,
 )
 from app.services.closing_export_client import HasilKirim
+from tests.conftest import make_item_row, make_sale_row
 from tests.unit.test_routes_closing import (
     HARI_INI,
     KEMARIN,
@@ -103,13 +106,47 @@ def gagal(kode=500, attempts=2):
     return HasilKirim(status="gagal", http_status=kode, response_body="error", error=f"HTTP {kode}", attempts=attempts)
 
 
+def usang(current_sequence):
+    """Hasil client untuk 409 stale_sequence."""
+    body = {"reason": "stale_sequence", "message": "sequence lebih lama"}
+    if current_sequence is not None:
+        body["currentSequence"] = current_sequence
+    teks = json.dumps(body)
+    return HasilKirim(
+        status="gagal",
+        http_status=409,
+        response_body=teks,
+        error=closing_export_client.pesan_sequence_usang(teks),
+        attempts=1,
+    )
+
+
+def harga(qty, price, mode="SALEMODE 1"):
+    """Satu baris `prices` tanpa diskon dan pajak."""
+    return {
+        "visitPurposeName": mode,
+        "qty": qty,
+        "originalPrice": price,
+        "price": price,
+        "discount": 0,
+        "discountValue": 0,
+        "otherTax": 0,
+        "otherTaxValue": 0,
+        "vat": 0,
+        "vatValue": 0,
+        "otherVat": 0,
+        "otherVatValue": 0,
+        "otherTaxOnVat": 0,
+        "total": qty * price,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Isi payload
 # ---------------------------------------------------------------------------
 
 
 class TestPayload:
-
     def test_isi_sesuai_kontrak(self, db_session, api):
         siapkan(db_session)
 
@@ -136,6 +173,7 @@ class TestPayload:
                 "waste": 1,
                 "adjustment": -1,
                 "compensation": 2,
+                "prices": [harga(3, 75000)],
             },
             {
                 "source": "pos_only",
@@ -151,7 +189,29 @@ class TestPayload:
                 "waste": 0,
                 "adjustment": 0,
                 "compensation": 0,
+                "prices": [harga(2, 75000)],
             },
+        ]
+        assert payload["sales"] == [
+            {
+                "visitPurposeName": "SALEMODE 1",
+                "paxTotal": 2,
+                "flagInclusive": 0,
+                "subtotal": 375000,
+                "discountTotal": 0,
+                "menuDiscountTotal": 0,
+                "promotionDiscount": 0,
+                "otherTaxTotal": 0,
+                "vatTotal": 0,
+                "otherVatTotal": 0,
+                "deliveryFee": 0,
+                "orderFee": 0,
+                "voucherTotal": 0,
+                "roundingTotal": 0,
+                "grandTotal": 375000,
+                "paymentTotal": 375000,
+                "payments": [],
+            }
         ]
         assert opsi == {
             "message_id": str(log.message_id),
@@ -200,7 +260,9 @@ class TestPayload:
         assert api.panggilan[0][0]["items"][0]["posQty"] == 0
 
     def test_hanya_outlet_dan_tanggal_yang_diminta(self, db_session, api):
-        kirim_closing(db_session, items=[item(production_date=HARI_INI), item("SU-002", "Tuna", production_date=KEMARIN)])
+        kirim_closing(
+            db_session, items=[item(production_date=HARI_INI), item("SU-002", "Tuna", production_date=KEMARIN)]
+        )
         kirim_closing(db_session, outlet="OUTLET_002", items=[item()])
         petakan(db_session, "SU-001", 200104)
         petakan(db_session, "SU-002", 200105)
@@ -216,7 +278,6 @@ class TestPayload:
 
 
 class TestDitolak:
-
     def test_belum_dikonfigurasi(self, db_session, api, monkeypatch):
         siapkan(db_session)
         monkeypatch.setattr(settings, "CLOSING_EXPORT_TOKEN", "")
@@ -285,7 +346,9 @@ class TestDitolak:
         assert (dobel.product_id, dobel.product_name, dobel.menus) == (200104, "Salmon HR", ["SU-001", "SU-002"])
 
     def test_produk_dua_menu_di_tanggal_lain_tidak_memblokir(self, db_session, api):
-        kirim_closing(db_session, items=[item(production_date=HARI_INI), item("SU-002", "Tuna", production_date=KEMARIN)])
+        kirim_closing(
+            db_session, items=[item(production_date=HARI_INI), item("SU-002", "Tuna", production_date=KEMARIN)]
+        )
         petakan(db_session, "SU-001", 200104)
         petakan(db_session, "SU-002", 200104)
 
@@ -332,7 +395,6 @@ class TestDitolak:
 
 
 class TestLog:
-
     def test_hasil_terkirim_dicatat(self, db_session, api):
         siapkan(db_session)
 
@@ -369,6 +431,43 @@ class TestLog:
         assert (a.sequence, b.sequence, c.sequence) == (1, 2, 1)
         assert a.message_id != b.message_id
 
+    def test_ditolak_sequence_usang_dicatat_gagal(self, db_session, api):
+        siapkan(db_session)
+        api.hasil = [usang(4)]
+
+        log = closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
+
+        assert (log.status, log.http_status) == ("gagal", 409)
+        assert closing_export_service.ditolak_sequence_usang(log)
+
+    def test_setelah_sequence_usang_kiriman_baru_melompati_penerima(self, db_session, api):
+        """Mis. sequence kita mundur setelah restore: penerima memegang 4."""
+        siapkan(db_session)
+        api.hasil = [usang(4)]
+        ditolak = closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
+
+        baru = closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
+        lagi = closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
+
+        assert (ditolak.sequence, baru.sequence, lagi.sequence) == (1, 5, 6)
+        assert api.panggilan[1][0]["sequence"] == 5
+        assert baru.status == "terkirim"
+
+    def test_sequence_usang_outlet_lain_tidak_berpengaruh(self, db_session, api):
+        siapkan(db_session)
+        siapkan(db_session, outlet="OUTLET_002")
+        api.hasil = [usang(9)]
+        closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
+
+        assert closing_export_service.kirim(db_session, "OUTLET_002", HARI_INI, ADMIN).sequence == 1
+
+    def test_sequence_usang_tanpa_angka_naik_biasa(self, db_session, api):
+        siapkan(db_session)
+        api.hasil = [usang(None)]
+        closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
+
+        assert closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN).sequence == 2
+
     def test_hash_sama_untuk_isi_sama(self, db_session, api):
         siapkan(db_session)
 
@@ -384,7 +483,6 @@ class TestLog:
 
 
 class TestKirimUlang:
-
     def test_payload_dan_message_id_sama(self, db_session, api):
         siapkan(db_session)
         api.hasil = [gagal(attempts=2)]
@@ -438,6 +536,16 @@ class TestKirimUlang:
         with pytest.raises(closing_export_service.TidakBisaDiulang):
             closing_export_service.kirim_ulang(db_session, lama.id)
 
+    def test_ditolak_sequence_usang_tidak_diulang(self, db_session, api):
+        """Body & sequence yang sama pasti ditolak lagi — harus kirim baru."""
+        siapkan(db_session)
+        api.hasil = [usang(4)]
+        log = closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
+
+        with pytest.raises(closing_export_service.TidakBisaDiulang, match="lebih baru"):
+            closing_export_service.kirim_ulang(db_session, log.id)
+        assert len(api.panggilan) == 1
+
     def test_tidak_ada(self, db_session, api):
         with pytest.raises(closing_export_service.LogTidakDitemukan):
             closing_export_service.kirim_ulang(db_session, 999)
@@ -458,7 +566,6 @@ class TestKirimUlang:
 
 
 class TestStatus:
-
     def _status(self, db, **filter_):
         return {(s.outlet_code, s.production_date): s for s in closing_export_service.status_pasangan(db, **filter_)}
 
@@ -467,7 +574,12 @@ class TestStatus:
 
         (s,) = self._status(db_session).values()
 
-        assert (s.outlet_code, s.production_date, s.status, s.can_send) == ("OUTLET_001", HARI_INI, "belum_dikirim", True)
+        assert (s.outlet_code, s.production_date, s.status, s.can_send) == (
+            "OUTLET_001",
+            HARI_INI,
+            "belum_dikirim",
+            True,
+        )
         assert (s.item_count, s.total_sold) == (2, 15)
         assert s.last_attempt is None and s.last_sent is None
 
@@ -535,7 +647,9 @@ class TestStatus:
         assert self._status(db_session)[("OUTLET_001", HARI_INI)].can_send is True
 
     def test_filter_outlet_dan_tanggal(self, db_session, api):
-        kirim_closing(db_session, items=[item(production_date=HARI_INI), item("SU-002", "Tuna", production_date=KEMARIN)])
+        kirim_closing(
+            db_session, items=[item(production_date=HARI_INI), item("SU-002", "Tuna", production_date=KEMARIN)]
+        )
         kirim_closing(db_session, outlet="OUTLET_002", items=[item()])
 
         semua = self._status(db_session)
@@ -545,7 +659,9 @@ class TestStatus:
         assert set(sebagian) == {("OUTLET_001", HARI_INI)}
 
     def test_urut_tanggal_terbaru_dulu(self, db_session, api):
-        kirim_closing(db_session, items=[item(production_date=KEMARIN), item("SU-002", "Tuna", production_date=HARI_INI)])
+        kirim_closing(
+            db_session, items=[item(production_date=KEMARIN), item("SU-002", "Tuna", production_date=HARI_INI)]
+        )
 
         hasil = closing_export_service.status_pasangan(db_session)
 
@@ -596,8 +712,13 @@ def aktifkan_colorplate(db, product_id_konversi=700):
 
 
 def contoh_dokumen(db):
-    """RED 10, Promo 3 (konversi RED), Ocha 2; closing Salmon 6 & Tuna 4 bertanda tidak ada di POS."""
+    """RED 10, Promo 3 (konversi RED), Ocha 2; closing Salmon 6 & Tuna 4 bertanda tidak ada di POS.
+
+    Produk colorplate (RED, Promo) sudah punya master; Ocha belum.
+    """
     aktifkan_colorplate(db)
+    master(db, "M-RED", "Colorplate Red", (OUTLET, 500))
+    master(db, "M-PROMO", "Promo Red", (OUTLET, 700))
     kirim_closing(db, items=[item("SU-001", "Salmon", sold=6), item("SU-002", "Tuna", sold=4)])
     tandai_tidak_ada_di_pos(db, "SU-001")
     tandai_tidak_ada_di_pos(db, "SU-002")
@@ -629,20 +750,26 @@ def total(r):
     return sum(i["totalSold"] for i in closing_export_service.susun_isi(r)["items"])
 
 
-class TestColorplateTidakDobel:
+def total_menu(r):
+    """totalSold tanpa item colorplate — pendapatan piring, qty-nya sudah di menu closing."""
+    return sum(i["totalSold"] for i in closing_export_service.susun_isi(r)["items"] if i["source"] != "colorplate")
 
-    def test_contoh_dokumen_total_12(self, db_session):
+
+class TestColorplateTidakDobel:
+    def test_contoh_dokumen_total_menu_12(self, db_session):
         contoh_dokumen(db_session)
         master(db_session, "M-OCHA", "Ocha Master", (OUTLET, 300))
 
         (r,) = rekap(db_session)
 
         assert not r.blokir
-        assert total(r) == 12
+        assert total_menu(r) == 12
         items = closing_export_service.susun_isi(r)["items"]
         assert [(i["source"], i["menuCode"] or i["productId"], i["totalSold"]) for i in items] == [
             ("closing", "SU-001", 6),
             ("closing", "SU-002", 4),
+            ("colorplate", "M-RED", 10),
+            ("colorplate", "M-PROMO", 3),
             ("pos_only", "M-OCHA", 2),
         ]
         assert (items[-1]["productCode"], items[-1]["productName"]) == ("PRD-M-OCHA", "Ocha Master")
@@ -650,11 +777,13 @@ class TestColorplateTidakDobel:
     def test_group_colorplate_dengan_spasi_tetap_dikenali(self, db_session):
         contoh_dokumen(db_session)
         master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
+        master(db_session, "M-BLUE", "Colorplate Blue", (OUTLET, 501))
         jual(db_session, 4, 501, 5, nama="BLUE", product_group=" colorplate ")
 
         (r,) = rekap(db_session)
 
-        assert not r.blokir and total(r) == 12
+        assert not r.blokir and total_menu(r) == 12
+        assert [i["productId"] for i in r.items_colorplate] == ["M-BLUE", "M-RED", "M-PROMO"]
 
     def test_produk_tanpa_master_memblokir(self, db_session):
         contoh_dokumen(db_session)
@@ -680,7 +809,7 @@ class TestColorplateTidakDobel:
         if nonaktif == "produk":
             produk.is_active = False
         else:
-            db_session.query(ProductPosMapping).one().is_active = False
+            db_session.query(ProductPosMapping).filter_by(pos_product_id=300).one().is_active = False
         db_session.commit()
 
         (r,) = rekap(db_session)
@@ -725,9 +854,9 @@ class TestColorplateTidakDobel:
 
         assert not r.blokir
         assert r.items_produk == []
-        assert total(r) == 12
+        assert total_menu(r) == 12
 
-    def test_group_colorplate_nonaktif_red_jadi_belum_master(self, db_session):
+    def test_group_colorplate_nonaktif_red_jadi_pos_only(self, db_session):
         contoh_dokumen(db_session)
         master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
         db_session.query(ProductGroupMapping).one().is_active = False
@@ -735,12 +864,24 @@ class TestColorplateTidakDobel:
 
         (r,) = rekap(db_session)
 
-        assert [p.product_id for p in r.blokir.produk_belum_master] == [500]
+        assert [i["productId"] for i in r.items_colorplate] == ["M-PROMO"]
+        assert [i["productId"] for i in r.items_produk] == ["M-RED", "M-OCHA"]
+
+    def test_colorplate_tanpa_master_memblokir(self, db_session):
+        contoh_dokumen(db_session)
+        master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
+        jual(db_session, 4, 502, 1, nama="GOLD", product_group="COLORPLATE")
+
+        (r,) = rekap(db_session)
+
+        assert [(p.product_id, p.product_name) for p in r.blokir.produk_belum_master] == [(502, "GOLD")]
 
     def test_compare_with_pos_tetap_menampilkan_semua_produk_pos(self, db_session):
         contoh_dokumen(db_session)
 
-        baris = closing_report_service.compare_with_pos(db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI)
+        baris = closing_report_service.compare_with_pos(
+            db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI
+        )
 
         assert sorted(b.products[0].product_id for b in baris if b.menu_id is None) == [300, 500, 700]
 
@@ -752,7 +893,9 @@ class TestColorplateTidakDobel:
         # Mapping outlet lain tidak berlaku untuk outlet ini.
         master(db_session, "M-AIR", "Air Master", ("OUTLET_LAIN", 900))
 
-        baris = closing_report_service.compare_with_pos(db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI)
+        baris = closing_report_service.compare_with_pos(
+            db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI
+        )
 
         produk = {b.products[0].product_id: b.products[0] for b in baris if b.menu_id is None}
         assert produk[300].master.code == "M-OCHA"
@@ -767,7 +910,9 @@ class TestColorplateTidakDobel:
         master(db_session, "M-OCHA", "Ocha Master", (OUTLET, 300)).is_active = False
         db_session.commit()
 
-        baris = closing_report_service.compare_with_pos(db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI)
+        baris = closing_report_service.compare_with_pos(
+            db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI
+        )
 
         (ocha,) = [b.products[0] for b in baris if b.menu_id is None and b.products[0].product_id == 300]
         assert ocha.master is None
@@ -799,14 +944,15 @@ class TestAturanColorplate:
     def test_publish_tetap_menghitung_sama(self, db_session):
         contoh_dokumen(db_session)
 
-        (red,) = colorplate_publish_service.rekap_colorplate(db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI)
+        (red,) = colorplate_publish_service.rekap_colorplate(
+            db_session, outlet=OUTLET, start_date=HARI_INI, end_date=HARI_INI
+        )
 
         # RED 10 + Promo 3 × 2.
         assert (red.platecolor, red.sold) == ("RED", 16)
 
 
 class TestSyaratClosingPerBrand:
-
     def jual_ocha(self, db):
         jual(db, 2, 300, 2, nama="Ocha", product_group="DRINK")
         master(db, "M-OCHA", "Ocha", (OUTLET, 300))
@@ -847,7 +993,7 @@ class TestSyaratClosingPerBrand:
 
         (r,) = rekap(db_session)
 
-        assert r.baris_menu and total(r) == 12
+        assert r.baris_menu and total_menu(r) == 12
 
     def test_brand_tanpa_syarat_colorplate_terjual_diblokir(self, db_session):
         aktifkan_colorplate(db_session)
@@ -877,3 +1023,140 @@ class TestSyaratClosingPerBrand:
         self.jual_ocha(db_session)
 
         assert closing_export_service.status_pasangan(db_session) == []
+
+
+# ---------------------------------------------------------------------------
+# sales & prices (kontrak revisi 3)
+# ---------------------------------------------------------------------------
+
+
+def transaksi(db, transaction_id, baris, sale_mode=1, outlet=OUTLET, **header):
+    """Satu transaksi POS. `baris` = [(ProductID, qty, price, nama, group)]."""
+    db.add(
+        make_sale_row(
+            transaction_id=transaction_id, outlet_code=outlet, sale_date=HARI_INI, sale_mode=sale_mode, **header
+        )
+    )
+    for n, (pid, qty, price, nama, grup) in enumerate(baris, start=1):
+        db.add(
+            make_item_row(
+                order_detail_id=n,
+                transaction_id=transaction_id,
+                outlet_code=outlet,
+                sale_date=HARI_INI,
+                product_id=pid,
+                qty=qty,
+                price=price,
+                retail_price=price,
+                product_name=nama,
+                product_group=grup,
+            )
+        )
+    db.commit()
+
+
+class TestPenjualan:
+    def siapkan(self, db):
+        """Closing Salmon (sold 6) dipetakan ke ProductID 200; RED & Ocha di master."""
+        aktifkan_colorplate(db)
+        kirim_closing(db, items=[item("SU-001", "Salmon", sold=6)])
+        petakan(db, "SU-001", 200)
+        master(db, "M-RED", "Colorplate Red", (OUTLET, 500))
+        master(db, "M-OCHA", "Ocha", (OUTLET, 300))
+        # Dine in: Salmon 2 × 15.000, RED 4 × 20.000. SC 7,5%, PPN 10%.
+        transaksi(
+            db,
+            1,
+            [(200, 2, 15000, "Salmon", "FOOD"), (500, 4, 20000, "RED", "COLORPLATE")],
+            sale_mode=1,
+            no_customer=3,
+            service_charge=8250,
+            transaction_vat=11825,
+            service_charge_percent=Decimal("7.5"),
+            vat_percent=10,
+        )
+        # Take away: Salmon 1 × 15.000, Ocha 2 × 8.000 dengan diskon 1.000.
+        transaksi(
+            db,
+            2,
+            [(200, 1, 15000, "Salmon", "FOOD"), (300, 2, 8000, "Ocha", "DRINK")],
+            sale_mode=2,
+            no_customer=1,
+            receipt_discount=1000,
+            transaction_vat=3000,
+            vat_percent=10,
+        )
+
+    def isi(self, db):
+        (r,) = rekap(db)
+        assert not r.blokir
+        return closing_export_service.susun_isi(r)
+
+    def test_sales_per_sale_mode(self, db_session):
+        self.siapkan(db_session)
+
+        isi = self.isi(db_session)
+
+        assert [
+            (
+                s["visitPurposeName"],
+                s["paxTotal"],
+                s["subtotal"],
+                s["discountTotal"],
+                s["otherTaxTotal"],
+                s["vatTotal"],
+                s["grandTotal"],
+            )
+            for s in isi["sales"]
+        ] == [
+            ("SALEMODE 1", 3, 110000, 0, 8250, 11825, 130075),
+            ("SALEMODE 2", 1, 31000, 1000, 0, 3000, 33000),
+        ]
+
+    def test_prices_menu_closing_hanya_menutup_pos_qty(self, db_session):
+        self.siapkan(db_session)
+
+        salmon, red, ocha = self.isi(db_session)["items"]
+
+        assert (salmon["source"], salmon["colorplateSold"], salmon["posQty"], salmon["totalSold"]) == (
+            "closing",
+            6,
+            3,
+            9,
+        )
+        assert sum(p["qty"] for p in salmon["prices"]) == salmon["posQty"]
+        assert [(p["visitPurposeName"], p["qty"]) for p in salmon["prices"]] == [("SALEMODE 1", 2), ("SALEMODE 2", 1)]
+        assert (red["source"], red["productCode"], red["totalSold"]) == ("colorplate", "PRD-M-RED", 4)
+        assert [(p["price"], p["qty"]) for p in red["prices"]] == [(20000, 4)]
+        assert ocha["source"] == "pos_only"
+        assert sum(p["qty"] for p in ocha["prices"]) == ocha["totalSold"]
+
+    def test_jumlah_prices_per_sale_mode_sama_dengan_sales(self, db_session):
+        self.siapkan(db_session)
+
+        isi = self.isi(db_session)
+
+        for s in isi["sales"]:
+            baris = [p for i in isi["items"] for p in i["prices"] if p["visitPurposeName"] == s["visitPurposeName"]]
+            assert sum(p["total"] for p in baris) == s["grandTotal"]
+            assert sum(p["vatValue"] for p in baris) == s["vatTotal"]
+            assert sum(p["discountValue"] for p in baris) == s["discountTotal"]
+            assert sum(p["otherTaxValue"] for p in baris) == s["otherTaxTotal"]
+
+    def test_void_tidak_masuk_sales(self, db_session):
+        self.siapkan(db_session)
+        transaksi(db_session, 3, [(300, 5, 8000, "Ocha", "DRINK")], sale_mode=2, transaction_vat=4000, deleted=1)
+
+        (_, take_away) = self.isi(db_session)["sales"]
+
+        assert (take_away["subtotal"], take_away["vatTotal"]) == (31000, 3000)
+
+    def test_menu_closing_tanpa_penjualan_pos_prices_kosong(self, db_session, api):
+        kirim_closing(db_session, items=[item(sold=4)])
+        petakan(db_session, "SU-001", 200104)
+
+        closing_export_service.kirim(db_session, OUTLET, HARI_INI, ADMIN)
+
+        payload = api.panggilan[0][0]
+        assert payload["sales"] == []
+        assert payload["items"][0]["prices"] == []
