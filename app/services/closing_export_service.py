@@ -7,8 +7,6 @@ Satu kiriman = satu outlet × satu tanggal produksi. Void tidak pernah dihitung.
 
     closing     satu item per menu closing (dari `compare_with_pos`):
                 colorplateSold = sold, posQty = qty POS mentah (tanpa pengali)
-    colorplate  produk colorplate POS (piring per warna), memakai identitas
-                master `products`. Membawa harga piring; colorplateSold = 0.
     pos_only    produk POS NON-colorplate yang tidak dipetakan ke menu closing,
                 memakai identitas master `products` (code, product_code, name).
     Beberapa ProductID POS ke satu master dijumlah.
@@ -16,9 +14,10 @@ Satu kiriman = satu outlet × satu tanggal produksi. Void tidak pernah dihitung.
                 dari closing saja. Angka kosong = 0.
 
 Produk colorplate — group COLORPLATE aktif, atau ProductID yang punya konversi
-warna aktif (`colorplate_publish_service.aturan_colorplate`). Qty-nya sudah
-terwakili `sold` menu closing, jadi item `colorplate` hanya membawa pendapatan
-piring: `prices` menu closing hanya menutup `posQty`.
+warna aktif (`colorplate_publish_service.aturan_colorplate`) — tidak dikirim
+sebagai item: qty-nya sudah terwakili `sold` menu closing. Harganya masuk ke
+`prices` menu closing: colorplateSold × harga piring warna menu itu (warna
+diisi admin per menu, migrasi 020). `prices` menu = posQty + colorplateSold.
 
 `sales` (per SaleMode) dan `items[].prices`: lihat `closing_export_penjualan`.
 
@@ -30,8 +29,11 @@ Diblokir kalau:
 - menu closing belum dipetakan (kecuali ditandai "tidak ada di POS", migrasi 018);
 - ProductID dipetakan ke lebih dari satu menu di outlet + tanggal itu;
 - produk colorplate dipetakan ke menu closing (qty-nya akan terhitung dobel);
-- produk POS (termasuk colorplate) belum punya master aktif dengan product_code;
-- tanpa closing, tetapi produk colorplate terjual (`sold`-nya belum ada).
+- produk POS non-colorplate belum punya master aktif dengan product_code;
+- tanpa closing, tetapi produk colorplate terjual (`sold`-nya belum ada);
+- menu dengan sold > 0 belum punya warna piring;
+- satu warna hanya ada di satu sisi: terjual di closing tetapi tidak di POS
+  (harganya tidak diketahui), atau sebaliknya (pendapatannya tidak terkirim).
 
 `compare_with_pos` tidak diubah: tampilan perbandingan `/closing` tetap
 melihat data POS apa adanya.
@@ -66,10 +68,12 @@ from app.models.sales_items import SalesItems
 from app.services import (
     closing_export_client,
     closing_export_penjualan,
+    closing_menu_service,
     closing_report_service,
     colorplate_publish_service,
 )
-from app.services.sales_service import SalesService, item_join
+from app.services.product_group_service import normalize_product_group
+from app.services.sales_service import SalesService, color_key, item_join
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
@@ -125,6 +129,13 @@ class ProdukPos:
 
 
 @dataclass
+class WarnaTidakLengkap:
+    platecolor: str
+    colorplate_sold: int
+    pos_qty: float
+
+
+@dataclass
 class Blokir:
     menu_belum_dipetakan: list[MenuBelumDipetakan] = field(default_factory=list)
     produk_dobel: list[ProdukDobel] = field(default_factory=list)
@@ -134,6 +145,10 @@ class Blokir:
     produk_belum_master: list[ProdukPos] = field(default_factory=list)
     # Kirim tanpa closing, tetapi produk colorplate terjual: `sold`-nya belum ada.
     colorplate_tanpa_closing: list[ProdukPos] = field(default_factory=list)
+    # Menu dengan sold > 0 yang belum punya warna piring (harga tidak diketahui).
+    menu_tanpa_warna: list[MenuBelumDipetakan] = field(default_factory=list)
+    # Warna yang hanya ada di closing atau hanya di POS pada outlet + tanggal ini.
+    warna_tidak_lengkap: list[WarnaTidakLengkap] = field(default_factory=list)
 
     def __bool__(self):
         return bool(
@@ -142,6 +157,8 @@ class Blokir:
             or self.produk_colorplate_dipetakan
             or self.produk_belum_master
             or self.colorplate_tanpa_closing
+            or self.menu_tanpa_warna
+            or self.warna_tidak_lengkap
         )
 
 
@@ -167,6 +184,8 @@ class StatusPasangan:
     produk_colorplate_dipetakan: list[ProdukDobel]
     produk_belum_master: list[ProdukPos]
     colorplate_tanpa_closing: list[ProdukPos]
+    menu_tanpa_warna: list[MenuBelumDipetakan]
+    warna_tidak_lengkap: list[WarnaTidakLengkap]
     last_attempt: ClosingExportLog | None
     last_sent: ClosingExportLog | None
 
@@ -206,10 +225,10 @@ def _item_menu(baris, prices=()) -> dict:
     }
 
 
-def _item_produk(produk: Product, qty, prices=(), source="pos_only") -> dict:
+def _item_produk(produk: Product, qty, prices=()) -> dict:
     pos = _angka(qty)
     return {
-        "source": source,
+        "source": "pos_only",
         "menuId": None,
         "menuCode": None,
         "menuName": None,
@@ -234,8 +253,6 @@ class RekapPasangan:
     baris_menu: list = field(default_factory=list)
     # Item `pos_only` yang sudah disusun (per master produk).
     items_produk: list = field(default_factory=list)
-    # Item `colorplate` yang sudah disusun (per master produk).
-    items_colorplate: list = field(default_factory=list)
     # menu_id → `prices` menu closing.
     harga_menu: dict = field(default_factory=dict)
     sales: list = field(default_factory=list)
@@ -249,7 +266,7 @@ def susun_isi(rekap: RekapPasangan) -> dict:
         "outlet": {"code": rekap.outlet_code},
         "productionDate": rekap.production_date.isoformat(),
         "sales": rekap.sales,
-        "items": menu + rekap.items_colorplate + rekap.items_produk,
+        "items": menu + rekap.items_produk,
     }
 
 
@@ -397,6 +414,59 @@ def _label_menu(b) -> str:
     return b.menu_code or b.menu_name or str(b.menu_id)
 
 
+def _piring_per_warna(aturan, r, kunci_harga):
+    """Baris POS colorplate → [(warna, piring per unit, (SaleMode, RetailPrice, Price) per piring)].
+
+    Aturannya sama dengan publish colorplate: produk group COLORPLATE = warna
+    namanya (selama group itu aktif); produk berkonversi = warna tujuannya ×
+    multiplier. Harga produk berkonversi dibagi rata ke semua piringnya.
+    """
+    if aturan.group_aktif and normalize_product_group(r.grup) == SalesService.COLORPLATE:
+        return [(r.nama or "", 1, kunci_harga)]
+    konversi = aturan.konversi.get(r.product_id, [])
+    jumlah = sum(m for _, m in konversi) or 1
+    mode, harga_asli, harga = kunci_harga
+    per_piring = (
+        mode,
+        closing_export_penjualan.bulat(harga_asli / jumlah),
+        closing_export_penjualan.bulat(harga / jumlah),
+    )
+    return [(warna, m, per_piring) for warna, m in konversi]
+
+
+def _harga_colorplate(isi, warna_menu: dict, piring: dict, nama_warna: dict, harga: dict):
+    """colorplateSold menu → baris harga piring di `harga[("closing", menu_id)]`, atau blokir."""
+    sold_per_warna: dict = {}
+    for b in isi.baris_menu:
+        sold = int(b.sold or 0)
+        if sold <= 0:
+            continue
+        warna = warna_menu.get(b.menu_id)
+        if warna is None:
+            isi.blokir.menu_tanpa_warna.append(MenuBelumDipetakan(b.menu_id, b.menu_code, b.menu_name))
+            continue
+        nama_warna.setdefault(color_key(warna), warna)
+        sold_per_warna.setdefault(color_key(warna), {})[b.menu_id] = sold
+    if isi.blokir.menu_tanpa_warna:
+        # Warna menu belum lengkap: perbandingan per warna belum berarti.
+        return
+
+    for kunci in sorted(set(sold_per_warna) | set(piring)):
+        sold = sold_per_warna.get(kunci, {})
+        tingkat = piring.get(kunci, {})
+        total_sold, total_pos = sum(sold.values()), sum(tingkat.values(), Decimal(0))
+        if not total_sold or not total_pos:
+            if total_sold or total_pos:
+                isi.blokir.warna_tidak_lengkap.append(
+                    WarnaTidakLengkap(nama_warna.get(kunci, kunci), total_sold, _angka(total_pos))
+                )
+            continue
+        for menu_id, baris in closing_export_penjualan.bagi_colorplate(sold, tingkat).items():
+            tujuan = harga.setdefault(("closing", menu_id), {})
+            for kunci_harga, qty in baris.items():
+                tujuan[kunci_harga] = tujuan.get(kunci_harga, 0) + qty
+
+
 def susun_rekap(db, outlet=None, start_date=None, end_date=None) -> list[RekapPasangan]:
     """Rekap per outlet × tanggal: menu closing + produk non-colorplate di master."""
     menu_per_pasangan: dict = {}
@@ -426,10 +496,12 @@ def susun_rekap(db, outlet=None, start_date=None, end_date=None) -> list[RekapPa
     }
     colorplate: dict = {}
     produk: dict = {}
-    produk_colorplate: dict = {}
     belum_master: dict = {}
     # (outlet, tanggal) → item → {(SaleMode, RetailPrice, Price): qty}
     harga: dict = {}
+    # (outlet, tanggal) → kunci warna → {(SaleMode, RetailPrice, Price) per piring: piring}
+    piring: dict = {}
+    nama_warna: dict = {}
     for r in _penjualan_per_group(db, pasangan):
         qty = Decimal(r.qty or 0)
         if not qty:
@@ -438,24 +510,32 @@ def susun_rekap(db, outlet=None, start_date=None, end_date=None) -> list[RekapPa
         kunci_harga = (r.sale_mode, Decimal(r.retail_price or 0), Decimal(r.price or 0))
         if aturan.termasuk(r.product_id, r.grup):
             colorplate.setdefault(k, {})[r.product_id] = r.nama
-            tujuan = produk_colorplate
-        elif (k, r.product_id) in menu_produk:
+            for warna, banyak, kunci in _piring_per_warna(aturan, r, kunci_harga):
+                nama_warna.setdefault(color_key(warna), warna)
+                baris = piring.setdefault(k, {}).setdefault(color_key(warna), {})
+                baris[kunci] = baris.get(kunci, 0) + qty * banyak
+            continue
+        if (k, r.product_id) in menu_produk:
             item = ("closing", menu_produk[(k, r.product_id)])
             baris = harga.setdefault(k, {}).setdefault(item, {})
             baris[kunci_harga] = baris.get(kunci_harga, 0) + qty
             continue
-        else:
-            tujuan = produk
         master_produk = master.get((r.outlet_code, r.product_id))
         if master_produk is None or not master_produk.product_code:
             belum_master.setdefault(k, {})[r.product_id] = r.nama
             continue
         # Dua ProductID POS bisa menunjuk satu produk master: qty dijumlah.
-        total = tujuan.setdefault(k, {}).setdefault(master_produk.id, [master_produk, 0])
+        total = produk.setdefault(k, {}).setdefault(master_produk.id, [master_produk, 0])
         total[1] += qty
-        item = ("colorplate" if tujuan is produk_colorplate else "pos_only", master_produk.id)
-        baris = harga.setdefault(k, {}).setdefault(item, {})
+        baris = harga.setdefault(k, {}).setdefault(("pos_only", master_produk.id), {})
         baris[kunci_harga] = baris.get(kunci_harga, 0) + qty
+
+    warna_menu = closing_menu_service.platecolors(
+        db, {b.menu_id for baris in menu_per_pasangan.values() for b in baris}
+    )
+    for k, isi in rekap.items():
+        if isi.baris_menu:
+            _harga_colorplate(isi, warna_menu, piring.get(k, {}), nama_warna, harga.setdefault(k, {}))
 
     header = _header_per_mode(db, pasangan)
     for k, isi in rekap.items():
@@ -464,13 +544,6 @@ def susun_rekap(db, outlet=None, start_date=None, end_date=None) -> list[RekapPa
 
         isi.items_produk = sorted(
             (_item_produk(p, qty, prices.get(("pos_only", p.id), [])) for p, qty in produk.get(k, {}).values()),
-            key=_urut_produk,
-        )
-        isi.items_colorplate = sorted(
-            (
-                _item_produk(p, qty, prices.get(("colorplate", p.id), []), source="colorplate")
-                for p, qty in produk_colorplate.get(k, {}).values()
-            ),
             key=_urut_produk,
         )
         isi.blokir.produk_belum_master = [ProdukPos(pid, n) for pid, n in sorted(belum_master.get(k, {}).items())]
@@ -489,7 +562,7 @@ def susun_rekap(db, outlet=None, start_date=None, end_date=None) -> list[RekapPa
             ]
 
     # Tanpa closing dan tanpa apa pun untuk dikirim (mis. semua qty 0) tidak ditampilkan.
-    hasil = [r for r in rekap.values() if r.baris_menu or r.items_produk or r.items_colorplate or r.blokir]
+    hasil = [r for r in rekap.values() if r.baris_menu or r.items_produk or r.blokir]
     return sorted(hasil, key=lambda r: (r.production_date, r.outlet_code))
 
 
@@ -703,6 +776,8 @@ def status_pasangan(db, outlet=None, start_date=None, end_date=None) -> list[Sta
                 produk_colorplate_dipetakan=blokir.produk_colorplate_dipetakan,
                 produk_belum_master=blokir.produk_belum_master,
                 colorplate_tanpa_closing=blokir.colorplate_tanpa_closing,
+                menu_tanpa_warna=blokir.menu_tanpa_warna,
+                warna_tidak_lengkap=blokir.warna_tidak_lengkap,
                 last_attempt=terakhir,
                 last_sent=sampai,
             )

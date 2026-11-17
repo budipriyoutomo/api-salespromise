@@ -372,6 +372,35 @@ def test_migrasi_019_hanya_menambah_kolom_syarat_closing_di_brands():
         assert terlarang not in sql, terlarang
 
 
+def test_migrasi_020_hanya_menambah_kolom_warna_piring_di_closing_menus():
+    """Warna piring per menu closing (kirim rekap revisi 3): tambah kolom nullable
+    saja, jadi menu yang sudah ada tetap tanpa warna dan tidak ada baris yang berubah."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "020_closing_menu_platecolor.sql").read_text(encoding="utf-8"))
+
+    for harus in [
+        "ALTER TABLE CLOSING_MENUS ADD COLUMN IF NOT EXISTS PLATECOLOR VARCHAR(255) DEFAULT NULL",
+        "ALTER TABLE CLOSING_MENUS ADD COLUMN IF NOT EXISTS PLATECOLOR_BY VARCHAR(255) DEFAULT NULL",
+        "ALTER TABLE CLOSING_MENUS ADD COLUMN IF NOT EXISTS PLATECOLOR_AT TIMESTAMP DEFAULT NULL",
+    ]:
+        assert harus in " ".join(sql.split()), harus
+    assert sql.count("ALTER TABLE") == 3
+    for terlarang in [
+        "INSERT",
+        "UPDATE ",
+        "DROP",
+        "DELETE",
+        "TRUNCATE",
+        "CREATE",
+        "NOT NULL",
+        "CLOSING_MENU_PRODUCTS",
+        "CLOSING_REPORT",
+        "API_KEYS",
+        "ORDERTRANSACTION",
+        "ORDERDETAIL",
+    ]:
+        assert terlarang not in sql, terlarang
+
+
 def test_statement_timeout_dimatikan_sebelum_lock_dan_migrasi(folder):
     """Engine aplikasi memasang statement_timeout; migrasi (bangun index) dan
     menunggu advisory lock bisa jauh lebih lama dari itu."""

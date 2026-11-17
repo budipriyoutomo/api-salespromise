@@ -209,6 +209,27 @@ class TestListProduct:
         assert kode("pc-p-00") == ["P-001", "P-002", "P-003"]
         assert kode("tidak-ada") == []
 
+    def test_filter_product_code_sama_dengan_productid(self, client, admin_headers):
+        _buat(client, admin_headers, code="101", product_code="101", name="Impor")
+        _buat(client, admin_headers, code="102", product_code="SKU-102", name="Sudah diganti")
+        _buat(client, admin_headers, code="103", product_code=" 103 ", name="Impor Lain", is_active=False)
+
+        def kode(**params):
+            res = client.get("/api/products", params=params, headers=admin_headers)
+            return [p["code"] for p in res.json()["data"]], res.json()["pagination"]["total"]
+
+        assert kode(same_code="true") == (["101", "103"], 2)
+        assert kode(same_code="true", q="lain") == (["103"], 1)
+        assert kode() == (["101", "102", "103"], 3)
+
+    def test_filter_product_code_sama_mengabaikan_produk_lama_tanpa_product_code(self, client, admin_headers, app_db):
+        app_db.add(Product(code="LAMA", name="Produk Lama", unit="pcs", price=1000))
+        app_db.commit()
+
+        res = client.get("/api/products", params={"same_code": "true"}, headers=admin_headers)
+
+        assert res.json()["data"] == []
+
     def test_limit_di_atas_maksimum_ditolak(self, client, admin_headers):
         assert client.get("/api/products", params={"limit": 201}, headers=admin_headers).status_code == 422
 
@@ -220,6 +241,72 @@ class TestListProduct:
 
     def test_tanpa_token_ditolak(self, client):
         assert client.get("/api/products").status_code == 401
+
+
+class TestExportProduct:
+
+    def _baris(self, response):
+        import csv
+        import io
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert 'filename="produk-' in response.headers["content-disposition"]
+        teks = response.content.decode("utf-8")
+        assert teks.startswith("﻿")
+        return list(csv.reader(io.StringIO(teks[1:])))
+
+    def test_semua_kolom_dan_mapping_aktif(self, client, admin_headers, penjualan, make_brand):
+        brand = make_brand("SSH", "Sushi, House")
+        p = _buat(client, admin_headers, code="P-001", name="Red Plate", category="Plate", brand_id=brand.id)
+        pid = p.json()["data"]["id"]
+        _buat(client, admin_headers, code="P-002", name="Ocha", is_active=False)
+        for outlet in ("OUTLET_001", "OUTLET_002"):
+            client.post(
+                f"/api/products/{pid}/pos-mappings",
+                json={"outlet_code": outlet, "pos_product_id": 101},
+                headers=admin_headers,
+            )
+
+        rows = self._baris(client.get("/api/products/export", headers=admin_headers))
+
+        assert rows == [
+            [
+                "ProductID",
+                "Product Code",
+                "Nama",
+                "Kategori",
+                "Subkategori",
+                "Brand Code",
+                "Brand",
+                "Status",
+                "ProductID POS",
+            ],
+            ["P-001", "PC-P-001", "Red Plate", "Plate", "", "SSH", "Sushi, House", "Aktif", "OUTLET_001:101; OUTLET_002:101"],
+            ["P-002", "PC-P-002", "Ocha", "", "", "DEF", "Brand Bawaan", "Nonaktif", ""],
+        ]
+
+    def test_mengikuti_filter_tanpa_pagination(self, client, admin_headers):
+        for i in range(1, 4):
+            _buat(client, admin_headers, code=f"10{i}", product_code=f"10{i}")
+        _buat(client, admin_headers, code="200", product_code="SKU-200")
+
+        semua = self._baris(client.get("/api/products/export", headers=admin_headers))
+        sama = self._baris(client.get("/api/products/export", params={"same_code": "true"}, headers=admin_headers))
+        cari = self._baris(client.get("/api/products/export", params={"q": "sku"}, headers=admin_headers))
+
+        assert [r[0] for r in semua[1:]] == ["101", "102", "103", "200"]
+        assert [r[0] for r in sama[1:]] == ["101", "102", "103"]
+        assert [r[0] for r in cari[1:]] == ["200"]
+
+    def test_kosong_tetap_ada_header(self, client, admin_headers):
+        assert len(self._baris(client.get("/api/products/export", headers=admin_headers))) == 1
+
+    def test_manager_boleh(self, client, manager_headers):
+        assert client.get("/api/products/export", headers=manager_headers).status_code == 200
+
+    def test_role_outlet_ditolak(self, client, outlet_headers):
+        assert client.get("/api/products/export", headers=outlet_headers).status_code == 403
 
 
 class TestDetailProduct:

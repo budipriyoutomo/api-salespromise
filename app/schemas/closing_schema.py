@@ -42,6 +42,10 @@ class ClosingMenuResponse(BaseModel):
     not_in_pos: bool = False
     not_in_pos_by: Optional[str] = None
     not_in_pos_at: Optional[datetime] = None
+    # Warna piring (migrasi 020): harga piring untuk colorplateSold saat kirim rekap.
+    platecolor: Optional[str] = None
+    platecolor_by: Optional[str] = None
+    platecolor_at: Optional[datetime] = None
     products: List[ClosingMenuProductResponse] = Field(default_factory=list)
     first_seen_at: datetime
     last_seen_at: datetime
@@ -98,6 +102,12 @@ class UpdateClosingMenuRequest(BaseModel):
 
     not_in_pos: bool
     deactivate_products: bool = False
+
+
+class UpdateClosingMenuPlatecolorRequest(BaseModel):
+    """Warna piring menu; harus ada di data COLORPLATE POS. `null` = kosongkan."""
+
+    platecolor: Optional[str] = Field(default=None, max_length=255)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +365,16 @@ class ClosingExportPosProduct(BaseModel):
     product_name: Optional[str] = None
 
 
+class ClosingExportColorMismatch(BaseModel):
+    """Warna yang hanya terjual di closing (harga tidak diketahui) atau hanya di POS."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    platecolor: str
+    colorplate_sold: int
+    pos_qty: float
+
+
 class ClosingExportStatus(BaseModel):
     """Status kirim satu outlet × tanggal produksi.
 
@@ -381,6 +401,10 @@ class ClosingExportStatus(BaseModel):
     produk_belum_master: List[ClosingExportPosProduct]
     # Tanpa closing, tetapi produk colorplate terjual.
     colorplate_tanpa_closing: List[ClosingExportPosProduct]
+    # Menu dengan sold > 0 yang belum punya warna piring.
+    menu_tanpa_warna: List[ClosingExportUnmappedMenu]
+    # Warna yang hanya ada di closing atau hanya di POS.
+    warna_tidak_lengkap: List[ClosingExportColorMismatch]
     last_attempt: Optional[ClosingExportSummary] = None
     last_sent: Optional[ClosingExportSummary] = None
 

@@ -625,6 +625,7 @@ Sebelum deploy (read-only ke produksi, butuh izin):
 Deploy (mengubah skema produksi, butuh persetujuan eksplisit):
 
 - [ ] Jangan build/deploy image baru ke produksi sampai semua item di atas selesai dan disetujui.
-- [ ] Deploy di jam sepi karena ada lock singkat di `brands`.
+- [ ] Deploy di jam sepi karena ada lock singkat di `brands` (019) dan `closing_menus` (020).
+- [ ] Migrasi `020_closing_menu_platecolor.sql` ikut jalan saat container start. Setelah deploy, semua menu closing belum punya warna piring, jadi rekap yang menjual colorplate terblokir sampai admin mengisi warnanya di /closing-menu (filter "Belum ada warna piring").
 - [ ] Setelah deploy: cek log `[migrate]`, jalankan `migrate.py --status`, dan pastikan semua brand `requires_closing = TRUE`.
 - [ ] Mengubah `requires_closing = FALSE` untuk brand tertentu adalah perubahan data. Lakukan lewat halaman admin, setelah disetujui.

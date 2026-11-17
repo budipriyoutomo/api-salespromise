@@ -95,13 +95,21 @@ def normalize_product_code(value) -> str:
 # ---------------------------------------------------------------------------
 
 
-def list_products(db, q=None, limit=LIST_DEFAULT_LIMIT, offset=0):
-    """Produk terurut ProductID, termasuk yang nonaktif. Mengembalikan (baris, total).
+def _query_products(db, q=None, same_code: bool = False):
+    """Query produk tersaring, dipakai daftar maupun export.
 
     `q` dicari (tidak peka huruf besar/kecil) di ProductID, Product Code, nama,
     kategori, subkategori, serta kode dan nama brand.
+
+    `same_code` hanya menyisakan produk yang Product Code-nya sama dengan
+    ProductID — biasanya produk hasil impor dari transaksi yang Product Code-nya
+    belum diganti ke kode sebenarnya. Keduanya sudah tersimpan dalam bentuk
+    normal, jadi cukup dibandingkan langsung.
     """
     query = db.query(Product)
+
+    if same_code:
+        query = query.filter(Product.product_code == Product.code)
 
     q = (q or "").strip()
     if q:
@@ -123,9 +131,23 @@ def list_products(db, q=None, limit=LIST_DEFAULT_LIMIT, offset=0):
             )
         )
 
+    return query
+
+
+def list_products(db, q=None, limit=LIST_DEFAULT_LIMIT, offset=0, same_code: bool = False):
+    """Produk terurut ProductID, termasuk yang nonaktif. Mengembalikan (baris, total).
+
+    Filter `q` dan `same_code`: lihat `_query_products`.
+    """
+    query = _query_products(db, q=q, same_code=same_code)
     total = query.count()
     rows = query.order_by(Product.code).limit(limit).offset(offset).all()
     return rows, total
+
+
+def products_for_export(db, q=None, same_code: bool = False):
+    """Semua produk hasil filter, tanpa pagination, terurut ProductID."""
+    return _query_products(db, q=q, same_code=same_code).order_by(Product.code).all()
 
 
 def get_by_id(db, product_id: int):

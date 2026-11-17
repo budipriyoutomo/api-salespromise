@@ -29,6 +29,8 @@ MIGRASI = [
 ]
 MIGRASI_018 = migrate.MIGRATIONS_DIR / "018_closing_menu_not_in_pos.sql"
 KOLOM_BARU = ("not_in_pos", "not_in_pos_by", "not_in_pos_at")
+# Ditambah migrasi sesudah 018 (020: warna piring) — tidak ada di skema uji ini.
+KOLOM_SESUDAH_018 = {"platecolor", "platecolor_by", "platecolor_at"}
 
 pytestmark = [
     pytest.mark.integration,
@@ -113,7 +115,7 @@ def test_kolom_sama_dengan_model(conn):
     for nama in KOLOM_BARU:
         assert (kolom[nama][2] == "YES") == tabel.c[nama].nullable, nama
     assert tabel.c["not_in_pos_by"].type.length == 255
-    assert set(tabel.c.keys()) == set(kolom), "kolom model dan migrasi berbeda"
+    assert set(tabel.c.keys()) - KOLOM_SESUDAH_018 == set(kolom), "kolom model dan migrasi berbeda"
 
 
 def test_menu_lama_tetap_belum_ditandai_dan_tidak_berubah(conn):

@@ -892,6 +892,43 @@ RabbitMQ) dan publish colorplate (keluar lewat RabbitMQ).
       Sebelum deploy: bagian 4 & 10 di `todo_perbaikan.md`, lengkapi master
       produk non-colorplate (tanpa itu kiriman terblokir). Frontend: sync-frontend
       Fase 12 item 12.8.
+- [x] **8.13 Kontrak revisi 3: `sales`, `prices`, 409** (2026-11-12) — balasan
+      ERP Gateway: [docs/balasan-kontrak-kirim-closing.md](docs/balasan-kontrak-kirim-closing.md),
+      jawaban kita: [docs/jawaban-balasan-kontrak-kirim-closing.md](docs/jawaban-balasan-kontrak-kirim-closing.md).
+      - `sales` per `SaleMode` (`visitPurposeName`, sementara `"SALEMODE n"`),
+        `payments: []`; `grandTotal` = subtotal − diskon + SC + PPN + OtherIncome
+        (`orderFee`), sama untuk outlet ST dan TS;
+      - `items[].prices` per (SaleMode, RetailPrice, Price); diskon/SC/PPN
+        header dibagi proporsional, sisa pembulatan ke baris terbesar
+        (`closing_export_penjualan.py`);
+      - 409 `stale_sequence` dicatat gagal, tidak diulang; kiriman berikutnya
+        di atas `currentSequence` (tanpa migrasi).
+- [x] **8.14 Harga piring colorplate di menu closing** (2026-11-17, mengganti
+      item `source: "colorplate"` dari 8.13) — keputusan pengguna:
+      - produk COLORPLATE POS tidak dikirim sebagai item dan tidak butuh master;
+      - warna piring per menu closing diisi admin: `closing_menus.platecolor`
+        (+ `_by` / `_at`), migrasi `020_closing_menu_platecolor.sql` (ADD COLUMN
+        nullable saja), `PUT /api/closing-menus/{id}/platecolor`, filter
+        `status=no_platecolor`;
+      - `colorplateSold` × harga piring POS warna itu (SaleMode & harga promo
+        ikut pola piring POS; qty dapur, diskalakan kalau ≠ qty POS) masuk ke
+        `prices` menu → Σ `prices.qty` = `totalSold`;
+      - blokir baru: `menu_tanpa_warna` (sold > 0 tanpa warna),
+        `warna_tidak_lengkap` (warna hanya di closing atau hanya di POS).
+      Penjaga: `TestBagiColorplate`, `TestColorplateTidakDobel`, `TestPenjualan`,
+      `TestWarnaPiringMenu`, `test_migrate.py`,
+      `tests/integration/test_migrasi_020_postgres.py` (**belum dijalankan**,
+      `TEST_DATABASE_URL` tidak diset). Migrasi 020 belum dijalankan ke
+      database mana pun. Surat ke ERP:
+      [docs/status-pekerjaan-kirim-closing.md](docs/status-pekerjaan-kirim-closing.md).
+- [ ] **8.15 `payments`** — menunggu agen POS (project terpisah) mengirim
+      baris `orderpaydetail`. Di sini: skema `SalesSchema.payments`, tabel baru
+      (migrasi, **minta izin**), `payments` per tujuan kunjungan + metode,
+      blokir kalau Σ `payments` ≠ `grandTotal`. `coaNo` / MDR tidak dikirim.
+- [ ] **8.16 Menunggu ERP Gateway** — daftar `visitPurposeName` (isi
+      `NAMA_TUJUAN_KUNJUNGAN`), field `OtherIncome`, rekap kosong
+      (`items: []`), `sales: []`, arti `fullPaymentAmount`, pembulatan kasir,
+      endpoint + token uji.
 
 ## Fase 9 — Performa & error saat data besar (2026-10-23)
 

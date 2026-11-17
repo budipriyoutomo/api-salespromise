@@ -10,6 +10,20 @@ Semua perilaku pengirim di sini diambil dari implementasi sync-api
 `app/services/closing_export_client.py`). Latar belakang dan pertanyaan
 terbuka ada di `docs/usulan-kontrak-kirim-closing.md`.
 
+> **Sebagian sudah usang (17 November 2026).** Dokumen ini ditulis untuk
+> kontrak revisi 2. Sejak revisi 3, acuannya adalah
+> `docs/usulan-kontrak-kirim-closing.md`, khususnya untuk:
+> - URL `{BASE_URL}/api/v1/closing-totals`;
+> - payload `sales` (per `visitPurposeName`, dengan `payments`) dan
+>   `items[].prices`, dengan Σ `prices.qty` = `totalSold`;
+> - `409`: `duplicate_message` dianggap sudah sampai, sedangkan
+>   `stale_sequence` dianggap ditolak, tidak diulang, dan kiriman berikutnya
+>   memakai `sequence` di atas `currentSequence`;
+> - `sequence` boleh loncat.
+>
+> Bagian lain (idempotensi `messageId`, semantik ganti penuh, retry, timeout)
+> masih berlaku.
+
 ---
 
 ## 1. Ringkasan

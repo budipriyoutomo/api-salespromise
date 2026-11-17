@@ -160,6 +160,13 @@ class ClosingMenu(Base):
     not_in_pos_by = Column(String(255), nullable=True)
     not_in_pos_at = Column(DateTime, nullable=True)
 
+    # Warna piring menu ini (migrasi 020), ejaan dari data COLORPLATE POS.
+    # Harga piring warna ini dipakai untuk colorplateSold di kirim rekap
+    # closing. NULL = belum diisi; memblokir kiriman kalau sold > 0.
+    platecolor = Column(String(255), nullable=True)
+    platecolor_by = Column(String(255), nullable=True)
+    platecolor_at = Column(DateTime, nullable=True)
+
     products = relationship(
         "ClosingMenuProduct",
         order_by="ClosingMenuProduct.product_id",

@@ -17,6 +17,11 @@ Rumus grandTotal berlaku untuk semua outlet. Di outlet ST hasilnya sama dengan
 ReceiptSalePrice. Di outlet TS ReceiptSalePrice hanya subtotal − diskon,
 padahal tamu membayar subtotal + SC + PPN (dikonfirmasi user 2026-11-12).
 
+colorplateSold menu closing diberi harga piring warna menu itu
+(`bagi_colorplate`): baris COLORPLATE POS warna itu (SaleMode + harga)
+dipasangkan ke menu-menu berwarna sama. Produk COLORPLATE POS sendiri tidak
+dikirim sebagai item.
+
 POS mencatat diskon, service charge, dan PPN per transaksi. Nilainya dibagi
 ke baris `prices` sebanding dengan qty × price, dibulatkan 2 desimal, dan sisa
 pembulatan ditaruh di baris terbesar. Jadi per `visitPurposeName`, jumlah
@@ -59,6 +64,56 @@ def bagi(total, bobot: list[Decimal]) -> list[Decimal]:
     terbesar = max(range(len(bobot)), key=lambda i: bobot[i])
     bagian[terbesar] += total - sum(bagian)
     return bagian
+
+
+def bagi_bulat(total: int, bobot: list[Decimal]) -> list[int]:
+    """Bagi bilangan bulat `total` sebanding `bobot`; sisa ke pecahan terbesar."""
+    jumlah = sum(bobot)
+    if not bobot or jumlah <= 0:
+        return [0] * len(bobot)
+    mentah = [Decimal(total) * b / jumlah for b in bobot]
+    bagian = [int(m) for m in mentah]
+    urutan = sorted(range(len(bobot)), key=lambda i: (-(mentah[i] - bagian[i]), i))
+    for i in urutan[: total - sum(bagian)]:
+        bagian[i] += 1
+    return bagian
+
+
+def bagi_colorplate(
+    sold_per_menu: dict[Hashable, int],
+    tingkat: dict[tuple[int, Decimal, Decimal], Decimal],
+) -> dict[Hashable, dict[tuple[int, Decimal, Decimal], Decimal]]:
+    """Pasangkan colorplateSold menu-menu satu warna ke baris harga piring POS warna itu.
+
+    `tingkat`: (SaleMode, RetailPrice, Price) per piring → jumlah piring di POS.
+    Jumlah piring POS lebih dulu diskalakan ke total colorplateSold (qty dapur),
+    lalu diisikan berurutan ke menu. Kalau qty dapur = qty POS, hasilnya persis
+    baris POS, jadi pendapatannya sama dengan uang kasir.
+
+    Hasil: menu → {(SaleMode, RetailPrice, Price): qty}. Kosong kalau tidak ada
+    yang terjual; ValueError kalau ada yang terjual tetapi POS tanpa harga.
+    """
+    menu = sorted(((m, int(q)) for m, q in sold_per_menu.items() if q and int(q) > 0), key=lambda x: str(x[0]))
+    total = sum(q for _, q in menu)
+    if total == 0:
+        return {}
+    kunci = sorted(k for k, q in tingkat.items() if q > 0)
+    if not kunci:
+        raise ValueError("warna ini tidak terjual di POS")
+    sisa = dict(zip(kunci, bagi_bulat(total, [Decimal(tingkat[k]) for k in kunci])))
+
+    hasil: dict = {}
+    i = 0
+    for m, butuh in menu:
+        while butuh:
+            while sisa[kunci[i]] == 0:
+                i += 1
+            ambil = min(butuh, sisa[kunci[i]])
+            baris = hasil.setdefault(m, {})
+            baris[kunci[i]] = baris.get(kunci[i], Decimal(0)) + Decimal(ambil)
+            sisa[kunci[i]] -= ambil
+            butuh -= ambil
+    return hasil
 
 
 @dataclass

@@ -40,7 +40,9 @@ def manager_headers(make_user, token_for):
 
 
 def siapkan(db):
-    kirim_closing(db, items=[item(sold=10)])
+    from tests.unit.test_closing_export_service import kirim_closing_siap
+
+    kirim_closing_siap(db, items=[item(sold=10)])
     petakan(db, "SU-001", 200104)
     jual(db, 1, 200104, 3)
 
@@ -134,6 +136,25 @@ class TestKirim:
         assert detail["produk_colorplate_dipetakan"] == [{"product_id": 500, "product_name": "RED", "menus": ["SU-001"]}]
         assert detail["produk_belum_master"] == [{"product_id": 300, "product_name": "Ocha"}]
         assert detail["colorplate_tanpa_closing"] == []
+        assert detail["menu_tanpa_warna"] == []
+        assert detail["warna_tidak_lengkap"] == []
+
+    def test_diblokir_422_warna_piring(self, client, app_db, admin_headers, hasil_api):
+        from tests.unit.test_closing_export_service import contoh_dokumen, master, warnai
+
+        contoh_dokumen(app_db)
+        master(app_db, "M-OCHA", "Ocha", ("OUTLET_001", 300))
+        warnai(app_db, "SU-002", None)
+
+        res = kirim(client, admin_headers)
+
+        assert res.status_code == 422
+        detail = res.json()["detail"]
+        assert [m["menu_code"] for m in detail["menu_tanpa_warna"]] == ["SU-002"]
+
+        warnai(app_db, "SU-002", "BLUE")
+        detail = kirim(client, admin_headers).json()["detail"]
+        assert detail["warna_tidak_lengkap"] == [{"platecolor": "BLUE", "colorplate_sold": 10, "pos_qty": 0}]
 
     def test_sedang_dikirim_409(self, client, app_db, admin_headers, hasil_api):
         from app.models.closing_report import ClosingExportLog

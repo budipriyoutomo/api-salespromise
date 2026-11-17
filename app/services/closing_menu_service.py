@@ -12,6 +12,10 @@ dan mapping aktif tidak boleh ada bersamaan; admin memilih dari frontend:
 yang diaktifkan dengan `clear_not_in_pos=True` melepas tanda. Tanpa pilihan
 itu = `TidakAdaDiPosBentrok` (409).
 
+Warna piring menu (`platecolor`, migrasi 020) dipakai kirim rekap closing:
+colorplateSold × harga piring warna itu. Diisi dengan ejaan dari data
+COLORPLATE POS, sama seperti konversi menu (`product_menu_service`).
+
 Tidak ada fungsi hapus — mapping dimatikan lewat `is_active`.
 """
 
@@ -21,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.time import utcnow
 from app.models.closing_report import ClosingMenu, ClosingMenuProduct
 from app.services import product_menu_service
+from app.services.sales_service import color_key
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
@@ -29,7 +34,8 @@ STATUS_SEMUA = "all"
 STATUS_DIPETAKAN = "mapped"
 STATUS_BELUM = "unmapped"
 STATUS_TIDAK_ADA_DI_POS = "not_in_pos"
-STATUS_MENU = (STATUS_SEMUA, STATUS_DIPETAKAN, STATUS_BELUM, STATUS_TIDAK_ADA_DI_POS)
+STATUS_TANPA_WARNA = "no_platecolor"
+STATUS_MENU = (STATUS_SEMUA, STATUS_DIPETAKAN, STATUS_BELUM, STATUS_TIDAK_ADA_DI_POS, STATUS_TANPA_WARNA)
 
 
 class MenuTidakDitemukan(Exception):
@@ -50,6 +56,10 @@ class ProductTidakAdaDiData(Exception):
 
 class TidakAdaDiPosBentrok(Exception):
     """Tanda "tidak ada di POS" dan mapping aktif akan ada bersamaan."""
+
+
+class WarnaTidakDikenal(Exception):
+    """Warna tidak pernah muncul sebagai menu COLORPLATE di data penjualan."""
 
 
 def list_menus(db, status: str = STATUS_SEMUA, q: str | None = None, limit=DEFAULT_LIMIT, offset=0):
@@ -74,6 +84,8 @@ def list_menus(db, status: str = STATUS_SEMUA, q: str | None = None, limit=DEFAU
         query = query.filter(~punya_mapping_aktif, ClosingMenu.not_in_pos.is_(False))
     elif status == STATUS_TIDAK_ADA_DI_POS:
         query = query.filter(ClosingMenu.not_in_pos.is_(True))
+    elif status == STATUS_TANPA_WARNA:
+        query = query.filter(ClosingMenu.platecolor.is_(None))
 
     total = query.count()
     rows = query.order_by(ClosingMenu.menu_code, ClosingMenu.id).limit(limit).offset(offset).all()
@@ -122,6 +134,40 @@ def set_not_in_pos(db, menu_id: int, not_in_pos: bool, by: str, deactivate_produ
     db.commit()
     db.refresh(menu)
     return menu
+
+
+def set_platecolor(db, menu_id: int, platecolor: str | None, by: str):
+    """Isi / ganti / kosongkan warna piring. Warna harus ada di data COLORPLATE."""
+    menu = db.get(ClosingMenu, menu_id)
+    if menu is None:
+        raise MenuTidakDitemukan(menu_id)
+
+    warna = None
+    if platecolor is not None and platecolor.strip():
+        kunci = color_key(platecolor)
+        warna = next((w for w in product_menu_service.list_colors(db) if color_key(w) == kunci), None)
+        if warna is None:
+            raise WarnaTidakDikenal(platecolor)
+
+    if warna != menu.platecolor:
+        menu.platecolor = warna
+        menu.platecolor_by = by if warna else None
+        menu.platecolor_at = utcnow() if warna else None
+        db.commit()
+        db.refresh(menu)
+    return menu
+
+
+def platecolors(db, menu_ids) -> dict:
+    """menu_id → warna piring (yang sudah diisi saja)."""
+    if not menu_ids:
+        return {}
+    rows = (
+        db.query(ClosingMenu.menu_id, ClosingMenu.platecolor)
+        .filter(ClosingMenu.menu_id.in_(list(menu_ids)), ClosingMenu.platecolor.isnot(None))
+        .all()
+    )
+    return {r.menu_id: r.platecolor for r in rows}
 
 
 def add_product(

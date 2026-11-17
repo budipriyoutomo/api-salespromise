@@ -4,10 +4,13 @@ Halo tim, kami (sync-api Maharasa) akan mengirim rekap closing harian per
 outlet ke API Anda. Di bawah ini kontraknya. Mohon dikoreksi bagian yang tidak
 cocok dengan sistem Anda.
 
-**Revisi 3 (12 November 2026).** Menindaklanjuti balasan tim ERP Gateway
-tanggal 10 November 2026. Ada tambahan data penjualan (`sales`, `prices`), item
-colorplate per warna, dan pembedaan dua alasan `409`. Perubahannya dirangkum di
-bagian 6.
+**Revisi 3 (12 November 2026, diperbarui 17 November 2026).** Menindaklanjuti
+balasan tim ERP Gateway tanggal 10 November 2026. Ada tambahan data penjualan
+(`sales`, `prices`), harga piring colorplate di menu closing, dan pembedaan dua
+alasan `409`. Perubahannya dirangkum di bagian 6.
+
+Pembaruan 17 November: item `source: "colorplate"` **dihapus**. Harga piring
+colorplate kini masuk ke `prices` menu closing (bagian 2.4).
 
 ## 1. Gambaran
 
@@ -42,19 +45,19 @@ Idempotency-Key: <sama dengan messageId>
       "visitPurposeName": "DINE IN",
       "paxTotal": 4,
       "flagInclusive": 0,
-      "subtotal": 125000,
+      "subtotal": 245000,
       "discountTotal": 0,
       "menuDiscountTotal": 0,
       "promotionDiscount": 0,
-      "otherTaxTotal": 9375,
-      "vatTotal": 13437.5,
+      "otherTaxTotal": 18375,
+      "vatTotal": 26337.5,
       "otherVatTotal": 0,
       "deliveryFee": 0,
       "orderFee": 0,
       "voucherTotal": 0,
       "roundingTotal": 0,
-      "grandTotal": 147812.5,
-      "paymentTotal": 147812.5,
+      "grandTotal": 289712.5,
+      "paymentTotal": 289712.5,
       "payments": []
     }
   ],
@@ -89,39 +92,22 @@ Idempotency-Key: <sama dengan messageId>
           "otherVatValue": 0,
           "otherTaxOnVat": 0,
           "total": 53212.5
-        }
-      ]
-    },
-    {
-      "source": "colorplate",
-      "menuId": null,
-      "menuCode": null,
-      "menuName": null,
-      "productId": "789",
-      "productCode": "CP-YELLOW",
-      "productName": "Colorplate Yellow",
-      "colorplateSold": 0,
-      "posQty": 4,
-      "totalSold": 4,
-      "waste": 0,
-      "adjustment": 0,
-      "compensation": 0,
-      "prices": [
+        },
         {
           "visitPurposeName": "DINE IN",
-          "qty": 4,
+          "qty": 10,
           "originalPrice": 20000,
           "price": 20000,
           "discount": 0,
           "discountValue": 0,
           "otherTax": 7.5,
-          "otherTaxValue": 6000,
+          "otherTaxValue": 15000,
           "vat": 10,
-          "vatValue": 8600,
+          "vatValue": 21500,
           "otherVat": 0,
           "otherVatValue": 0,
           "otherTaxOnVat": 0,
-          "total": 94600
+          "total": 236500
         }
       ]
     }
@@ -172,43 +158,43 @@ Pemetaan tujuan kunjungan dari POS:
 
 | Field | Arti |
 |---|---|
-| `source` | `closing` = menu dari laporan closing. `colorplate` = penjualan piring warna di POS, satu item per warna. `pos_only` = produk lain yang terjual di POS (minuman, side dish, dll.). |
+| `source` | `closing` = menu dari laporan closing. `pos_only` = produk lain yang terjual di POS (minuman, side dish, dll.). |
 | `menuId` / `menuCode` / `menuName` | Identitas menu closing. `menuId` (UUID) adalah kunci yang stabil. Kosong selain untuk `closing`. |
-| `productId` | **String.** Kode produk di master produk Maharasa. Diisi untuk `colorplate` dan `pos_only`. |
-| `productCode` | Kode produk (SKU) dari master produk. Diisi untuk `colorplate` dan `pos_only`, dan menjadi kuncinya. |
+| `productId` | **String.** Kode produk di master produk Maharasa. Diisi untuk `pos_only`. |
+| `productCode` | Kode produk (SKU) dari master produk. Diisi untuk `pos_only`, dan menjadi kuncinya. |
 | `productName` | Nama produk dari master produk, bukan nama di POS. |
 | `colorplateSold` | Jumlah menu terjual lewat colorplate menurut laporan closing. Hanya untuk `closing`, selain itu `0`. |
 | `posQty` | Jumlah terjual menurut POS. Transaksi void tidak dihitung. |
 | `totalSold` | `colorplateSold + posQty`. |
-| `waste` / `adjustment` / `compensation` | Dari laporan closing. `adjustment` bisa negatif. Untuk `colorplate` dan `pos_only` selalu `0`. |
+| `waste` / `adjustment` / `compensation` | Dari laporan closing. `adjustment` bisa negatif. Untuk `pos_only` selalu `0`. |
 | `prices` | Rincian harga penjualan (bagian 2.4). |
 
 `menuId` unik per kiriman. `productCode` juga unik per kiriman: kalau beberapa
 produk POS mengarah ke produk master yang sama, qty-nya dijumlah.
 
-### 2.4 `prices` dan cara menghindari penjualan dobel
+### 2.4 `prices` dan harga piring colorplate
 
 Penjualan colorplate dicatat dua kali di sumber kami: sebagai **jumlah menu**
 di laporan closing (`colorplateSold`), dan sebagai **piring per warna** di POS.
-Harga yang berlaku adalah **harga piring**, jadi pendapatannya dikirim lewat
-item `colorplate`. Akibatnya:
+Supaya tidak dobel, produk piring per warna di POS **tidak dikirim sebagai
+item**. Qty-nya sudah terwakili `colorplateSold`, dan harganya masuk ke
+`prices` menu closing:
 
-- **`prices` hanya menghitung qty yang benar-benar dibayar di POS**, bukan
-  `totalSold`:
-
-  | `source` | Jumlah `prices[].qty` sama dengan |
-  |---|---|
-  | `closing` | `posQty` (porsi `colorplateSold` tidak punya harga sendiri) |
-  | `colorplate` | `totalSold` |
-  | `pos_only` | `totalSold` |
-
-  Kalau jumlahnya `0`, `prices` berisi `[]`.
-- **Untuk penjualan ERP, mohon pakai `prices`, bukan `totalSold`.** `totalSold`
-  menu closing tetap dikirim untuk item journal (pemakaian bahan), dan sudah
-  termasuk porsi yang pendapatannya ada di item `colorplate`.
+- Setiap menu closing punya warna piring (mis. Salmon = YELLOW). Porsi
+  `colorplateSold` diberi **harga piring warna itu** seperti tercatat di POS
+  pada hari itu, termasuk harga promo kalau ada.
+- Tujuan kunjungan porsi colorplate mengikuti piring warna itu di POS. Kalau
+  piring YELLOW terjual 7 di dine in dan 3 di take away, porsi colorplate menu
+  YELLOW dibagi dengan pola yang sama.
+- Jumlah `prices[].qty` sama dengan **`totalSold`** untuk semua item
+  (`colorplateSold + posQty` untuk `closing`). Kalau jumlahnya `0`, `prices`
+  berisi `[]`.
 - Tiap elemen `prices` menyebut `visitPurposeName`-nya. Satu item bisa punya
   beberapa elemen kalau terjual di beberapa tujuan kunjungan atau dengan
   beberapa harga.
+
+Sistem closing kami memverifikasi piring dapur terhadap POS, jadi jumlah
+piring dan nominalnya sama dengan yang dibayar di kasir.
 
 Yang kami jamin, per `visitPurposeName`:
 
@@ -231,8 +217,8 @@ nilai terbesar, supaya jumlahnya tetap sama persis dengan `sales`.
 ### 2.6 Jaminan lain
 
 - Kami tidak mengirim rekap yang belum lengkap. Kalau ada produk yang belum
-  punya master atau mapping yang belum beres, kiriman ditahan di sisi kami
-  sampai admin memperbaikinya.
+  punya master, menu yang belum punya warna piring, atau mapping yang belum
+  beres, kiriman ditahan di sisi kami sampai admin memperbaikinya.
 
 ## 3. Response yang kami harapkan
 
@@ -264,8 +250,8 @@ Token kami simpan di environment server, tidak di kode.
 | URL | `{BASE_URL}/closing-totals` | `{BASE_URL}/api/v1/closing-totals` |
 | `sales` | Tidak ada | **Baru.** Array, satu elemen per `visitPurposeName` |
 | `payments` | Tidak ada | **Baru**, di dalam tiap elemen `sales`. Sementara selalu `[]` |
-| `items[].prices` | Tidak ada | **Baru.** Jumlah qty mengikuti `posQty`/`totalSold` (bagian 2.4) |
-| Penjualan colorplate | Hanya `colorplateSold` di menu closing | Ditambah item `source: "colorplate"` per warna, membawa harga piring |
+| `items[].prices` | Tidak ada | **Baru.** Jumlah qty = `totalSold` (bagian 2.4) |
+| Penjualan colorplate | Hanya `colorplateSold` di menu closing | Tetap di menu closing; `prices` membawa harga piring warna menu itu. Tidak ada item terpisah per warna |
 | `409` | Satu arti | Dibedakan `duplicate_message` dan `stale_sequence` |
 | `sentAt` | "Waktu kirim" | Waktu kiriman dibuat, tidak berubah saat diulang |
 | `sequence` | "Naik 1" | Naik, boleh loncat |
@@ -274,3 +260,6 @@ Token kami simpan di environment server, tidak di kode.
 tabel POS yang belum ditarik oleh agen sinkronisasi kami. Kami akan
 menambahkannya. Sampai saat itu `payments` dikirim `[]`; begitu tersedia,
 kiriman ulang dengan `sequence` baru akan membawa `payments` yang terisi.
+Isinya `paymentMethod` (nama jenis bayar di POS), `paymentAmount`,
+`fullPaymentAmount`, dan `notes`. `coaNo` dan `merchantDiscountRate` tidak
+kami kirim; keduanya diatur di ERP Gateway per `paymentMethod`.

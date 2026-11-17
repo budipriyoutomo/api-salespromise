@@ -4,7 +4,15 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.closing_export_penjualan import HeaderMode, angka, bagi, nama_tujuan, susun
+from app.services.closing_export_penjualan import (
+    HeaderMode,
+    angka,
+    bagi,
+    bagi_bulat,
+    bagi_colorplate,
+    nama_tujuan,
+    susun,
+)
 
 D = Decimal
 
@@ -28,6 +36,47 @@ class TestBagi:
 
     def test_total_dibulatkan_dua_desimal(self):
         assert sum(bagi(D("10.006"), [D(1), D(2)])) == D("10.01")
+
+
+class TestBagiBulat:
+    def test_sisa_ke_pecahan_terbesar(self):
+        assert bagi_bulat(10, [D(1), D(1), D(1)]) == [4, 3, 3]
+        assert bagi_bulat(3, [D(2), D(1)]) == [2, 1]
+
+    def test_tanpa_bobot(self):
+        assert bagi_bulat(5, [D(0)]) == [0]
+        assert bagi_bulat(5, []) == []
+
+
+DINE_IN = (1, D(20000), D(20000))
+PROMO = (1, D(37500), D(37500))
+TAKE_AWAY = (2, D(20000), D(20000))
+
+
+class TestBagiColorplate:
+    def test_qty_dapur_sama_dengan_pos_persis_baris_pos(self):
+        hasil = bagi_colorplate({"salmon": 6, "tuna": 4}, {DINE_IN: D(7), TAKE_AWAY: D(3)})
+
+        assert hasil == {"salmon": {DINE_IN: D(6)}, "tuna": {DINE_IN: D(1), TAKE_AWAY: D(3)}}
+
+    def test_qty_dapur_berbeda_pos_diskalakan(self):
+        hasil = bagi_colorplate({"salmon": 10}, {DINE_IN: D(4), PROMO: D(1)})
+
+        # 10 × 4/5 dan 10 × 1/5.
+        assert hasil == {"salmon": {DINE_IN: D(8), PROMO: D(2)}}
+
+    def test_qty_dapur_tetap_utuh(self):
+        hasil = bagi_colorplate({"a": 1, "b": 1, "c": 1}, {DINE_IN: D(1), TAKE_AWAY: D(1)})
+
+        assert sum(q for baris in hasil.values() for q in baris.values()) == 3
+        assert all(sum(baris.values()) == 1 for baris in hasil.values())
+
+    def test_menu_sold_nol_dilewati(self):
+        assert bagi_colorplate({"a": 0}, {DINE_IN: D(2)}) == {}
+
+    def test_tanpa_piring_pos(self):
+        with pytest.raises(ValueError):
+            bagi_colorplate({"a": 2}, {})
 
 
 @pytest.mark.parametrize(("nilai", "hasil"), [(D("15000.0000"), 15000), (D("12.345"), 12.35), (D(0), 0)])

@@ -415,6 +415,54 @@ class TestTandaTidakAdaDiPos:
         assert self._tandai(client, menu_id, manager_headers).status_code == 403
 
 
+class TestWarnaPiringMenu:
+    """Warna piring menu closing (migrasi 020): harga piring untuk colorplateSold."""
+
+    @pytest.fixture()
+    def menu_id(self, app_db):
+        kirim_closing(app_db)
+        jual(app_db, 1, 500, 2, nama="Blue ", product_group="COLORPLATE")
+        return app_db.query(ClosingMenu).one().id
+
+    def _warna(self, client, menu_id, headers, platecolor):
+        return client.put(f"/api/closing-menus/{menu_id}/platecolor", json={"platecolor": platecolor}, headers=headers)
+
+    def test_isi_memakai_ejaan_data_dan_mencatat_admin(self, client, menu_id, admin_headers):
+        res = self._warna(client, menu_id, admin_headers, " blue")
+
+        assert res.status_code == 200, res.text
+        data = res.json()["data"]
+        assert (data["platecolor"], data["platecolor_by"]) == ("Blue", "admin@maharasa.id")
+        assert data["platecolor_at"] is not None
+
+    def test_kosongkan(self, client, menu_id, admin_headers):
+        self._warna(client, menu_id, admin_headers, "Blue")
+
+        data = self._warna(client, menu_id, admin_headers, None).json()["data"]
+
+        assert (data["platecolor"], data["platecolor_by"], data["platecolor_at"]) == (None, None, None)
+
+    def test_warna_tidak_dikenal(self, client, menu_id, admin_headers):
+        res = self._warna(client, menu_id, admin_headers, "UNGU")
+
+        assert res.status_code == 422
+        assert "UNGU" in res.json()["detail"]
+
+    def test_menu_tidak_ada(self, client, admin_headers):
+        assert self._warna(client, 999, admin_headers, "Blue").status_code == 404
+
+    def test_hanya_admin(self, client, menu_id, manager_headers):
+        assert self._warna(client, menu_id, manager_headers, "Blue").status_code == 403
+
+    def test_filter_belum_ada_warna(self, client, app_db, menu_id, admin_headers):
+        kirim_closing(app_db, items=[item("SU-002", "Tuna")])
+        self._warna(client, menu_id, admin_headers, "Blue")
+
+        res = client.get("/api/closing-menus", params={"status": "no_platecolor"}, headers=admin_headers)
+
+        assert [m["menu_code"] for m in res.json()["data"]] == ["SU-002"]
+
+
 # ---------------------------------------------------------------------------
 # /api/closing-reports (user, ter-scope outlet)
 # ---------------------------------------------------------------------------

@@ -52,6 +52,7 @@ from app.schemas.closing_schema import (
     ClosingReportSummary,
     CreateClosingMenuProductRequest,
     SendClosingExportRequest,
+    UpdateClosingMenuPlatecolorRequest,
     UpdateClosingMenuProductRequest,
     UpdateClosingMenuRequest,
 )
@@ -76,7 +77,7 @@ closing_menu_router = APIRouter(prefix="/api/closing-menus", tags=["Admin - Clos
 
 @closing_menu_router.get("", response_model=ClosingMenuListResponse)
 def list_closing_menus(
-    status_: Literal["all", "mapped", "unmapped", "not_in_pos"] = Query("all", alias="status"),
+    status_: Literal["all", "mapped", "unmapped", "not_in_pos", "no_platecolor"] = Query("all", alias="status"),
     q: Optional[str] = Query(None, max_length=100, description="Cari menuCode atau nama menu"),
     limit: int = Query(closing_menu_service.DEFAULT_LIMIT, ge=1, le=closing_menu_service.MAX_LIMIT),
     offset: int = Query(0, ge=0),
@@ -86,7 +87,8 @@ def list_closing_menus(
     """menuCode yang pernah muncul di closing report.
 
     `unmapped` = belum punya mapping aktif dan tidak ditandai tidak ada di POS
-    (masih memblokir kirim rekap); `not_in_pos` = ditandai tidak ada di POS.
+    (masih memblokir kirim rekap); `not_in_pos` = ditandai tidak ada di POS;
+    `no_platecolor` = belum punya warna piring (memblokir kalau sold > 0).
     """
     rows, total = closing_menu_service.list_menus(db, status=status_, q=q, limit=limit, offset=offset)
 
@@ -141,6 +143,32 @@ def update_closing_menu(
     logger.info(
         f"CLOSING MENU TIDAK ADA DI POS menu_id={menu_id} menu_code={row.menu_code} "
         f"not_in_pos={row.not_in_pos} nonaktifkan_mapping={payload.deactivate_products} oleh={admin.email}"
+    )
+
+    return ClosingMenuDetailResponse(data=ClosingMenuResponse.model_validate(row))
+
+
+@closing_menu_router.put("/{menu_id}/platecolor", response_model=ClosingMenuDetailResponse)
+def update_closing_menu_platecolor(
+    menu_id: int,
+    payload: UpdateClosingMenuPlatecolorRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Warna piring menu. Kirim rekap closing memakai harga piring warna ini untuk colorplateSold."""
+    try:
+        row = closing_menu_service.set_platecolor(db, menu_id, payload.platecolor, by=admin.email)
+    except closing_menu_service.MenuTidakDitemukan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Menu closing tidak ditemukan")
+    except closing_menu_service.WarnaTidakDikenal:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Warna {payload.platecolor!r} tidak ada di data COLORPLATE.",
+        )
+
+    logger.info(
+        f"CLOSING MENU WARNA menu_id={menu_id} menu_code={row.menu_code} "
+        f"platecolor={row.platecolor!r} oleh={admin.email}"
     )
 
     return ClosingMenuDetailResponse(data=ClosingMenuResponse.model_validate(row))
@@ -405,7 +433,7 @@ def send_closing_export(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "message": "Rekap belum bisa dikirim. Lihat daftar di bawah: mapping menu closing, "
-                "mapping produk colorplate, atau master produk yang belum lengkap.",
+                "mapping produk colorplate, warna piring menu, atau master produk yang belum lengkap.",
                 "menu_belum_dipetakan": [
                     {"menu_id": str(m.menu_id), "menu_code": m.menu_code, "menu_name": m.menu_name}
                     for m in b.menu_belum_dipetakan
@@ -414,6 +442,14 @@ def send_closing_export(
                 "produk_colorplate_dipetakan": produk_menu(b.produk_colorplate_dipetakan),
                 "produk_belum_master": produk_pos(b.produk_belum_master),
                 "colorplate_tanpa_closing": produk_pos(b.colorplate_tanpa_closing),
+                "menu_tanpa_warna": [
+                    {"menu_id": str(m.menu_id), "menu_code": m.menu_code, "menu_name": m.menu_name}
+                    for m in b.menu_tanpa_warna
+                ],
+                "warna_tidak_lengkap": [
+                    {"platecolor": w.platecolor, "colorplate_sold": w.colorplate_sold, "pos_qty": w.pos_qty}
+                    for w in b.warna_tidak_lengkap
+                ],
             },
         )
     except closing_export_service.SedangDikirim:

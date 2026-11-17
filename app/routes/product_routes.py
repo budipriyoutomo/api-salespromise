@@ -1,6 +1,7 @@
 """Master data product dan mapping ProductID POS → produk.
 
 - `GET   /api/products`, `/{id}`                    → admin & manager
+- `GET   /api/products/export`                      → admin & manager, CSV hasil filter
 - `POST  /api/products`, `PATCH /{id}`              → admin
 - `GET   /api/products/pos-candidates`              → admin, ProductID per outlet dari penjualan
 - `GET   /api/products/import-candidates`           → admin, (brand, ProductID) yang bisa diimpor
@@ -11,9 +12,12 @@
 Tidak ada DELETE: produk dan mapping dimatikan lewat `is_active`.
 """
 
+import csv
+import io
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -65,18 +69,27 @@ def _detail(row) -> ProductDetailResponse:
     return ProductDetailResponse(data=ProductResponse.model_validate(row))
 
 
+def _q_query():
+    return Query(
+        None, max_length=255, description="Cari ProductID, Product Code, nama, kategori, subkategori, atau brand"
+    )
+
+
+def _same_code_query():
+    return Query(False, description="Hanya produk yang Product Code-nya sama dengan ProductID")
+
+
 @router.get("", response_model=ProductListResponse)
 def list_products(
-    q: Optional[str] = Query(
-        None, max_length=255, description="Cari ProductID, Product Code, nama, kategori, subkategori, atau brand"
-    ),
+    q: Optional[str] = _q_query(),
+    same_code: bool = _same_code_query(),
     limit: int = Query(product_service.LIST_DEFAULT_LIMIT, ge=1, le=product_service.LIST_MAX_LIMIT),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     _user: User = Depends(require_reader),
 ):
     """Produk, termasuk yang nonaktif, beserta mapping POS-nya."""
-    rows, total = product_service.list_products(db, q=q, limit=limit, offset=offset)
+    rows, total = product_service.list_products(db, q=q, limit=limit, offset=offset, same_code=same_code)
 
     return ProductListResponse(
         data=[ProductResponse.model_validate(row) for row in rows],
@@ -116,8 +129,65 @@ def create_product(
     return _detail(row)
 
 
-# Path statis `/pos-candidates` dideklarasikan sebelum `/{product_id}` — alasan
-# yang sama dengan route laporan di sales_routes.
+# Path statis `/export` & `/pos-candidates` dideklarasikan sebelum `/{product_id}`
+# — alasan yang sama dengan route laporan di sales_routes.
+
+EXPORT_HEADER = [
+    "ProductID",
+    "Product Code",
+    "Nama",
+    "Kategori",
+    "Subkategori",
+    "Brand Code",
+    "Brand",
+    "Status",
+    "ProductID POS",
+]
+
+
+def _csv_produk(rows) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(EXPORT_HEADER)
+    for p in rows:
+        pos = "; ".join(f"{m.outlet_code}:{m.pos_product_id}" for m in p.pos_mappings if m.is_active)
+        writer.writerow(
+            [
+                p.code,
+                p.product_code or "",
+                p.name,
+                p.category or "",
+                p.subcategory or "",
+                p.brand.code if p.brand else "",
+                p.brand.name if p.brand else "",
+                "Aktif" if p.is_active else "Nonaktif",
+                pos,
+            ]
+        )
+    return buffer.getvalue()
+
+
+@router.get("/export")
+def export_products(
+    q: Optional[str] = _q_query(),
+    same_code: bool = _same_code_query(),
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_reader),
+):
+    """Unduh produk hasil filter sebagai CSV, tanpa pagination.
+
+    Kolom "ProductID POS" berisi mapping aktif, `OUTLET:ProductID` dipisah `; `.
+    Diawali BOM UTF-8 supaya Excel membaca nama non-ASCII dengan benar.
+    """
+    rows = product_service.products_for_export(db, q=q, same_code=same_code)
+    nama_file = f"produk-{datetime.now(timezone.utc).date()}.csv"
+
+    return Response(
+        content="﻿" + _csv_produk(rows),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{nama_file}"'},
+    )
+
 
 
 @router.get("/pos-candidates", response_model=PosCandidateListResponse)

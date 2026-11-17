@@ -18,6 +18,8 @@ from app.models.closing_report import ClosingExportLog, ClosingMenu, ClosingMenu
 from app.models.product import Product, ProductPosMapping
 from app.models.product_group_mapping import ProductGroupMapping
 from app.models.product_menu_mapping import ProductMenuColorplate, ProductMenuMapping
+from app.models.sales import Sales
+from app.models.sales_items import SalesItems
 from app.services import (
     closing_export_client,
     closing_export_service,
@@ -84,7 +86,7 @@ def siapkan(db, outlet="OUTLET_001"):
 
     Mapping menu berlaku untuk semua outlet — hanya dibuat sekali.
     """
-    kirim_closing(db, outlet=outlet, items=[item(sold=10, waste=1, adjustment=-1, compensation=2)])
+    kirim_closing_siap(db, outlet=outlet, items=[item(sold=10, waste=1, adjustment=-1, compensation=2)])
     if not db.query(ClosingMenuProduct).count():
         petakan(db, "SU-001", 200104)
     master(db, "300001", "Ocha Dingin Master", (outlet, 300001))
@@ -141,6 +143,53 @@ def harga(qty, price, mode="SALEMODE 1"):
     }
 
 
+HARGA_PIRING = 20000
+PID_PIRING = 999
+
+
+def kirim_closing_siap(db, outlet="OUTLET_001", items=None, tanggal=HARI_INI, **lain):
+    """`kirim_closing` + warna RED untuk semua menu + piring RED di POS sebanyak `sold`.
+
+    Rekap yang sah: menu dengan sold > 0 harus punya warna, dan warna itu
+    terjual di POS. Qty piring POS disamakan dengan total sold per tanggal.
+    """
+    items = items or [item()]
+    hasil = kirim_closing(db, outlet=outlet, items=items, tanggal=tanggal, **lain)
+    if not db.query(ProductGroupMapping).filter_by(product_group="COLORPLATE").count():
+        db.add(ProductGroupMapping(product_group="COLORPLATE", is_active=True))
+    for menu in db.query(ClosingMenu).filter(ClosingMenu.platecolor.is_(None)):
+        menu.platecolor = "RED"
+    db.commit()
+
+    per_tanggal: dict = {}
+    for i in items:
+        hari = date.fromisoformat(i["productionDate"]) if i.get("productionDate") else tanggal
+        per_tanggal[hari] = per_tanggal.get(hari, 0) + (i.get("sold") or 0)
+    for hari, sold in per_tanggal.items():
+        ada = sum(
+            r.qty for r in db.query(SalesItems).filter_by(outlet_code=outlet, sale_date=hari, product_id=PID_PIRING)
+        )
+        kurang = sold - int(ada or 0)
+        if kurang > 0:
+            tid = 900000 + db.query(Sales).count()
+            db.add(make_sale_row(transaction_id=tid, outlet_code=outlet, sale_date=hari))
+            db.add(
+                make_item_row(
+                    transaction_id=tid,
+                    outlet_code=outlet,
+                    sale_date=hari,
+                    product_id=PID_PIRING,
+                    product_name="RED",
+                    product_group="COLORPLATE",
+                    qty=kurang,
+                    price=HARGA_PIRING,
+                    retail_price=HARGA_PIRING,
+                )
+            )
+            db.commit()
+    return hasil
+
+
 # ---------------------------------------------------------------------------
 # Isi payload
 # ---------------------------------------------------------------------------
@@ -173,7 +222,8 @@ class TestPayload:
                 "waste": 1,
                 "adjustment": -1,
                 "compensation": 2,
-                "prices": [harga(3, 75000)],
+                # colorplateSold 10 × harga piring RED, posQty 3 × harga POS.
+                "prices": [harga(10, HARGA_PIRING), harga(3, 75000)],
             },
             {
                 "source": "pos_only",
@@ -195,9 +245,9 @@ class TestPayload:
         assert payload["sales"] == [
             {
                 "visitPurposeName": "SALEMODE 1",
-                "paxTotal": 2,
+                "paxTotal": 3,
                 "flagInclusive": 0,
-                "subtotal": 375000,
+                "subtotal": 575000,
                 "discountTotal": 0,
                 "menuDiscountTotal": 0,
                 "promotionDiscount": 0,
@@ -208,8 +258,8 @@ class TestPayload:
                 "orderFee": 0,
                 "voucherTotal": 0,
                 "roundingTotal": 0,
-                "grandTotal": 375000,
-                "paymentTotal": 375000,
+                "grandTotal": 575000,
+                "paymentTotal": 575000,
                 "payments": [],
             }
         ]
@@ -222,7 +272,7 @@ class TestPayload:
         }
 
     def test_menu_terpetakan_tidak_terjual_pos_nol(self, db_session, api):
-        kirim_closing(db_session, items=[item(sold=4)])
+        kirim_closing_siap(db_session, items=[item(sold=4)])
         petakan(db_session, "SU-001", 200104)
 
         closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
@@ -231,7 +281,7 @@ class TestPayload:
         assert (baris["posQty"], baris["totalSold"]) == (0, 4)
 
     def test_qty_pos_tanpa_pengali(self, db_session, api):
-        kirim_closing(db_session, items=[item(sold=1)])
+        kirim_closing_siap(db_session, items=[item(sold=1)])
         petakan(db_session, "SU-001", 200104, multiplier=3)
         jual(db_session, 1, 200104, 2)
 
@@ -241,7 +291,7 @@ class TestPayload:
         assert (baris["posQty"], baris["totalSold"]) == (2, 3)
 
     def test_qty_pos_pecahan_tetap_desimal(self, db_session, api):
-        kirim_closing(db_session, items=[item(sold=1)])
+        kirim_closing_siap(db_session, items=[item(sold=1)])
         petakan(db_session, "SU-001", 200104)
         jual(db_session, 1, 200104, 1.5)
 
@@ -251,7 +301,7 @@ class TestPayload:
         assert (baris["posQty"], baris["totalSold"]) == (1.5, 2.5)
 
     def test_transaksi_void_tidak_pernah_dihitung(self, db_session, api):
-        kirim_closing(db_session, items=[item(sold=1)])
+        kirim_closing_siap(db_session, items=[item(sold=1)])
         petakan(db_session, "SU-001", 200104)
         jual(db_session, 1, 200104, 5, deleted=1)
 
@@ -260,10 +310,10 @@ class TestPayload:
         assert api.panggilan[0][0]["items"][0]["posQty"] == 0
 
     def test_hanya_outlet_dan_tanggal_yang_diminta(self, db_session, api):
-        kirim_closing(
+        kirim_closing_siap(
             db_session, items=[item(production_date=HARI_INI), item("SU-002", "Tuna", production_date=KEMARIN)]
         )
-        kirim_closing(db_session, outlet="OUTLET_002", items=[item()])
+        kirim_closing_siap(db_session, outlet="OUTLET_002", items=[item()])
         petakan(db_session, "SU-001", 200104)
         petakan(db_session, "SU-002", 200105)
 
@@ -293,7 +343,7 @@ class TestDitolak:
             closing_export_service.kirim(db_session, "OUTLET_001", HARI_INI, ADMIN)
 
     def test_menu_belum_dipetakan_diblokir(self, db_session, api):
-        kirim_closing(db_session, items=[item(), item("SU-002", "Tuna")])
+        kirim_closing_siap(db_session, items=[item(), item("SU-002", "Tuna")])
         petakan(db_session, "SU-001", 200104)
 
         with pytest.raises(closing_export_service.Diblokir) as exc:
@@ -306,7 +356,7 @@ class TestDitolak:
 
     def test_menu_tidak_ada_di_pos_tidak_memblokir(self, db_session, api):
         """Menu yang ditandai admin terkirim dengan posQty 0; totalSold = colorplate."""
-        kirim_closing(db_session, items=[item(), item("CP-001", "Piring Kosong", sold=7)])
+        kirim_closing_siap(db_session, items=[item(), item("CP-001", "Piring Kosong", sold=7)])
         petakan(db_session, "SU-001", 200104)
         tandai_tidak_ada_di_pos(db_session, "CP-001")
         jual(db_session, 1, 200104, 3)
@@ -324,7 +374,7 @@ class TestDitolak:
         assert set(piring) == set(api.panggilan[0][0]["items"][0])  # tidak ada field tambahan
 
     def test_menu_bertanda_tidak_menutupi_menu_lain_yang_belum_dipetakan(self, db_session, api):
-        kirim_closing(db_session, items=[item(), item("CP-001", "Piring Kosong")])
+        kirim_closing_siap(db_session, items=[item(), item("CP-001", "Piring Kosong")])
         tandai_tidak_ada_di_pos(db_session, "CP-001")
 
         with pytest.raises(closing_export_service.Diblokir) as exc:
@@ -333,7 +383,7 @@ class TestDitolak:
         assert [m.menu_code for m in exc.value.blokir.menu_belum_dipetakan] == ["SU-001"]
 
     def test_produk_dipetakan_ke_dua_menu_diblokir(self, db_session, api):
-        kirim_closing(db_session, items=[item(), item("SU-002", "Tuna")])
+        kirim_closing_siap(db_session, items=[item(), item("SU-002", "Tuna")])
         petakan(db_session, "SU-001", 200104)
         petakan(db_session, "SU-002", 200104)
         petakan(db_session, "SU-002", 200105)
@@ -346,7 +396,7 @@ class TestDitolak:
         assert (dobel.product_id, dobel.product_name, dobel.menus) == (200104, "Salmon HR", ["SU-001", "SU-002"])
 
     def test_produk_dua_menu_di_tanggal_lain_tidak_memblokir(self, db_session, api):
-        kirim_closing(
+        kirim_closing_siap(
             db_session, items=[item(production_date=HARI_INI), item("SU-002", "Tuna", production_date=KEMARIN)]
         )
         petakan(db_session, "SU-001", 200104)
@@ -357,7 +407,7 @@ class TestDitolak:
         assert len(api.panggilan) == 1
 
     def test_mapping_nonaktif_tidak_dihitung_dobel(self, db_session, api):
-        kirim_closing(db_session, items=[item(), item("SU-002", "Tuna")])
+        kirim_closing_siap(db_session, items=[item(), item("SU-002", "Tuna")])
         petakan(db_session, "SU-001", 200104)
         petakan(db_session, "SU-002", 200104, is_active=False)
         petakan(db_session, "SU-002", 200105)
@@ -617,7 +667,7 @@ class TestStatus:
         )
 
     def test_diblokir_tidak_bisa_dikirim(self, db_session, api):
-        kirim_closing(db_session, items=[item()])
+        kirim_closing_siap(db_session, items=[item()])
 
         s = self._status(db_session)[("OUTLET_001", HARI_INI)]
 
@@ -625,7 +675,7 @@ class TestStatus:
         assert [m.menu_code for m in s.menu_belum_dipetakan] == ["SU-001"]
 
     def test_menu_tidak_ada_di_pos_bisa_dikirim(self, db_session, api):
-        kirim_closing(db_session, items=[item()])
+        kirim_closing_siap(db_session, items=[item()])
         tandai_tidak_ada_di_pos(db_session, "SU-001")
 
         s = self._status(db_session)[("OUTLET_001", HARI_INI)]
@@ -647,10 +697,10 @@ class TestStatus:
         assert self._status(db_session)[("OUTLET_001", HARI_INI)].can_send is True
 
     def test_filter_outlet_dan_tanggal(self, db_session, api):
-        kirim_closing(
+        kirim_closing_siap(
             db_session, items=[item(production_date=HARI_INI), item("SU-002", "Tuna", production_date=KEMARIN)]
         )
-        kirim_closing(db_session, outlet="OUTLET_002", items=[item()])
+        kirim_closing_siap(db_session, outlet="OUTLET_002", items=[item()])
 
         semua = self._status(db_session)
         sebagian = self._status(db_session, outlet="OUTLET_001", start_date=HARI_INI, end_date=HARI_INI)
@@ -659,7 +709,7 @@ class TestStatus:
         assert set(sebagian) == {("OUTLET_001", HARI_INI)}
 
     def test_urut_tanggal_terbaru_dulu(self, db_session, api):
-        kirim_closing(
+        kirim_closing_siap(
             db_session, items=[item(production_date=KEMARIN), item("SU-002", "Tuna", production_date=HARI_INI)]
         )
 
@@ -712,19 +762,24 @@ def aktifkan_colorplate(db, product_id_konversi=700):
 
 
 def contoh_dokumen(db):
-    """RED 10, Promo 3 (konversi RED), Ocha 2; closing Salmon 6 & Tuna 4 bertanda tidak ada di POS.
+    """POS: RED 10, Promo 3 (konversi RED × 2 = 6 piring), Ocha 2.
 
-    Produk colorplate (RED, Promo) sudah punya master; Ocha belum.
+    Closing: Salmon 6 & Tuna 10, keduanya piring RED dan bertanda tidak ada di
+    POS. Piring dapur (16) = piring POS (16). Ocha belum punya master.
     """
     aktifkan_colorplate(db)
-    master(db, "M-RED", "Colorplate Red", (OUTLET, 500))
-    master(db, "M-PROMO", "Promo Red", (OUTLET, 700))
-    kirim_closing(db, items=[item("SU-001", "Salmon", sold=6), item("SU-002", "Tuna", sold=4)])
-    tandai_tidak_ada_di_pos(db, "SU-001")
-    tandai_tidak_ada_di_pos(db, "SU-002")
+    kirim_closing(db, items=[item("SU-001", "Salmon", sold=6), item("SU-002", "Tuna", sold=10)])
+    for kode in ("SU-001", "SU-002"):
+        tandai_tidak_ada_di_pos(db, kode)
+        warnai(db, kode, "RED")
     jual(db, 1, 500, 10, nama="RED", product_group="COLORPLATE")
     jual(db, 2, 300, 2, nama="Ocha", product_group="DRINK")
     jual(db, 3, 700, 3, nama="Promo", product_group="PROMO")
+
+
+def warnai(db, menu_code, platecolor):
+    db.query(ClosingMenu).filter_by(menu_code=menu_code).one().platecolor = platecolor
+    db.commit()
 
 
 def buka_tanda(db, menu_code):
@@ -750,40 +805,104 @@ def total(r):
     return sum(i["totalSold"] for i in closing_export_service.susun_isi(r)["items"])
 
 
-def total_menu(r):
-    """totalSold tanpa item colorplate — pendapatan piring, qty-nya sudah di menu closing."""
-    return sum(i["totalSold"] for i in closing_export_service.susun_isi(r)["items"] if i["source"] != "colorplate")
+def warna_tidak_lengkap(r):
+    return [(w.platecolor, w.colorplate_sold, w.pos_qty) for w in r.blokir.warna_tidak_lengkap]
 
 
 class TestColorplateTidakDobel:
-    def test_contoh_dokumen_total_menu_12(self, db_session):
+    def test_contoh_dokumen(self, db_session):
         contoh_dokumen(db_session)
         master(db_session, "M-OCHA", "Ocha Master", (OUTLET, 300))
 
         (r,) = rekap(db_session)
 
         assert not r.blokir
-        assert total_menu(r) == 12
         items = closing_export_service.susun_isi(r)["items"]
+        # Produk COLORPLATE POS (RED, Promo) tidak dikirim sebagai item.
         assert [(i["source"], i["menuCode"] or i["productId"], i["totalSold"]) for i in items] == [
             ("closing", "SU-001", 6),
-            ("closing", "SU-002", 4),
-            ("colorplate", "M-RED", 10),
-            ("colorplate", "M-PROMO", 3),
+            ("closing", "SU-002", 10),
             ("pos_only", "M-OCHA", 2),
         ]
         assert (items[-1]["productCode"], items[-1]["productName"]) == ("PRD-M-OCHA", "Ocha Master")
 
-    def test_group_colorplate_dengan_spasi_tetap_dikenali(self, db_session):
+    def test_harga_piring_masuk_prices_menu(self, db_session):
+        """Piring POS: RED 10 × 75.000 dan Promo 3 × 75.000 = 6 piring × 37.500."""
         contoh_dokumen(db_session)
         master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
-        master(db_session, "M-BLUE", "Colorplate Blue", (OUTLET, 501))
+
+        salmon, tuna, _ = closing_export_service.susun_isi(rekap(db_session)[0])["items"]
+
+        for menu, sold in ((salmon, 6), (tuna, 10)):
+            assert sum(p["qty"] for p in menu["prices"]) == sold == menu["colorplateSold"]
+        per_harga: dict = {}
+        for p in salmon["prices"] + tuna["prices"]:
+            per_harga[p["price"]] = per_harga.get(p["price"], 0) + p["qty"]
+        assert per_harga == {37500: 6, 75000: 10}
+        # Piring dapur = piring POS → pendapatan sama dengan uang kasir.
+        assert sum(p["total"] for p in salmon["prices"] + tuna["prices"]) == (10 + 3) * 75000
+
+    def test_qty_dapur_berbeda_dengan_pos_harga_tetap_harga_piring(self, db_session):
+        contoh_dokumen(db_session)
+        master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
+        jual(db_session, 4, 500, 4, nama="RED", product_group="COLORPLATE")
+
+        salmon, tuna, _ = closing_export_service.susun_isi(rekap(db_session)[0])["items"]
+
+        # Piring POS 20, piring dapur 16: qty mengikuti dapur, harga tetap harga piring.
+        assert sum(p["qty"] for p in salmon["prices"] + tuna["prices"]) == 16
+        assert {p["price"] for p in salmon["prices"] + tuna["prices"]} <= {37500, 75000}
+
+    def test_menu_tanpa_warna_memblokir(self, db_session):
+        contoh_dokumen(db_session)
+        master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
+        warnai(db_session, "SU-002", None)
+
+        (r,) = rekap(db_session)
+
+        assert [m.menu_code for m in r.blokir.menu_tanpa_warna] == ["SU-002"]
+        assert r.blokir.warna_tidak_lengkap == []
+
+    def test_menu_sold_nol_tidak_butuh_warna(self, db_session):
+        contoh_dokumen(db_session)
+        master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
+        jual(db_session, 4, 501, 1, nama="BLUE", product_group="COLORPLATE")
+        kirim_closing(db_session, items=[item("SU-003", "Ebi", sold=0)])
+
+        (r,) = rekap(db_session)
+
+        assert r.blokir.menu_tanpa_warna == []
+
+    def test_warna_hanya_di_closing_memblokir(self, db_session):
+        contoh_dokumen(db_session)
+        master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
+        warnai(db_session, "SU-002", "BLUE")
+
+        (r,) = rekap(db_session)
+
+        # Tidak ada piring BLUE di POS: harganya tidak diketahui.
+        assert warna_tidak_lengkap(r) == [("BLUE", 10, 0)]
+
+    def test_warna_hanya_di_pos_memblokir(self, db_session):
+        contoh_dokumen(db_session)
+        master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
         jual(db_session, 4, 501, 5, nama="BLUE", product_group=" colorplate ")
 
         (r,) = rekap(db_session)
 
-        assert not r.blokir and total_menu(r) == 12
-        assert [i["productId"] for i in r.items_colorplate] == ["M-BLUE", "M-RED", "M-PROMO"]
+        # Group dengan spasi tetap dikenali sebagai colorplate; pendapatannya
+        # tidak punya menu tujuan.
+        assert warna_tidak_lengkap(r) == [("BLUE", 0, 5)]
+        assert r.blokir.produk_belum_master == []
+
+    def test_colorplate_tidak_butuh_master(self, db_session):
+        contoh_dokumen(db_session)
+        master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
+        jual(db_session, 4, 502, 1, nama="RED", product_group="COLORPLATE")
+
+        (r,) = rekap(db_session)
+
+        assert not r.blokir
 
     def test_produk_tanpa_master_memblokir(self, db_session):
         contoh_dokumen(db_session)
@@ -854,27 +973,20 @@ class TestColorplateTidakDobel:
 
         assert not r.blokir
         assert r.items_produk == []
-        assert total_menu(r) == 12
+        assert total(r) == 6 + 2 + 10
 
     def test_group_colorplate_nonaktif_red_jadi_pos_only(self, db_session):
         contoh_dokumen(db_session)
         master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
+        master(db_session, "M-RED", "Colorplate Red", (OUTLET, 500))
         db_session.query(ProductGroupMapping).one().is_active = False
         db_session.commit()
 
         (r,) = rekap(db_session)
 
-        assert [i["productId"] for i in r.items_colorplate] == ["M-PROMO"]
+        # RED bukan colorplate lagi; Promo tetap lewat konversi (6 piring RED).
         assert [i["productId"] for i in r.items_produk] == ["M-RED", "M-OCHA"]
-
-    def test_colorplate_tanpa_master_memblokir(self, db_session):
-        contoh_dokumen(db_session)
-        master(db_session, "M-OCHA", "Ocha", (OUTLET, 300))
-        jual(db_session, 4, 502, 1, nama="GOLD", product_group="COLORPLATE")
-
-        (r,) = rekap(db_session)
-
-        assert [(p.product_id, p.product_name) for p in r.blokir.produk_belum_master] == [(502, "GOLD")]
+        assert not r.blokir
 
     def test_compare_with_pos_tetap_menampilkan_semua_produk_pos(self, db_session):
         contoh_dokumen(db_session)
@@ -993,7 +1105,7 @@ class TestSyaratClosingPerBrand:
 
         (r,) = rekap(db_session)
 
-        assert r.baris_menu and total_menu(r) == 12
+        assert r.baris_menu and total(r) == 6 + 10 + 2
 
     def test_brand_tanpa_syarat_colorplate_terjual_diblokir(self, db_session):
         aktifkan_colorplate(db_session)
@@ -1056,12 +1168,12 @@ def transaksi(db, transaction_id, baris, sale_mode=1, outlet=OUTLET, **header):
 
 
 class TestPenjualan:
-    def siapkan(self, db):
-        """Closing Salmon (sold 6) dipetakan ke ProductID 200; RED & Ocha di master."""
+    def siapkan(self, db, sold=4):
+        """Closing Salmon (piring RED) dipetakan ke ProductID 200; Ocha di master."""
         aktifkan_colorplate(db)
-        kirim_closing(db, items=[item("SU-001", "Salmon", sold=6)])
+        kirim_closing(db, items=[item("SU-001", "Salmon", sold=sold)])
         petakan(db, "SU-001", 200)
-        master(db, "M-RED", "Colorplate Red", (OUTLET, 500))
+        warnai(db, "SU-001", "RED")
         master(db, "M-OCHA", "Ocha", (OUTLET, 300))
         # Dine in: Salmon 2 × 15.000, RED 4 × 20.000. SC 7,5%, PPN 10%.
         transaksi(
@@ -1113,23 +1225,34 @@ class TestPenjualan:
             ("SALEMODE 2", 1, 31000, 1000, 0, 3000, 33000),
         ]
 
-    def test_prices_menu_closing_hanya_menutup_pos_qty(self, db_session):
+    def test_prices_menu_closing_menutup_pos_qty_dan_colorplate(self, db_session):
         self.siapkan(db_session)
 
-        salmon, red, ocha = self.isi(db_session)["items"]
+        salmon, ocha = self.isi(db_session)["items"]
 
         assert (salmon["source"], salmon["colorplateSold"], salmon["posQty"], salmon["totalSold"]) == (
             "closing",
-            6,
+            4,
             3,
-            9,
+            7,
         )
-        assert sum(p["qty"] for p in salmon["prices"]) == salmon["posQty"]
-        assert [(p["visitPurposeName"], p["qty"]) for p in salmon["prices"]] == [("SALEMODE 1", 2), ("SALEMODE 2", 1)]
-        assert (red["source"], red["productCode"], red["totalSold"]) == ("colorplate", "PRD-M-RED", 4)
-        assert [(p["price"], p["qty"]) for p in red["prices"]] == [(20000, 4)]
+        assert sum(p["qty"] for p in salmon["prices"]) == salmon["totalSold"]
+        assert [(p["visitPurposeName"], p["price"], p["qty"]) for p in salmon["prices"]] == [
+            ("SALEMODE 1", 15000, 2),
+            ("SALEMODE 1", 20000, 4),
+            ("SALEMODE 2", 15000, 1),
+        ]
         assert ocha["source"] == "pos_only"
         assert sum(p["qty"] for p in ocha["prices"]) == ocha["totalSold"]
+
+    def test_piring_mengikuti_sale_mode_pos(self, db_session):
+        self.siapkan(db_session, sold=6)
+        transaksi(db_session, 3, [(500, 2, 20000, "RED", "COLORPLATE")], sale_mode=2)
+
+        (salmon, _) = self.isi(db_session)["items"]
+
+        piring = [(p["visitPurposeName"], p["qty"]) for p in salmon["prices"] if p["price"] == 20000]
+        assert piring == [("SALEMODE 1", 4), ("SALEMODE 2", 2)]
 
     def test_jumlah_prices_per_sale_mode_sama_dengan_sales(self, db_session):
         self.siapkan(db_session)
@@ -1151,8 +1274,8 @@ class TestPenjualan:
 
         assert (take_away["subtotal"], take_away["vatTotal"]) == (31000, 3000)
 
-    def test_menu_closing_tanpa_penjualan_pos_prices_kosong(self, db_session, api):
-        kirim_closing(db_session, items=[item(sold=4)])
+    def test_menu_closing_tanpa_penjualan_prices_kosong(self, db_session, api):
+        kirim_closing(db_session, items=[item(sold=0)])
         petakan(db_session, "SU-001", 200104)
 
         closing_export_service.kirim(db_session, OUTLET, HARI_INI, ADMIN)
