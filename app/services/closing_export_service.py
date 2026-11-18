@@ -33,7 +33,11 @@ Diblokir kalau:
 - tanpa closing, tetapi produk colorplate terjual (`sold`-nya belum ada);
 - menu dengan sold > 0 belum punya warna piring;
 - satu warna hanya ada di satu sisi: terjual di closing tetapi tidak di POS
-  (harganya tidak diketahui), atau sebaliknya (pendapatannya tidak terkirim).
+  (harganya tidak diketahui), atau sebaliknya (pendapatannya tidak terkirim);
+- ada transaksi aktif yang pembayarannya belum diketahui (agen lama / view
+  pembayaran belum dipasang, `payments_received_at` NULL);
+- Σ payments ≠ grandTotal pada suatu tujuan kunjungan (toleransi
+  TOLERANSI_PEMBAYARAN, menunggu jawaban ERP soal pembulatan).
 
 `compare_with_pos` tidak diubah: tampilan perbandingan `/closing` tetap
 melihat data POS apa adanya.
@@ -65,6 +69,7 @@ from app.models.closing_report import STATUS_KIRIM_SAMPAI, ClosingExportLog
 from app.models.product import Product
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
+from app.models.sales_payments import SalesPayments
 from app.services import (
     closing_export_client,
     closing_export_penjualan,
@@ -73,7 +78,7 @@ from app.services import (
     colorplate_publish_service,
 )
 from app.services.product_group_service import normalize_product_group
-from app.services.sales_service import SalesService, color_key, item_join
+from app.services.sales_service import TOLERANSI_PEMBAYARAN, SalesService, color_key, item_join
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
@@ -136,6 +141,13 @@ class WarnaTidakLengkap:
 
 
 @dataclass
+class PembayaranTidakSama:
+    visit_purpose_name: str
+    grand_total: float
+    payment_total: float
+
+
+@dataclass
 class Blokir:
     menu_belum_dipetakan: list[MenuBelumDipetakan] = field(default_factory=list)
     produk_dobel: list[ProdukDobel] = field(default_factory=list)
@@ -149,6 +161,10 @@ class Blokir:
     menu_tanpa_warna: list[MenuBelumDipetakan] = field(default_factory=list)
     # Warna yang hanya ada di closing atau hanya di POS pada outlet + tanggal ini.
     warna_tidak_lengkap: list[WarnaTidakLengkap] = field(default_factory=list)
+    # Transaksi aktif yang pembayarannya belum diketahui.
+    transaksi_tanpa_pembayaran: int = 0
+    # Tujuan kunjungan yang Σ payments-nya tidak sama dengan grandTotal.
+    pembayaran_tidak_sama: list[PembayaranTidakSama] = field(default_factory=list)
 
     def __bool__(self):
         return bool(
@@ -159,6 +175,8 @@ class Blokir:
             or self.colorplate_tanpa_closing
             or self.menu_tanpa_warna
             or self.warna_tidak_lengkap
+            or self.transaksi_tanpa_pembayaran
+            or self.pembayaran_tidak_sama
         )
 
 
@@ -186,6 +204,8 @@ class StatusPasangan:
     colorplate_tanpa_closing: list[ProdukPos]
     menu_tanpa_warna: list[MenuBelumDipetakan]
     warna_tidak_lengkap: list[WarnaTidakLengkap]
+    transaksi_tanpa_pembayaran: int
+    pembayaran_tidak_sama: list[PembayaranTidakSama]
     last_attempt: ClosingExportLog | None
     last_sent: ClosingExportLog | None
 
@@ -378,6 +398,73 @@ def _header_per_mode(db, pasangan: set) -> dict:
     return hasil
 
 
+def _pembayaran_per_mode(db, pasangan: set) -> tuple[dict, dict]:
+    """Pembayaran per (outlet, tanggal), dihubungkan ke header transaksinya.
+
+    Hasil:
+      pembayaran   (outlet, tanggal) → {SaleMode: [Pembayaran]}
+      belum_tahu   (outlet, tanggal) → jumlah transaksi aktif yang
+                   `payments_received_at`-nya NULL
+
+    Tanggal dan SaleMode diambil dari header, sama dengan `_header_per_mode`,
+    supaya Σ pembayaran sebanding dengan grandTotal. Void tidak dihitung.
+    """
+    if not pasangan:
+        return {}, {}
+    tanggal = [d for _, d in pasangan]
+    outlets = sorted({o for o, _ in pasangan})
+
+    def rentang(query):
+        query = query.filter(
+            Sales.outlet_code.in_(outlets),
+            Sales.sale_date >= min(tanggal),
+            Sales.sale_date <= max(tanggal),
+        )
+        return SalesService._active_sales(query, include_deleted=False)
+
+    pembayaran: dict = {}
+    query = rentang(
+        db.query(
+            Sales.outlet_code,
+            Sales.sale_date,
+            Sales.sale_mode,
+            SalesPayments.pay_type_id,
+            func.max(SalesPayments.pay_type_name).label("nama"),
+            func.sum(SalesPayments.amount).label("jumlah"),
+        ).join(
+            SalesPayments,
+            (SalesPayments.transaction_id == Sales.transaction_id)
+            & (SalesPayments.outlet_code == Sales.outlet_code),
+        )
+    )
+    for r in query.group_by(Sales.outlet_code, Sales.sale_date, Sales.sale_mode, SalesPayments.pay_type_id):
+        k = (r.outlet_code, r.sale_date)
+        if k not in pasangan:
+            continue
+        pembayaran.setdefault(k, {}).setdefault(r.sale_mode, []).append(
+            closing_export_penjualan.Pembayaran(r.pay_type_id, r.nama, Decimal(r.jumlah or 0))
+        )
+
+    belum_tahu: dict = {}
+    query = rentang(
+        db.query(Sales.outlet_code, Sales.sale_date, func.count().label("jumlah")).filter(
+            Sales.payments_received_at.is_(None)
+        )
+    )
+    for r in query.group_by(Sales.outlet_code, Sales.sale_date):
+        if (r.outlet_code, r.sale_date) in pasangan:
+            belum_tahu[(r.outlet_code, r.sale_date)] = int(r.jumlah)
+    return pembayaran, belum_tahu
+
+
+def _periksa_pembayaran(sales: list[dict]) -> list[PembayaranTidakSama]:
+    hasil = []
+    for s in sales:
+        if abs(Decimal(str(s["paymentTotal"])) - Decimal(str(s["grandTotal"]))) > TOLERANSI_PEMBAYARAN:
+            hasil.append(PembayaranTidakSama(s["visitPurposeName"], s["grandTotal"], s["paymentTotal"]))
+    return hasil
+
+
 def _outlet_tanpa_syarat_closing(db, outlets=None) -> set:
     """Outlet yang brand-nya `requires_closing = FALSE`. Outlet tanpa brand tidak termasuk."""
     query = (
@@ -538,8 +625,13 @@ def susun_rekap(db, outlet=None, start_date=None, end_date=None) -> list[RekapPa
             _harga_colorplate(isi, warna_menu, piring.get(k, {}), nama_warna, harga.setdefault(k, {}))
 
     header = _header_per_mode(db, pasangan)
+    pembayaran, belum_tahu = _pembayaran_per_mode(db, pasangan)
     for k, isi in rekap.items():
-        prices, isi.sales = closing_export_penjualan.susun(harga.get(k, {}), header.get(k, {}))
+        isi.blokir.transaksi_tanpa_pembayaran = belum_tahu.get(k, 0)
+        diketahui = None if isi.blokir.transaksi_tanpa_pembayaran else pembayaran.get(k, {})
+        prices, isi.sales = closing_export_penjualan.susun(harga.get(k, {}), header.get(k, {}), diketahui)
+        if diketahui is not None:
+            isi.blokir.pembayaran_tidak_sama = _periksa_pembayaran(isi.sales)
         isi.harga_menu = {m: p for (jenis, m), p in prices.items() if jenis == "closing"}
 
         isi.items_produk = sorted(
@@ -778,6 +870,8 @@ def status_pasangan(db, outlet=None, start_date=None, end_date=None) -> list[Sta
                 colorplate_tanpa_closing=blokir.colorplate_tanpa_closing,
                 menu_tanpa_warna=blokir.menu_tanpa_warna,
                 warna_tidak_lengkap=blokir.warna_tidak_lengkap,
+                transaksi_tanpa_pembayaran=blokir.transaksi_tanpa_pembayaran,
+                pembayaran_tidak_sama=blokir.pembayaran_tidak_sama,
                 last_attempt=terakhir,
                 last_sent=sampai,
             )

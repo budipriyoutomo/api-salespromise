@@ -22,6 +22,7 @@ from app.models.sales import Sales
 from app.models.sales_items import SalesItems
 from app.services import (
     closing_export_client,
+    closing_export_penjualan,
     closing_export_service,
     closing_report_service,
     colorplate_publish_service,
@@ -39,6 +40,25 @@ from tests.unit.test_routes_closing import (
 )
 
 ADMIN = "admin@maharasa.id"
+
+
+def abaikan_pembayaran(monkeypatch):
+    """Rekap tanpa pemeriksaan pembayaran: `payments` kosong, paymentTotal = grandTotal.
+
+    Data uji di file ini tidak membawa baris pembayaran. Test di sini menguji
+    item, harga, dan log kiriman; pembayaran diuji di
+    tests/unit/test_closing_export_pembayaran.py.
+    """
+    asli = closing_export_penjualan.susun
+    monkeypatch.setattr(closing_export_service, "_pembayaran_per_mode", lambda db, pasangan: ({}, {}))
+    monkeypatch.setattr(
+        closing_export_penjualan, "susun", lambda baris, header, pembayaran=None: asli(baris, header, None)
+    )
+
+
+@pytest.fixture(autouse=True)
+def _tanpa_pembayaran(monkeypatch):
+    abaikan_pembayaran(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

@@ -6,6 +6,7 @@ import pytest
 
 from app.services.closing_export_penjualan import (
     HeaderMode,
+    Pembayaran,
     angka,
     bagi,
     bagi_bulat,
@@ -212,3 +213,40 @@ class TestSusun:
 
     def test_tanpa_penjualan(self):
         assert susun({}, {}) == ({}, [])
+
+
+class TestPayments:
+    BARIS = {"salmon": {(1, D(15000), D(15000)): D(2)}, "ocha": {(2, D(8000), D(8000)): D(1)}}
+    HEADER = {1: HeaderMode(pax=1), 2: HeaderMode(pax=1)}
+
+    def test_tidak_diketahui_kosong_dan_payment_total_grand_total(self):
+        _, sales = susun(self.BARIS, self.HEADER, None)
+
+        assert [(s["payments"], s["paymentTotal"]) for s in sales] == [([], 30000), ([], 8000)]
+
+    def test_per_sale_mode_diurutkan_nama_dan_nol_dibuang(self):
+        pembayaran = {
+            1: [Pembayaran(864, "QRIS BNI", D(10000)), Pembayaran(1, "Cash", D(20000)), Pembayaran(10050, "CC BRI", D(0))],
+            2: [Pembayaran(1, "Cash", D(8000))],
+        }
+
+        _, (dine_in, take_away) = susun(self.BARIS, self.HEADER, pembayaran)
+
+        assert [(p["paymentMethod"], p["paymentAmount"], p["fullPaymentAmount"]) for p in dine_in["payments"]] == [
+            ("Cash", 20000, 20000),
+            ("QRIS BNI", 10000, 10000),
+        ]
+        assert dine_in["paymentTotal"] == 30000
+        assert take_away["payments"][0]["notes"] == ""
+
+    def test_payment_total_jumlah_pembayaran_bukan_grand_total(self):
+        _, (dine_in, take_away) = susun(self.BARIS, self.HEADER, {1: [Pembayaran(1, "Cash", D(29000))]})
+
+        assert (dine_in["grandTotal"], dine_in["paymentTotal"]) == (30000, 29000)
+        # Diketahui tetapi tanpa baris: memang tidak dibayar.
+        assert (take_away["payments"], take_away["paymentTotal"]) == ([], 0)
+
+    def test_nama_kosong(self):
+        _, (dine_in, _) = susun(self.BARIS, self.HEADER, {1: [Pembayaran(77, None, D(30000))]})
+
+        assert dine_in["payments"][0]["paymentMethod"] == "PAYTYPE 77"

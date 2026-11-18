@@ -9,6 +9,7 @@ Jalur eksekusi sungguhan diuji di tests/integration/test_sync_postgres.py.
 """
 
 from datetime import date, datetime
+from decimal import Decimal
 
 import pytest
 from freezegun import freeze_time
@@ -533,3 +534,111 @@ class TestLogging:
 
         assert "OUTLET_007" in caplog.text
         assert "kegagalan database simulasi" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# payments (docs/handoff-sync-api-payments.md)
+# ---------------------------------------------------------------------------
+
+
+def build_payment(pay_detail_id=1, **overrides):
+    payload = dict(
+        pay_detail_id=pay_detail_id,
+        computer_id=793,
+        pay_type_id=1,
+        pay_type_code="1",
+        pay_type_name="Cash",
+        pay_type_display_name="Cash",
+        amount=150000,
+    )
+    payload.update(overrides)
+    return payload
+
+
+def sale_upsert(db):
+    (stmt,) = statements_for(db, "ordertransaction")
+    return stmt
+
+
+class TestPembayaran:
+
+    def test_tanpa_key_payments_tidak_menyentuh_pembayaran(self):
+        db = RecordingSession()
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale()])
+
+        assert statements_for(db, "orderpaydetail") == []
+        stmt = sale_upsert(db)
+        assert params_of(stmt)["payments_received_at"] is None
+        # Kiriman ulang dari agen lama tidak menghapus tanda "sudah diketahui".
+        assert "payments_received_at = " not in sql_of(stmt).split("ON CONFLICT")[1]
+
+    @freeze_time("2026-11-18 09:00:00")
+    def test_payments_kosong_hapus_baris_lama_dan_tandai_diketahui(self):
+        db = RecordingSession()
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(payments=[])])
+
+        (hapus,) = statements_for(db, "orderpaydetail")
+        assert sql_of(hapus).startswith("DELETE FROM orderpaydetail")
+        assert params_of(hapus) == {"outlet_code_1": "OUTLET_001", "TransactionID_1": 10001}
+        stmt = sale_upsert(db)
+        assert params_of(stmt)["payments_received_at"] == datetime(2026, 11, 18, 9, 0)
+        assert "payments_received_at = " in sql_of(stmt).split("ON CONFLICT")[1]
+
+    def test_payments_diganti_utuh_dalam_satu_transaksi(self):
+        db = RecordingSession()
+        sale = build_sale(
+            payments=[
+                build_payment(1, pay_type_id=149, pay_type_name="REEDEM POINT", amount=26030),
+                build_payment(2, amount=123970, cash_change=30000),
+            ]
+        )
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[sale])
+
+        hapus, tambah = statements_for(db, "orderpaydetail")
+        assert sql_of(hapus).startswith("DELETE")
+        p = params_of(tambah)
+        assert (p["outlet_code_m0"], p["TransactionID_m0"], p["ComputerID_m0"], p["PayDetailID_m0"]) == (
+            "OUTLET_001",
+            10001,
+            793,
+            1,
+        )
+        assert (p["PayTypeID_m0"], p["Amount_m0"]) == (149, Decimal("26030"))
+        assert (p["PayDetailID_m1"], p["Amount_m1"], p["CashChange_m1"]) == (2, Decimal("123970"), Decimal("30000"))
+        assert p["SaleDate_m1"] == date(2026, 1, 15)
+        assert db.committed == 1
+
+    def test_hasil_tetap_sales_dan_items(self):
+        """Respons ke agen tidak berubah."""
+        db = RecordingSession()
+
+        result = SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(payments=[build_payment()])])
+
+        assert result == {"sales": 1, "items": 0}
+
+    def test_selisih_dicatat_tetapi_data_tetap_disimpan(self, caplog):
+        db = RecordingSession()
+        sale = build_sale(receipt_id=5, payments=[build_payment(amount=149000)])
+
+        with caplog.at_level("WARNING", logger="sync-api"):
+            SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[sale])
+
+        assert "SYNC PAYMENTS MISMATCH" in caplog.text
+        assert "10001" in caplog.text
+        assert len(statements_for(db, "orderpaydetail")) == 2
+
+    def test_cocok_dalam_toleransi_dan_void_tidak_dicatat(self, caplog):
+        db = RecordingSession()
+        sales = [
+            build_sale(transaction_id=1, receipt_id=5, payments=[build_payment(amount="150000.5")]),
+            build_sale(transaction_id=2, receipt_id=6, deleted=1, payments=[]),
+            build_sale(transaction_id=3, receipt_id=0, payments=[]),
+        ]
+
+        with caplog.at_level("WARNING", logger="sync-api"):
+            SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
+
+        assert "SYNC PAYMENTS MISMATCH" not in caplog.text

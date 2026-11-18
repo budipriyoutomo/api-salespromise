@@ -79,3 +79,9 @@ class Sales(Base):
     outlet_code = Column("outlet_code", String(20), primary_key=True)
     created_at = Column("created_at", DateTime, nullable=True)
     updated_at = Column("updated_at", DateTime, nullable=True)
+
+    # Kapan baris pembayaran transaksi ini terakhir diterima (migrasi 021).
+    # NULL = belum diketahui: agen lama, atau view pembayaran belum dipasang di
+    # outlet. Berbeda dengan transaksi yang memang tanpa pembayaran
+    # (`payments: []`), yang tetap diisi waktunya.
+    payments_received_at = Column("payments_received_at", DateTime, nullable=True)

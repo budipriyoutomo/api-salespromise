@@ -375,6 +375,16 @@ class ClosingExportColorMismatch(BaseModel):
     pos_qty: float
 
 
+class ClosingExportPaymentMismatch(BaseModel):
+    """Tujuan kunjungan yang Σ pembayarannya tidak sama dengan grandTotal."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    visit_purpose_name: str
+    grand_total: float
+    payment_total: float
+
+
 class ClosingExportStatus(BaseModel):
     """Status kirim satu outlet × tanggal produksi.
 
@@ -405,6 +415,11 @@ class ClosingExportStatus(BaseModel):
     menu_tanpa_warna: List[ClosingExportUnmappedMenu]
     # Warna yang hanya ada di closing atau hanya di POS.
     warna_tidak_lengkap: List[ClosingExportColorMismatch]
+    # Transaksi aktif yang pembayarannya belum diketahui (agen lama atau view
+    # pembayaran POS belum dipasang).
+    transaksi_tanpa_pembayaran: int
+    # Tujuan kunjungan yang Σ pembayarannya tidak sama dengan grandTotal.
+    pembayaran_tidak_sama: List[ClosingExportPaymentMismatch]
     last_attempt: Optional[ClosingExportSummary] = None
     last_sent: Optional[ClosingExportSummary] = None
 

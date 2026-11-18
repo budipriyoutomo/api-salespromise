@@ -433,7 +433,7 @@ def send_closing_export(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "message": "Rekap belum bisa dikirim. Lihat daftar di bawah: mapping menu closing, "
-                "mapping produk colorplate, warna piring menu, atau master produk yang belum lengkap.",
+                "mapping produk colorplate, warna piring menu, master produk, atau data pembayaran yang belum lengkap.",
                 "menu_belum_dipetakan": [
                     {"menu_id": str(m.menu_id), "menu_code": m.menu_code, "menu_name": m.menu_name}
                     for m in b.menu_belum_dipetakan
@@ -449,6 +449,15 @@ def send_closing_export(
                 "warna_tidak_lengkap": [
                     {"platecolor": w.platecolor, "colorplate_sold": w.colorplate_sold, "pos_qty": w.pos_qty}
                     for w in b.warna_tidak_lengkap
+                ],
+                "transaksi_tanpa_pembayaran": b.transaksi_tanpa_pembayaran,
+                "pembayaran_tidak_sama": [
+                    {
+                        "visit_purpose_name": x.visit_purpose_name,
+                        "grand_total": x.grand_total,
+                        "payment_total": x.payment_total,
+                    }
+                    for x in b.pembayaran_tidak_sama
                 ],
             },
         )

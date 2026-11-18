@@ -1,12 +1,14 @@
 import traceback
+from decimal import Decimal
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, delete, func, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
+from app.models.sales_payments import SalesPayments
 from app.services.brand_service import outlet_codes_subquery
 from app.services.product_group_service import normalize_product_group
 from app.utils.logger import logger
@@ -23,6 +25,23 @@ item_join = and_(
 )
 
 
+# Toleransi Σ payments.amount terhadap ReceiptPayPrice, sama dengan agen POS.
+TOLERANSI_PEMBAYARAN = Decimal("0.5")
+
+
+def pembayaran_cocok(sale) -> bool:
+    """Σ amount = receipt_pay_price (± 0,5) untuk transaksi lunas yang tidak dihapus.
+
+    Transaksi yang dihapus atau belum punya struk (`receipt_id` 0) selalu
+    dianggap cocok. Status transaksi tidak diperiksa: kode status lunas
+    berbeda antar POS. Lihat docs/handoff-sync-api-payments.md bagian 3.5.
+    """
+    if sale.payments is None or sale.deleted or not sale.receipt_id:
+        return True
+    total = sum((p.amount for p in sale.payments), Decimal(0))
+    return abs(total - Decimal(str(sale.receipt_pay_price))) <= TOLERANSI_PEMBAYARAN
+
+
 class SalesService:
 
     @staticmethod
@@ -30,6 +49,8 @@ class SalesService:
 
         inserted_sales = 0
         inserted_items = 0
+        inserted_payments = 0
+        tidak_cocok: list[int] = []
 
         try:
             for sale in sales_list:
@@ -86,13 +107,17 @@ class SalesService:
                     IsFromOtherTransaction=sale.is_from_other_transaction,
 
                     created_at=utcnow(),
-                    updated_at=utcnow()
+                    updated_at=utcnow(),
+                    payments_received_at=None if sale.payments is None else utcnow(),
                 )
+
+                set_pembayaran = {} if sale.payments is None else {"payments_received_at": utcnow()}
 
                 # 🔥 UPSERT FIX (multi outlet safe)
                 sales_stmt = sales_stmt.on_conflict_do_update(
                     index_elements=["TransactionID", "outlet_code"],
                     set_={
+                        **set_pembayaran,
                         "ShopID": sale.shop_id,
                         "SaleDate": sale.sale_date,
                         "PaidTime": sale.paid_time,
@@ -161,12 +186,25 @@ class SalesService:
                     db.execute(item_stmt)
                     inserted_items += 1
 
+                # 🔥 PAYMENTS
+                if sale.payments is not None:
+                    inserted_payments += SalesService._ganti_pembayaran(db, outlet, sale)
+                    if not pembayaran_cocok(sale):
+                        tidak_cocok.append(sale.transaction_id)
+
             db.commit()
 
             logger.info(
                 f"SYNC SUCCESS outlet={outlet} "
-                f"inserted_sales={inserted_sales} inserted_items={inserted_items}"
+                f"inserted_sales={inserted_sales} inserted_items={inserted_items} "
+                f"inserted_payments={inserted_payments}"
             )
+            if tidak_cocok:
+                # Data tetap disimpan apa adanya; rekap closing yang memblokir.
+                logger.warning(
+                    f"SYNC PAYMENTS MISMATCH outlet={outlet} count={len(tidak_cocok)} "
+                    f"transaction_ids={tidak_cocok[:20]}"
+                )
 
             return {"sales": inserted_sales, "items": inserted_items}
 
@@ -180,6 +218,52 @@ class SalesService:
             )
 
             raise
+
+    @staticmethod
+    def _ganti_pembayaran(db: Session, outlet: str, sale) -> int:
+        """Ganti seluruh baris pembayaran satu transaksi dengan isi `sale.payments`.
+
+        Upsert per baris tidak cukup: baris yang sudah hilang di POS (metode
+        bayar diganti, jumlah baris berkurang) akan tertinggal. Jadi baris lama
+        transaksi ini dihapus dulu, di dalam transaksi DB yang sama dengan
+        upsert header. Dikunci (outlet, TransactionID) seperti header: baris
+        pembayaran selalu milik header yang sedang tersimpan.
+        """
+        db.execute(
+            delete(SalesPayments).where(
+                SalesPayments.outlet_code == outlet,
+                SalesPayments.transaction_id == sale.transaction_id,
+            )
+        )
+        if not sale.payments:
+            return 0
+
+        sekarang = utcnow()
+        db.execute(
+            insert(SalesPayments).values(
+                [
+                    dict(
+                        outlet_code=outlet,
+                        TransactionID=sale.transaction_id,
+                        ComputerID=p.computer_id,
+                        PayDetailID=p.pay_detail_id,
+                        SaleDate=sale.sale_date,
+                        PayTypeID=p.pay_type_id,
+                        PayTypeCode=p.pay_type_code,
+                        PayTypeName=p.pay_type_name,
+                        PayTypeDisplayName=p.pay_type_display_name,
+                        Amount=p.amount,
+                        CashChange=p.cash_change,
+                        IsFromEDC=p.is_from_edc,
+                        IsSale=p.is_sale,
+                        IsOtherReceipt=p.is_other_receipt,
+                        received_at=sekarang,
+                    )
+                    for p in sale.payments
+                ]
+            )
+        )
+        return len(sale.payments)
 
     # ------------------------------------------------------------------
     # Query baca

@@ -1,6 +1,7 @@
 """Test schema Pydantic — kontrak payload yang diterima API."""
 
 from datetime import date, datetime
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -161,6 +162,52 @@ class TestSalesSchema:
         """outlet_code berasal dari API key, tidak boleh diterima dari body."""
         assert "outlet_code" not in SalesSchema.model_fields
         assert "outlet" not in SalesSchema.model_fields
+
+
+class TestPaymentsSchema:
+    """Tiga kondisi `payments` (docs/handoff-sync-api-payments.md 2.2)."""
+
+    BARIS = {
+        "pay_detail_id": 1,
+        "computer_id": 793,
+        "pay_type_id": 149,
+        "pay_type_code": "149",
+        "pay_type_name": "REEDEM POINT",
+        "pay_type_display_name": "REEDEM POINT",
+        "amount": 26030.0,
+        "cash_change": 0.0,
+        "is_from_edc": 0,
+        "is_sale": 1,
+        "is_other_receipt": 0,
+    }
+
+    def test_key_tidak_ada_berarti_tidak_diketahui(self):
+        assert SalesSchema(**MINIMAL_SALE).payments is None
+
+    def test_list_kosong_berarti_tanpa_pembayaran(self):
+        assert SalesSchema(**MINIMAL_SALE, payments=[]).payments == []
+
+    def test_baris_ter_parse_dengan_decimal(self):
+        (p,) = SalesSchema(**MINIMAL_SALE, payments=[self.BARIS]).payments
+
+        assert (p.pay_type_id, p.amount, p.pay_type_name) == (149, Decimal("26030.0"), "REEDEM POINT")
+
+    def test_nama_jenis_bayar_boleh_null(self):
+        (p,) = SalesSchema(**MINIMAL_SALE, payments=[{**self.BARIS, "pay_type_name": None}]).payments
+
+        assert p.pay_type_name is None
+
+    def test_nominal_negatif_diterima(self):
+        (p,) = SalesSchema(**MINIMAL_SALE, payments=[{**self.BARIS, "amount": -1}]).payments
+
+        assert p.amount == Decimal(-1)
+
+    @pytest.mark.parametrize("field", ["pay_detail_id", "computer_id", "pay_type_id", "amount"])
+    def test_field_wajib(self, field):
+        baris = {k: v for k, v in self.BARIS.items() if k != field}
+
+        with pytest.raises(ValidationError):
+            SalesSchema(**MINIMAL_SALE, payments=[baris])
 
 
 class TestSyncRequestSchema:

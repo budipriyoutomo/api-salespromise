@@ -26,6 +26,13 @@ POS mencatat diskon, service charge, dan PPN per transaksi. Nilainya dibagi
 ke baris `prices` sebanding dengan qty × price, dibulatkan 2 desimal, dan sisa
 pembulatan ditaruh di baris terbesar. Jadi per `visitPurposeName`, jumlah
 `prices` selalu sama persis dengan `sales` (di luar orderFee).
+
+`payments` per tujuan kunjungan: Σ nominal baris pembayaran POS per
+`PayTypeID` outlet (docs/handoff-sync-api-payments.md 3.6). `paymentMethod`
+= nama jenis bayar POS apa adanya; COA dan MDR diisi ERP Gateway.
+`paymentAmount` = `fullPaymentAmount` sampai arti keduanya dijawab ERP
+(pertanyaan B). Jenis bayar yang totalnya 0 tidak dikirim. `paymentTotal`
+= Σ payments kalau pembayaran diketahui, selain itu grandTotal.
 """
 
 from collections.abc import Hashable
@@ -130,6 +137,33 @@ class HeaderMode:
 
 
 @dataclass
+class Pembayaran:
+    """Σ nominal satu jenis bayar (PayTypeID outlet) pada satu SaleMode."""
+
+    pay_type_id: int
+    nama: str | None
+    jumlah: Decimal
+
+
+def nama_jenis_bayar(p: Pembayaran) -> str:
+    return p.nama or f"PAYTYPE {p.pay_type_id}"
+
+
+def susun_payments(daftar: list[Pembayaran]) -> list[dict]:
+    hasil = [
+        {
+            "paymentMethod": nama_jenis_bayar(p),
+            "paymentAmount": angka(p.jumlah),
+            "fullPaymentAmount": angka(p.jumlah),
+            "notes": "",
+        }
+        for p in sorted(daftar, key=lambda p: (nama_jenis_bayar(p), p.pay_type_id))
+        if bulat(p.jumlah) != 0
+    ]
+    return hasil
+
+
+@dataclass
 class _Baris:
     item: Hashable
     sale_mode: int
@@ -145,11 +179,15 @@ class _Baris:
 def susun(
     baris_per_item: dict[Hashable, dict[tuple[int, Decimal, Decimal], Decimal]],
     header: dict[int, HeaderMode],
+    pembayaran: dict[int, list[Pembayaran]] | None = None,
 ) -> tuple[dict[Hashable, list[dict]], list[dict]]:
     """Susun `prices` per item dan `sales` per tujuan kunjungan.
 
     `baris_per_item`: item → {(SaleMode, RetailPrice, Price): qty}.
     Baris dengan qty 0 dibuang.
+
+    `pembayaran`: SaleMode → jenis bayar. None = pembayaran tidak diketahui,
+    `payments` dikirim kosong (rekap seperti ini diblokir pemanggil).
     """
     per_mode: dict[int, list[_Baris]] = {}
     for item, isi in baris_per_item.items():
@@ -195,6 +233,12 @@ def susun(
         diskon_total, sc_total, ppn_total = bulat(h.diskon), bulat(h.service_charge), bulat(h.ppn)
         biaya = bulat(h.pendapatan_lain)
         grand = subtotal - diskon_total + sc_total + ppn_total + biaya
+        if pembayaran is None:
+            payments, dibayar = [], grand
+        else:
+            daftar = pembayaran.get(mode, [])
+            payments = susun_payments(daftar)
+            dibayar = sum((bulat(p.jumlah) for p in daftar), Decimal(0))
         sales.append(
             {
                 "visitPurposeName": nama,
@@ -212,8 +256,8 @@ def susun(
                 "voucherTotal": 0,
                 "roundingTotal": 0,
                 "grandTotal": angka(grand),
-                "paymentTotal": angka(grand),
-                "payments": [],
+                "paymentTotal": angka(dibayar),
+                "payments": payments,
             }
         )
 

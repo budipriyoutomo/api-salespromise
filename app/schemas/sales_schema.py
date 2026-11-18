@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -37,6 +38,26 @@ class SalesItemSchema(BaseModel):
     class Config:
         from_attributes = True  # 🔥 penting untuk ORM
 
+
+
+class SalesPaymentSchema(BaseModel):
+    """Satu baris pembayaran dari view `vw_orderpaydetail` POS.
+
+    Lihat docs/handoff-sync-api-payments.md bagian 2.1. `amount` adalah
+    nominal bersih tanpa kembalian dan boleh negatif atau nol.
+    """
+
+    pay_detail_id: int
+    computer_id: int
+    pay_type_id: int
+    pay_type_code: Optional[str] = None
+    pay_type_name: Optional[str] = None
+    pay_type_display_name: Optional[str] = None
+    amount: Decimal
+    cash_change: Decimal = Decimal(0)
+    is_from_edc: int = 0
+    is_sale: int = 0
+    is_other_receipt: int = 0
 
 
 class SalesSchema(BaseModel):
@@ -105,6 +126,11 @@ class SalesSchema(BaseModel):
 
     # 🔥 RELATION
     items: List[SalesItemSchema] = Field(default_factory=list)
+
+    # None (key tidak dikirim) = pembayaran tidak diketahui: agen lama atau view
+    # pembayaran belum dipasang. [] = transaksi memang tanpa pembayaran.
+    # JANGAN diberi default []: keduanya harus bisa dibedakan.
+    payments: Optional[List[SalesPaymentSchema]] = None
 
     class Config:
         from_attributes = True

@@ -15,6 +15,13 @@ URL = "/api/closing-exports"
 
 
 @pytest.fixture(autouse=True)
+def _tanpa_pembayaran(monkeypatch):
+    from tests.unit.test_closing_export_service import abaikan_pembayaran
+
+    abaikan_pembayaran(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
 def konfigurasi(monkeypatch):
     monkeypatch.setattr(settings, "CLOSING_EXPORT_URL", "https://api.contoh.id/closing-totals")
     monkeypatch.setattr(settings, "CLOSING_EXPORT_TOKEN", "token-uji")

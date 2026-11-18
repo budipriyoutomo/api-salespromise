@@ -347,3 +347,91 @@ class TestPerforma:
 
         assert result == {"sales": 1000, "items": 3000}
         assert durasi < 60, f"sync 1.000 transaksi butuh {durasi:.1f} detik"
+
+
+# ---------------------------------------------------------------------------
+# payments (docs/handoff-sync-api-payments.md)
+# ---------------------------------------------------------------------------
+
+
+def bayar(pay_detail_id, amount, pay_type_id=1, computer_id=793):
+    return dict(
+        pay_detail_id=pay_detail_id,
+        computer_id=computer_id,
+        pay_type_id=pay_type_id,
+        pay_type_name="Cash",
+        amount=amount,
+    )
+
+
+def pembayaran(session, outlet="OUTLET_001"):
+    return [
+        (r[0], r[1], float(r[2]))
+        for r in session.execute(
+            text(
+                'SELECT "PayDetailID", "PayTypeID", "Amount" FROM orderpaydetail '
+                'WHERE outlet_code = :o ORDER BY "PayDetailID"'
+            ),
+            {"o": outlet},
+        )
+    ]
+
+
+def diketahui(session, transaction_id=1, outlet="OUTLET_001"):
+    return session.execute(
+        text('SELECT payments_received_at FROM ordertransaction WHERE "TransactionID" = :t AND outlet_code = :o'),
+        {"t": transaction_id, "o": outlet},
+    ).scalar()
+
+
+class TestPembayaranSungguhan:
+
+    def sync(self, session, outlet="OUTLET_001", **sale):
+        SalesService.sync_sales(db=session, outlet=outlet, sales_list=[build_sale(transaction_id=1, **sale)])
+
+    def test_tersimpan_dan_kirim_ulang_tidak_menduplikasi(self, pg_session):
+        for _ in range(3):
+            self.sync(pg_session, payments=[bayar(1, 26030, pay_type_id=149), bayar(2, 123970)])
+
+        assert pembayaran(pg_session) == [(1, 149, 26030.0), (2, 1, 123970.0)]
+        assert diketahui(pg_session) is not None
+
+    def test_baris_yang_hilang_di_pos_ikut_terhapus(self, pg_session):
+        self.sync(pg_session, payments=[bayar(1, 50000), bayar(2, 100000, pay_type_id=864)])
+        self.sync(pg_session, payments=[bayar(1, 150000)])
+
+        assert pembayaran(pg_session) == [(1, 1, 150000.0)]
+
+    def test_payments_kosong_menghapus_semua(self, pg_session):
+        self.sync(pg_session, payments=[bayar(1, 150000)])
+        self.sync(pg_session, payments=[])
+
+        assert pembayaran(pg_session) == []
+        assert diketahui(pg_session) is not None
+
+    def test_tanpa_key_payments_tidak_menyentuh(self, pg_session):
+        self.sync(pg_session, payments=[bayar(1, 150000)])
+        tanda = diketahui(pg_session)
+
+        self.sync(pg_session)
+
+        assert pembayaran(pg_session) == [(1, 1, 150000.0)]
+        assert diketahui(pg_session) == tanda
+
+    def test_agen_lama_belum_diketahui(self, pg_session):
+        self.sync(pg_session)
+
+        assert diketahui(pg_session) is None
+
+    def test_outlet_lain_tidak_terhapus(self, pg_session):
+        self.sync(pg_session, payments=[bayar(1, 150000)])
+        self.sync(pg_session, outlet="OUTLET_002", payments=[bayar(1, 9000)])
+        self.sync(pg_session, payments=[])
+
+        assert pembayaran(pg_session) == []
+        assert pembayaran(pg_session, "OUTLET_002") == [(1, 1, 9000.0)]
+
+    def test_nominal_negatif_dan_nol_disimpan(self, pg_session):
+        self.sync(pg_session, payments=[bayar(1, 150001), bayar(2, -1, pay_type_id=168), bayar(3, 0, pay_type_id=10050)])
+
+        assert pembayaran(pg_session) == [(1, 1, 150001.0), (2, 168, -1.0), (3, 10050, 0.0)]

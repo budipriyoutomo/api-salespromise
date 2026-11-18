@@ -43,6 +43,14 @@ pytestmark = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _tanpa_pembayaran(monkeypatch):
+    """Pembayaran diuji di tests/unit/test_closing_export_pembayaran.py."""
+    from tests.unit.test_closing_export_service import abaikan_pembayaran
+
+    abaikan_pembayaran(monkeypatch)
+
+
 @pytest.fixture(scope="module")
 def engine():
     engine = create_engine(TEST_DATABASE_URL)
