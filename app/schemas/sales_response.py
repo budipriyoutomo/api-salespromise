@@ -198,13 +198,49 @@ class SaleItemResponse(BaseModel):
     comment: Optional[str] = None
 
 
+class SalePaymentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    computer_id: int
+    pay_detail_id: int
+    pay_type_id: int
+    pay_type_code: Optional[str] = None
+    pay_type_name: Optional[str] = None
+    pay_type_display_name: Optional[str] = None
+    # Nominal bersih tanpa kembalian; boleh negatif (Voucher Adjustment).
+    amount: float
+    cash_change: float = 0.0
+
+
 class SaleDetail(SaleResponse):
     items: List[SaleItemResponse] = []
+    # `None` = pembayaran belum diketahui (agen lama / view belum dipasang);
+    # `[]` = POS melaporkan transaksi tanpa pembayaran.
+    payments: Optional[List[SalePaymentResponse]] = None
 
 
 class SaleDetailResponse(BaseModel):
     success: bool = True
     data: SaleDetail
+
+
+class PaymentSummaryRow(BaseModel):
+    outlet_code: Optional[str] = None
+    pay_type_id: int
+    pay_type_name: Optional[str] = None
+    total_transactions: int
+    total_amount: float
+
+
+class PaymentSummaryData(BaseModel):
+    rows: List[PaymentSummaryRow]
+    total_amount: float
+    transactions_without_payments: int
+
+
+class PaymentSummaryResponse(BaseModel):
+    success: bool = True
+    data: PaymentSummaryData
 
 
 class SyncStatusRow(BaseModel):

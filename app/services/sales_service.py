@@ -740,6 +740,95 @@ class SalesService:
         return sale, items
 
     @staticmethod
+    def get_sale_payments(db, sale):
+        """Baris pembayaran satu transaksi, atau `None` bila belum diketahui.
+
+        `None` (bukan `[]`) saat `payments_received_at` kosong: agen lama atau
+        view pembayaran belum dipasang di outlet. `[]` berarti POS memang
+        melaporkan transaksi ini tanpa pembayaran. Frontend membedakan keduanya.
+        """
+        if sale.payments_received_at is None:
+            return None
+
+        return (
+            db.query(SalesPayments)
+            .filter(SalesPayments.transaction_id == sale.transaction_id)
+            .filter(SalesPayments.outlet_code == sale.outlet_code)
+            .order_by(SalesPayments.computer_id, SalesPayments.pay_detail_id)
+            .all()
+        )
+
+    @staticmethod
+    def get_payment_summary(db, outlet=None, start_date=None, end_date=None, brand=None):
+        """Total pembayaran per outlet + jenis bayar, untuk rentang tanggal.
+
+        Jenis bayar dikelompokkan per (outlet_code, PayTypeID): ID dan nama
+        jenis bayar milik POS masing-masing outlet, jadi tidak digabung antar
+        outlet berdasarkan nama. Transaksi terhapus tidak dihitung.
+
+        `transactions_without_payments` = transaksi aktif yang pembayarannya
+        belum diketahui (`payments_received_at` NULL), supaya total di sini
+        tidak dikira lengkap padahal sebagian outlet belum mengirim.
+        """
+        nama = func.max(
+            func.coalesce(
+                SalesPayments.pay_type_display_name,
+                SalesPayments.pay_type_name,
+                SalesPayments.pay_type_code,
+            )
+        ).label("pay_type_name")
+        total_amount = func.coalesce(func.sum(SalesPayments.amount), 0).label("total_amount")
+
+        query = SalesService._report_query(
+            db.query(
+                Sales.outlet_code.label("outlet_code"),
+                SalesPayments.pay_type_id.label("pay_type_id"),
+                nama,
+                func.count(func.distinct(Sales.transaction_id)).label("total_transactions"),
+                total_amount,
+            ).join(
+                SalesPayments,
+                and_(
+                    SalesPayments.transaction_id == Sales.transaction_id,
+                    SalesPayments.outlet_code == Sales.outlet_code,
+                ),
+            ),
+            outlet=outlet,
+            start_date=start_date,
+            end_date=end_date,
+            brand=brand,
+        )
+        rows = (
+            query.group_by(Sales.outlet_code, SalesPayments.pay_type_id)
+            .order_by(Sales.outlet_code, total_amount.desc())
+            .all()
+        )
+
+        tanpa = SalesService._report_query(
+            db.query(func.count(Sales.transaction_id)).filter(Sales.payments_received_at.is_(None)),
+            outlet=outlet,
+            start_date=start_date,
+            end_date=end_date,
+            brand=brand,
+        ).scalar()
+
+        data = [
+            {
+                "outlet_code": r.outlet_code,
+                "pay_type_id": int(r.pay_type_id),
+                "pay_type_name": r.pay_type_name,
+                "total_transactions": int(r.total_transactions or 0),
+                "total_amount": float(r.total_amount or 0),
+            }
+            for r in rows
+        ]
+        return {
+            "rows": data,
+            "total_amount": sum(r["total_amount"] for r in data),
+            "transactions_without_payments": int(tanpa or 0),
+        }
+
+    @staticmethod
     def get_sync_status(db, outlet=None):
         """Kapan tiap outlet terakhir mengirim data.
 

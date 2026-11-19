@@ -29,6 +29,8 @@ from app.schemas.sales_response import (
     OutletSalesListResponse,
     OutletSalesRow,
     PaginationMeta,
+    PaymentSummaryData,
+    PaymentSummaryResponse,
     ProductGroupListResponse,
     ProductGroupSalesListResponse,
     ProductGroupSalesRow,
@@ -36,6 +38,7 @@ from app.schemas.sales_response import (
     SaleDetail,
     SaleDetailResponse,
     SaleItemResponse,
+    SalePaymentResponse,
     SaleResponse,
     SalesListResponse,
     SummaryData,
@@ -260,6 +263,29 @@ def get_daily(
     return DailyListResponse(data=[DailyRow.model_validate(row) for row in rows])
 
 
+@router.get("/payments", response_model=PaymentSummaryResponse)
+def get_payment_summary(
+    outlet: Optional[str] = Query(None),
+    start_date: Optional[date_type] = Query(None),
+    end_date: Optional[date_type] = Query(None),
+    brand: Optional[str] = brand_query(),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Total pembayaran per outlet + jenis bayar. Transaksi terhapus tidak dihitung.
+
+    Jenis bayar tidak digabung antar outlet: PayTypeID milik POS tiap outlet.
+    """
+    cek_rentang_tanggal(start_date, end_date)
+    outlet = resolve_outlet_scope(user, outlet)
+
+    hasil = SalesService.get_payment_summary(
+        db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand
+    )
+
+    return PaymentSummaryResponse(data=PaymentSummaryData(**hasil))
+
+
 @router.get("/by-outlet", response_model=OutletSalesListResponse)
 def get_by_outlet(
     start_date: Optional[date_type] = Query(None),
@@ -380,7 +406,7 @@ def get_sale_detail(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Detail satu transaksi beserta itemnya.
+    """Detail satu transaksi beserta item dan pembayarannya.
 
     Transaksi milik outlet lain menghasilkan 404, bukan 403 — supaya nomor
     transaksi outlet lain tidak bisa dipetakan lewat beda status code.
@@ -392,9 +418,12 @@ def get_sale_detail(
     if not sale:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaksi tidak ditemukan")
 
+    payments = SalesService.get_sale_payments(db=db, sale=sale)
+
     detail = SaleDetail(
         **SaleResponse.model_validate(sale).model_dump(),
         items=[SaleItemResponse.model_validate(item) for item in items],
+        payments=None if payments is None else [SalePaymentResponse.model_validate(p) for p in payments],
     )
 
     return SaleDetailResponse(data=detail)
