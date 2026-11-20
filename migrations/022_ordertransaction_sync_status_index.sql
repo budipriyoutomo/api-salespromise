@@ -1,0 +1,33 @@
+-- migrate:no-transaction
+-- ============================================================
+-- Migration 022: Index ordertransaction untuk status sync (TODO 9.14)
+-- ============================================================
+--
+-- HANYA menambah satu index. Tidak ada baris yang diubah atau dihapus, dan
+-- tidak ada constraint / kolom yang disentuh.
+--
+-- `/api/outlets/sync-status` (SalesService.get_sync_status) sekarang mencari
+-- MAX(updated_at) per outlet lewat lookup index, bukan GROUP BY yang memindai
+-- seluruh ordertransaction. Index ini yang membuat lookup itu murah.
+--
+-- (outlet_code, "SaleDate") TIDAK dibuat di sini: sudah ada sejak migrasi 002
+-- sebagai `idx_ordertransaction_outlet_saledate` dan dipakai untuk
+-- MAX("SaleDate") + jumlah transaksi 30 hari. Index ganda hanya memperlambat
+-- setiap sync POS tanpa manfaat.
+--
+-- CONCURRENTLY: tabel tetap bisa dibaca DAN ditulis selama index dibangun —
+-- sync POS tidak berhenti. Konsekuensinya sama seperti 017:
+--   - tidak bisa di dalam transaksi, jadi file ini dijalankan migrate.py
+--     statement per statement (penanda di baris pertama);
+--   - menunggu transaksi yang sedang berjalan selesai; container API baru
+--     start setelah index selesai dibangun;
+--   - kalau gagal di tengah, index tertinggal berstatus INVALID. migrate.py
+--     berhenti dan menyebut namanya, bukan melewatinya diam-diam.
+--
+-- Cek hasil:
+--   SELECT c.relname, i.indisvalid
+--   FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+--   WHERE i.indrelid = 'ordertransaction'::regclass;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_ordertransaction_outlet_updated
+    ON ordertransaction (outlet_code, updated_at);

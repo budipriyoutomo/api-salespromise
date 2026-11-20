@@ -11,7 +11,7 @@ from datetime import date as date_type
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SaleResponse(BaseModel):
@@ -249,7 +249,11 @@ class SyncStatusRow(BaseModel):
     outlet_code: Optional[str] = None
     last_sale_date: Optional[date_type] = None
     last_synced_at: Optional[datetime] = None
-    total_transactions: int
+    # Hari ini (WIB) dan 29 hari sebelumnya, termasuk transaksi terhapus.
+    # Menggantikan `total_transactions` (COUNT seluruh tabel) — TODO 9.14.
+    transactions_last_30_days: int = Field(
+        description="Jumlah transaksi 30 hari terakhir (hari ini WIB + 29 hari sebelumnya), termasuk yang terhapus"
+    )
 
 
 class SyncStatusListResponse(BaseModel):

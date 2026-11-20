@@ -49,11 +49,16 @@ polos tetap hijau di mesin mana pun.
 | `unit/test_routes_users.py` | `/api/users` + ganti password sendiri |
 | `unit/test_routes_reports.py` | Endpoint laporan dashboard |
 | `unit/test_sales_service_reports.py` | Query agregat laporan |
+| `unit/test_report_cache.py` | Cache TTL laporan dashboard — isolasi outlet, filter di kunci, error & TTL 0 |
+| `unit/test_cache.py` | `TtlCache` — TTL, error tidak disimpan, batas jumlah entri |
+| `unit/test_filter_tanggal_item.py` | Filter tanggal redundan di `orderdetail` (TODO 9.13) |
 | `unit/test_rate_limit.py` | Penahan penebakan password |
 | `unit/test_structured_logging.py` | Log JSON/teks, `request_id`, middleware `X-Request-ID`, access log |
 | `unit/test_infrastructure.py` | utcnow, koneksi broker, batas payload, health |
 | `integration/test_sync_postgres.py` | Upsert sungguhan, transaksi, performa |
 | `integration/test_performa_postgres.py` | `row_number()` nama terbaru, product-groups tanpa join, `statement_timeout` → 503 |
+| `integration/test_filter_tanggal_item_postgres.py` | Filter tanggal item: angka identik dengan versi lama, planner memakai `ix_orderdetail_saledate_outlet` |
+| `integration/test_migrasi_022_postgres.py` | Migrasi 022: index `(outlet_code, updated_at)`, tanpa index ganda; `get_sync_status` = GROUP BY lama, planner tanpa Seq Scan |
 | `integration/test_migrasi_017_postgres.py` | Migrasi 017: `CREATE INDEX CONCURRENTLY` tanpa transaksi, baris tidak berubah, index dipakai planner |
 
 ## Kenapa SQLite untuk sebagian, mock untuk sebagian

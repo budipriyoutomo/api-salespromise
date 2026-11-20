@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.core.cache import TtlCache
 from app.core.errors import ERROR_DATABASE_SEMENTARA
 from app.core.rentang_tanggal import cek_rentang_tanggal
 from app.database import get_db
@@ -52,6 +54,24 @@ from app.services.sales_service import SalesService
 from app.utils.logger import logger
 
 router = APIRouter(prefix="/api/sales", tags=["Sales"])
+
+# Endpoint laporan dashboard dipoll tiap kali filter/halaman dibuka oleh setiap
+# user; hasil yang basi beberapa puluh detik masih wajar (TODO 9.12).
+# `/colorplate` dan `/publish` sengaja TIDAK lewat cache ini.
+_cache_laporan = TtlCache(ttl_seconds=settings.REPORT_CACHE_TTL_SECONDS)
+
+
+def _dari_cache(endpoint: str, outlet: Optional[str], hitung, **filter):
+    """Ambil hasil laporan dari cache, atau hitung lalu simpan.
+
+    `outlet` WAJIB hasil `resolve_outlet_scope`, bukan query param mentah —
+    itulah yang menjamin user role outlet tidak pernah menerima entri milik
+    outlet lain atau milik "semua outlet" (None). Validasi scope & rentang
+    tanggal tetap dijalankan sebelum fungsi ini, jadi 403/422 tidak pernah
+    terlewati oleh cache. Semua parameter filter endpoint masuk `filter`.
+    """
+    kunci = (endpoint, outlet, tuple(sorted(filter.items())))
+    return _cache_laporan.get_or_set(kunci, hitung)
 
 
 def brand_query():
@@ -181,16 +201,26 @@ def get_sales_by_group(
             detail="product_group tidak boleh kosong",
         )
 
-    rows = SalesService.get_sales_by_product_groups(
-        db=db,
-        product_groups=product_group,
-        outlet=outlet,
+    def hitung():
+        rows = SalesService.get_sales_by_product_groups(
+            db=db,
+            product_groups=product_group,
+            outlet=outlet,
+            start_date=start_date,
+            end_date=end_date,
+            brand=brand,
+        )
+        return ProductGroupSalesListResponse(data=[ProductGroupSalesRow.model_validate(row) for row in rows])
+
+    return _dari_cache(
+        "by-group",
+        outlet,
+        hitung,
+        product_group=tuple(product_group),
         start_date=start_date,
         end_date=end_date,
         brand=brand,
     )
-
-    return ProductGroupSalesListResponse(data=[ProductGroupSalesRow.model_validate(row) for row in rows])
 
 
 @router.get("/product-groups", response_model=ProductGroupListResponse)
@@ -211,8 +241,14 @@ def list_product_groups(
     """
     outlet = resolve_outlet_scope(user, outlet)
 
-    return ProductGroupListResponse(
-        data=SalesService.list_product_groups(db=db, outlet=outlet, start_date=start_date, end_date=end_date)
+    return _dari_cache(
+        "product-groups",
+        outlet,
+        lambda: ProductGroupListResponse(
+            data=SalesService.list_product_groups(db=db, outlet=outlet, start_date=start_date, end_date=end_date)
+        ),
+        start_date=start_date,
+        end_date=end_date,
     )
 
 
@@ -238,9 +274,18 @@ def get_summary(
     cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
-    hasil = SalesService.get_summary(db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand)
-
-    return SummaryResponse(data=SummaryData(**hasil))
+    return _dari_cache(
+        "summary",
+        outlet,
+        lambda: SummaryResponse(
+            data=SummaryData(
+                **SalesService.get_summary(db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand)
+            )
+        ),
+        start_date=start_date,
+        end_date=end_date,
+        brand=brand,
+    )
 
 
 @router.get("/daily", response_model=DailyListResponse)
@@ -256,11 +301,13 @@ def get_daily(
     cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
-    rows = SalesService.get_daily_sales(
-        db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand
-    )
+    def hitung():
+        rows = SalesService.get_daily_sales(
+            db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand
+        )
+        return DailyListResponse(data=[DailyRow.model_validate(row) for row in rows])
 
-    return DailyListResponse(data=[DailyRow.model_validate(row) for row in rows])
+    return _dari_cache("daily", outlet, hitung, start_date=start_date, end_date=end_date, brand=brand)
 
 
 @router.get("/payments", response_model=PaymentSummaryResponse)
@@ -279,11 +326,13 @@ def get_payment_summary(
     cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
-    hasil = SalesService.get_payment_summary(
-        db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand
-    )
+    def hitung():
+        hasil = SalesService.get_payment_summary(
+            db=db, outlet=outlet, start_date=start_date, end_date=end_date, brand=brand
+        )
+        return PaymentSummaryResponse(data=PaymentSummaryData(**hasil))
 
-    return PaymentSummaryResponse(data=PaymentSummaryData(**hasil))
+    return _dari_cache("payments", outlet, hitung, start_date=start_date, end_date=end_date, brand=brand)
 
 
 @router.get("/by-outlet", response_model=OutletSalesListResponse)
@@ -296,9 +345,13 @@ def get_by_outlet(
 ):
     """Perbandingan antar outlet — bukan hak user yang terikat satu outlet."""
     cek_rentang_tanggal(start_date, end_date)
-    rows = SalesService.get_sales_by_outlet(db=db, start_date=start_date, end_date=end_date, brand=brand)
 
-    return OutletSalesListResponse(data=[OutletSalesRow.model_validate(row) for row in rows])
+    def hitung():
+        rows = SalesService.get_sales_by_outlet(db=db, start_date=start_date, end_date=end_date, brand=brand)
+        return OutletSalesListResponse(data=[OutletSalesRow.model_validate(row) for row in rows])
+
+    # Hanya admin/manager (lintas outlet) — scope-nya selalu "semua outlet".
+    return _dari_cache("by-outlet", None, hitung, start_date=start_date, end_date=end_date, brand=brand)
 
 
 @router.get("/top-products", response_model=TopProductListResponse)
@@ -319,17 +372,28 @@ def get_top_products(
     cek_rentang_tanggal(start_date, end_date)
     outlet = resolve_outlet_scope(user, outlet)
 
-    rows = SalesService.get_top_products(
-        db=db,
-        outlet=outlet,
+    def hitung():
+        rows = SalesService.get_top_products(
+            db=db,
+            outlet=outlet,
+            start_date=start_date,
+            end_date=end_date,
+            product_group=product_group,
+            limit=limit,
+            brand=brand,
+        )
+        return TopProductListResponse(data=[TopProductRow.model_validate(row) for row in rows])
+
+    return _dari_cache(
+        "top-products",
+        outlet,
+        hitung,
         start_date=start_date,
         end_date=end_date,
         product_group=product_group,
         limit=limit,
         brand=brand,
     )
-
-    return TopProductListResponse(data=[TopProductRow.model_validate(row) for row in rows])
 
 
 EXPORT_COLUMNS = [

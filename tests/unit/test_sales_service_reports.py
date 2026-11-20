@@ -338,11 +338,76 @@ class TestGetSyncStatus:
         assert hasil["OUTLET_001"] == date(2026, 1, 15)
         assert hasil["OUTLET_002"] == date(2026, 1, 15)
 
-    def test_membawa_jumlah_transaksi(self, seeded):
-        hasil = {row.outlet_code: row.total_transactions for row in SalesService.get_sync_status(db=seeded)}
+    def test_menghitung_transaksi_30_hari_terakhir_termasuk_hari_ini(self, seeded):
+        """Bukan total sepanjang masa (COUNT seluruh tabel, makin berat seiring
+        data bertambah) — TODO 9.14. 30 hari = hari ini dan 29 hari sebelumnya."""
+        # 8 Feb - 29 hari = 10 Jan: ketiga transaksi OUTLET_001 masih masuk.
+        hasil = {
+            row.outlet_code: row.transactions_last_30_days
+            for row in SalesService.get_sync_status(db=seeded, hari_ini=date(2026, 2, 8))
+        }
 
         assert hasil["OUTLET_001"] == 3  # termasuk yang deleted — ini status sync, bukan laporan omzet
         assert hasil["OUTLET_002"] == 1
+
+    def test_transaksi_di_luar_30_hari_tidak_dihitung(self, seeded):
+        # 13 Feb - 29 hari = 15 Jan: transaksi 10 Jan sudah di luar jendela.
+        hasil = {
+            row.outlet_code: row.transactions_last_30_days
+            for row in SalesService.get_sync_status(db=seeded, hari_ini=date(2026, 2, 13))
+        }
+
+        assert hasil == {"OUTLET_001": 2, "OUTLET_002": 1}
+
+    def test_outlet_yang_berhenti_mengirim_tetap_muncul_dengan_nol(self, seeded):
+        """Justru outlet seperti ini yang dicari halaman status sync — barisnya
+        tidak boleh hilang hanya karena tidak ada transaksi 30 hari terakhir."""
+        hasil = {row.outlet_code: row for row in SalesService.get_sync_status(db=seeded, hari_ini=date(2026, 6, 1))}
+
+        assert set(hasil) == {"OUTLET_001", "OUTLET_002"}
+        assert hasil["OUTLET_001"].transactions_last_30_days == 0
+        assert hasil["OUTLET_001"].last_sale_date == date(2026, 1, 15)
+
+    def test_hari_ini_default_memakai_tanggal_wib(self, seeded, monkeypatch):
+        """SaleDate adalah tanggal bisnis outlet (WIB). Pukul 20:00 UTC sudah
+        tanggal berikutnya di WIB — jendela harus mengikuti WIB, bukan UTC."""
+        from datetime import datetime, timezone
+
+        from app.core import time as time_module
+
+        monkeypatch.setattr(time_module, "_sekarang_utc", lambda: datetime(2026, 2, 12, 20, 0, tzinfo=timezone.utc))
+
+        assert time_module.hari_ini_wib() == date(2026, 2, 13)
+        hasil = {row.outlet_code: row.transactions_last_30_days for row in SalesService.get_sync_status(db=seeded)}
+        assert hasil == {"OUTLET_001": 2, "OUTLET_002": 1}
+
+    def test_tidak_lagi_membawa_total_sepanjang_masa(self, seeded):
+        row = SalesService.get_sync_status(db=seeded)[0]
+
+        assert not hasattr(row, "total_transactions")
+
+    def test_membawa_waktu_sync_terakhir_per_outlet(self, db_session, sale_factory):
+        from datetime import datetime
+
+        db_session.add_all(
+            [
+                sale_factory(transaction_id=1, outlet_code="A", updated_at=datetime(2026, 1, 15, 8, 0)),
+                sale_factory(transaction_id=2, outlet_code="A", updated_at=datetime(2026, 1, 15, 9, 30)),
+                sale_factory(transaction_id=3, outlet_code="B", updated_at=datetime(2026, 1, 14, 7, 0)),
+            ]
+        )
+        db_session.commit()
+
+        hasil = {row.outlet_code: row.last_synced_at for row in SalesService.get_sync_status(db=db_session)}
+
+        assert hasil == {"A": datetime(2026, 1, 15, 9, 30), "B": datetime(2026, 1, 14, 7, 0)}
+
+    def test_terurut_per_kode_outlet(self, db_session, sale_factory):
+        for i, kode in enumerate(["STTSM", "STJWB", "STP23"], start=1):
+            db_session.add(sale_factory(transaction_id=i, outlet_code=kode))
+        db_session.commit()
+
+        assert [r.outlet_code for r in SalesService.get_sync_status(db=db_session)] == ["STJWB", "STP23", "STTSM"]
 
     def test_filter_outlet(self, seeded):
         hasil = SalesService.get_sync_status(db=seeded, outlet="OUTLET_002")

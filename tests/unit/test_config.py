@@ -150,6 +150,16 @@ class TestDefaultEnv:
         assert s.REFRESH_TOKEN_EXPIRE_DAYS == 7
         assert s.MAX_SALES_PER_REQUEST == 1000
 
+    def test_ttl_cache_laporan_default_60_detik(self, monkeypatch):
+        monkeypatch.delenv("REPORT_CACHE_TTL_SECONDS", raising=False)
+
+        assert Settings().REPORT_CACHE_TTL_SECONDS == 60
+
+    def test_ttl_cache_laporan_bisa_dimatikan_lewat_env(self, monkeypatch):
+        monkeypatch.setenv("REPORT_CACHE_TTL_SECONDS", "0")
+
+        assert Settings().REPORT_CACHE_TTL_SECONDS == 0
+
     def test_password_rabbitmq_tidak_punya_default(self, monkeypatch):
         """Lebih baik gagal terhubung daripada menaruh kredensial di kode."""
         monkeypatch.delenv("RABBITMQ_PASSWORD", raising=False)

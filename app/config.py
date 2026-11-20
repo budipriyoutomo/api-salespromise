@@ -83,6 +83,8 @@ class Settings:
 
         # --- Batas rentang tanggal laporan (hari); 0 = tanpa batas ---
         self.REPORT_MAX_RANGE_DAYS: int = int(os.getenv("REPORT_MAX_RANGE_DAYS", "366"))
+        # Detik hasil laporan dashboard di-cache per worker; 0 = cache mati.
+        self.REPORT_CACHE_TTL_SECONDS: int = int(os.getenv("REPORT_CACHE_TTL_SECONDS", "60"))
 
         # --- Batas payload sync ---
         self.MAX_SALES_PER_REQUEST: int = int(os.getenv("MAX_SALES_PER_REQUEST", "1000"))

@@ -53,6 +53,38 @@ def sql_of(statement):
     return str(compiled(statement))
 
 
+KOLOM_UPDATE_SALES = {
+    "ShopID", "SaleDate", "PaidTime", "CloseTime", "ReceiptID", "ReceiptMonth", "ReceiptYear",
+    "ReceiptTotalAmount", "ReceiptPayPrice", "ReceiptDiscount", "TransactionStatusID",
+    "VoidStaffID", "VoidReason", "VoidTime", "updated_at",
+}
+KOLOM_UPDATE_ITEM = {"Amount", "Price", "RetailPrice", "OrderStatusID", "VoidStaffID"}
+
+
+def kolom_set(statement):
+    """Nama kolom yang di-assign di `DO UPDATE SET ...`."""
+    import re
+
+    bagian = do_update(statement).split("SET", 1)[1]
+    return set(re.findall(r'(?:^|, )\s*"?(\w+)"? = ', bagian))
+
+
+def baris(statement, i=0):
+    """Nilai kolom baris ke-`i` dari INSERT multi-VALUES (bind `<kolom>_m<i>`)."""
+    akhiran = f"_m{i}"
+    return {k[: -len(akhiran)]: v for k, v in params_of(statement).items() if k.endswith(akhiran)}
+
+
+def jumlah_baris(statement):
+    """Jumlah baris VALUES dalam satu INSERT."""
+    return len({k.rsplit("_m", 1)[1] for k in params_of(statement) if "_m" in k and k.rsplit("_m", 1)[1].isdigit()})
+
+
+def do_update(statement):
+    sql = sql_of(statement)
+    return sql[sql.find("DO UPDATE"):]
+
+
 def statements_for(session, table_name):
     return [s for s in session.statements if s.table.name == table_name]
 
@@ -113,7 +145,9 @@ class TestHitunganHasil:
         result = SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(items=items)])
 
         assert result == {"sales": 1, "items": 5}
-        assert len(statements_for(db, "orderdetail")) == 5
+        # Bulk (TODO 3.5): satu INSERT untuk semua item, bukan satu per item.
+        (stmt,) = statements_for(db, "orderdetail")
+        assert jumlah_baris(stmt) == 5
 
     def test_banyak_sale_dengan_jumlah_item_berbeda(self):
         db = RecordingSession()
@@ -126,6 +160,9 @@ class TestHitunganHasil:
         result = SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
 
         assert result == {"sales": 3, "items": 4}
+        (header,) = statements_for(db, "ordertransaction")
+        (items,) = statements_for(db, "orderdetail")
+        assert (jumlah_baris(header), jumlah_baris(items)) == (3, 4)
 
     def test_list_kosong_tidak_menyentuh_database(self):
         db = RecordingSession()
@@ -145,7 +182,7 @@ class TestPemetaanKolomSales:
 
         SalesService.sync_sales(db=db, outlet="OUTLET_009", sales_list=[build_sale()])
 
-        assert params_of(db.statements[0])["outlet_code"] == "OUTLET_009"
+        assert baris(db.statements[0])["outlet_code"] == "OUTLET_009"
 
     def test_kolom_utama_terpetakan(self):
         db = RecordingSession()
@@ -162,7 +199,7 @@ class TestPemetaanKolomSales:
         )
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[sale])
-        p = params_of(db.statements[0])
+        p = baris(db.statements[0])
 
         assert p["TransactionID"] == 777
         assert p["ShopID"] == 3
@@ -196,7 +233,7 @@ class TestPemetaanKolomSales:
         )
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[sale])
-        p = params_of(db.statements[0])
+        p = baris(db.statements[0])
 
         assert p["ReceiptProductRetailPrice"] == 200000.0
         assert p["ReceiptSalePrice"] == 180000.0
@@ -222,7 +259,7 @@ class TestPemetaanKolomSales:
         )
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[sale])
-        p = params_of(db.statements[0])
+        p = baris(db.statements[0])
 
         assert p["VoidStaffID"] == 9
         assert p["VoidReason"] == "salah input"
@@ -234,7 +271,7 @@ class TestPemetaanKolomSales:
         sale = build_sale(receipt_total_amount=150000.1234, transaction_vat=14850.5678)
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[sale])
-        p = params_of(db.statements[0])
+        p = baris(db.statements[0])
 
         assert p["ReceiptTotalAmount"] == 150000.1234
         assert p["TransactionVAT"] == 14850.5678
@@ -244,7 +281,7 @@ class TestPemetaanKolomSales:
         db = RecordingSession()
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale()])
-        p = params_of(db.statements[0])
+        p = baris(db.statements[0])
 
         assert p["created_at"] == datetime(2026, 3, 1, 8, 0)
         assert p["updated_at"] == datetime(2026, 3, 1, 8, 0)
@@ -278,7 +315,7 @@ class TestKlausaUpsertSales:
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(transaction_id=500)])
         SalesService.sync_sales(db=db, outlet="OUTLET_002", sales_list=[build_sale(transaction_id=500)])
 
-        outlets = [params_of(s)["outlet_code"] for s in statements_for(db, "ordertransaction")]
+        outlets = [baris(s)["outlet_code"] for s in statements_for(db, "ordertransaction")]
         assert outlets == ["OUTLET_001", "OUTLET_002"]
 
     def test_kolom_yang_di_update_saat_konflik(self):
@@ -310,6 +347,19 @@ class TestKlausaUpsertSales:
             assert f'"{column}" =' in do_update or f"{column} =" in do_update, (
                 f"{column} hilang dari klausa DO UPDATE"
             )
+
+    def test_daftar_kolom_update_persis_sama_dan_diambil_dari_excluded(self):
+        """Bulk (TODO 3.5): satu SET untuk semua baris, jadi nilainya harus
+        `excluded.<kolom>` — nilai baris itu sendiri — bukan literal satu sale.
+        Daftarnya tidak boleh bertambah diam-diam (mis. Deleted, ReferenceNo)."""
+        db = RecordingSession()
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale()])
+
+        assert kolom_set(db.statements[0]) == KOLOM_UPDATE_SALES | {"payments_received_at"}
+        for kolom in KOLOM_UPDATE_SALES:
+            q = kolom if kolom.islower() else f'"{kolom}"'
+            assert f"{q} = excluded.{q}" in do_update(db.statements[0])
 
     def test_outlet_code_tidak_ikut_di_update_saat_konflik(self):
         """outlet_code bagian dari kunci konflik — tidak boleh ditimpa."""
@@ -366,7 +416,7 @@ class TestPemetaanKolomItem:
         )
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(items=[item])])
-        p = params_of(statements_for(db, "orderdetail")[0])
+        p = baris(statements_for(db, "orderdetail")[0])
 
         assert p["OrderDetailID"] == 42
         assert p["ProductID"] == 202
@@ -390,7 +440,7 @@ class TestPemetaanKolomItem:
         item = build_item(transaction_id=99999)  # sengaja beda dari induknya
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(transaction_id=10001, items=[item])])
-        p = params_of(statements_for(db, "orderdetail")[0])
+        p = baris(statements_for(db, "orderdetail")[0])
 
         assert p["TransactionID"] == 10001
 
@@ -400,7 +450,7 @@ class TestPemetaanKolomItem:
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(items=[item])])
 
-        assert params_of(statements_for(db, "orderdetail")[0])["SaleDate"] == date(2026, 2, 1)
+        assert baris(statements_for(db, "orderdetail")[0])["SaleDate"] == date(2026, 2, 1)
 
     def test_konflik_item_berdasarkan_order_detail_transaction_product_outlet(self):
         db = RecordingSession()
@@ -423,13 +473,23 @@ class TestPemetaanKolomItem:
                 f"{column} hilang dari klausa DO UPDATE"
             )
 
+    def test_daftar_kolom_update_item_persis_sama_dan_diambil_dari_excluded(self):
+        db = RecordingSession()
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(items=[build_item()])])
+        (stmt,) = statements_for(db, "orderdetail")
+
+        assert kolom_set(stmt) == KOLOM_UPDATE_ITEM
+        for kolom in KOLOM_UPDATE_ITEM:
+            assert f'"{kolom}" = excluded."{kolom}"' in do_update(stmt)
+
     def test_outlet_code_item_diambil_dari_parameter_bukan_body(self):
         """TODO 0.5: item ikut membawa outlet_code dari API key, sama seperti induknya."""
         db = RecordingSession()
 
         SalesService.sync_sales(db=db, outlet="OUTLET_009", sales_list=[build_sale(items=[build_item()])])
 
-        assert params_of(statements_for(db, "orderdetail")[0])["outlet_code"] == "OUTLET_009"
+        assert baris(statements_for(db, "orderdetail")[0])["outlet_code"] == "OUTLET_009"
 
     def test_outlet_code_item_tidak_ikut_di_update_saat_konflik(self):
         db = RecordingSession()
@@ -460,11 +520,24 @@ class TestUrutanEksekusi:
 
         SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
 
+        # Bulk: semua header dulu, baru semua item — bukan selang-seling per sale.
+        assert [s.table.name for s in db.statements] == ["ordertransaction", "orderdetail"]
+
+    def test_urutan_header_item_lalu_pembayaran(self):
+        """FK orderdetail & orderpaydetail → ordertransaction: header harus ada lebih dulu."""
+        db = RecordingSession()
+        sales = [
+            build_sale(transaction_id=1, items=[build_item(transaction_id=1)], payments=[build_payment()]),
+            build_sale(transaction_id=2, items=[build_item(transaction_id=2)], payments=[build_payment()]),
+        ]
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
+
         assert [s.table.name for s in db.statements] == [
             "ordertransaction",
             "orderdetail",
-            "ordertransaction",
-            "orderdetail",
+            "orderpaydetail",  # DELETE massal
+            "orderpaydetail",  # INSERT massal
         ]
 
     def test_commit_sekali_di_akhir_bukan_per_baris(self):
@@ -479,7 +552,8 @@ class TestUrutanEksekusi:
 class TestPenangananError:
 
     def test_rollback_saat_gagal_di_tengah(self):
-        db = RecordingSession(fail_on_execute_call=3)
+        # Statement ke-2 = INSERT item massal, sesudah header masuk.
+        db = RecordingSession(fail_on_execute_call=2)
         sales = [build_sale(transaction_id=i, items=[build_item(transaction_id=i)]) for i in range(1, 4)]
 
         with pytest.raises(RuntimeError):
@@ -569,9 +643,14 @@ class TestPembayaran:
 
         assert statements_for(db, "orderpaydetail") == []
         stmt = sale_upsert(db)
-        assert params_of(stmt)["payments_received_at"] is None
-        # Kiriman ulang dari agen lama tidak menghapus tanda "sudah diketahui".
-        assert "payments_received_at = " not in sql_of(stmt).split("ON CONFLICT")[1]
+        assert baris(stmt)["payments_received_at"] is None
+        # Kiriman ulang dari agen lama tidak menghapus tanda "sudah diketahui":
+        # SET-nya satu untuk semua baris bulk, jadi NULL dari baris ini jatuh ke
+        # nilai yang sudah tersimpan.
+        assert (
+            "payments_received_at = coalesce(excluded.payments_received_at, ordertransaction.payments_received_at)"
+            in do_update(stmt)
+        )
 
     @freeze_time("2026-11-18 09:00:00")
     def test_payments_kosong_hapus_baris_lama_dan_tandai_diketahui(self):
@@ -581,10 +660,9 @@ class TestPembayaran:
 
         (hapus,) = statements_for(db, "orderpaydetail")
         assert sql_of(hapus).startswith("DELETE FROM orderpaydetail")
-        assert params_of(hapus) == {"outlet_code_1": "OUTLET_001", "TransactionID_1": 10001}
+        assert params_of(hapus) == {"outlet_code_1": "OUTLET_001", "TransactionID_1": [10001]}
         stmt = sale_upsert(db)
-        assert params_of(stmt)["payments_received_at"] == datetime(2026, 11, 18, 9, 0)
-        assert "payments_received_at = " in sql_of(stmt).split("ON CONFLICT")[1]
+        assert baris(stmt)["payments_received_at"] == datetime(2026, 11, 18, 9, 0)
 
     def test_payments_diganti_utuh_dalam_satu_transaksi(self):
         db = RecordingSession()
@@ -642,3 +720,147 @@ class TestPembayaran:
             SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
 
         assert "SYNC PAYMENTS MISMATCH" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Bulk upsert (TODO 3.5 / 9.11)
+# ---------------------------------------------------------------------------
+
+
+class TestPotonganBatch:
+    """Batas parameter bind Postgres 65.535: header ±40 kolom × 500 = ±20 rb."""
+
+    def test_header_item_dan_pembayaran_dipotong_per_500_baris(self):
+        db = RecordingSession()
+        sales = [
+            build_sale(transaction_id=i, items=[build_item(transaction_id=i)], payments=[build_payment()])
+            for i in range(1, 1202)
+        ]
+
+        result = SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
+
+        assert result == {"sales": 1201, "items": 1201}
+        header = statements_for(db, "ordertransaction")
+        items = statements_for(db, "orderdetail")
+        bayar = statements_for(db, "orderpaydetail")
+        assert [jumlah_baris(s) for s in header] == [500, 500, 201]
+        assert [jumlah_baris(s) for s in items] == [500, 500, 201]
+        hapus = [s for s in bayar if sql_of(s).startswith("DELETE")]
+        tambah = [s for s in bayar if sql_of(s).startswith("INSERT")]
+        assert [len(params_of(s)["TransactionID_1"]) for s in hapus] == [500, 500, 201]
+        assert [jumlah_baris(s) for s in tambah] == [500, 500, 201]
+        assert db.committed == 1
+
+    def test_tepat_500_satu_statement(self):
+        db = RecordingSession()
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(transaction_id=i) for i in range(500)])
+
+        assert [jumlah_baris(s) for s in statements_for(db, "ordertransaction")] == [500]
+
+
+class TestDuplikatDalamBatch:
+    """Satu INSERT ... ON CONFLICT tidak boleh menyentuh baris yang sama dua
+    kali. Duplikat digabung supaya hasil akhirnya sama dengan upsert per baris
+    (lihat test integrasi TestDuplikatDalamSatuBatch)."""
+
+    def test_satu_baris_header_kolom_update_dari_terakhir_kolom_insert_dari_pertama(self):
+        db = RecordingSession()
+        sales = [
+            build_sale(transaction_id=1, reference_no="PERTAMA", receipt_pay_price=100),
+            build_sale(transaction_id=2),
+            build_sale(transaction_id=1, reference_no="KEDUA", receipt_pay_price=200),
+        ]
+
+        result = SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
+
+        assert result == {"sales": 3, "items": 0}  # tetap menghitung kiriman, seperti dulu
+        (stmt,) = statements_for(db, "ordertransaction")
+        assert jumlah_baris(stmt) == 2
+        pertama = baris(stmt, 0)
+        assert (pertama["TransactionID"], pertama["ReferenceNo"], pertama["ReceiptPayPrice"]) == (1, "PERTAMA", 200)
+
+    def test_item_digabung_per_kunci_konflik(self):
+        db = RecordingSession()
+        sales = [
+            build_sale(transaction_id=1, items=[build_item(order_detail_id=1, qty=1, comment="awal"), build_item(order_detail_id=2)]),
+            build_sale(transaction_id=1, items=[build_item(order_detail_id=1, qty=5, comment="akhir")]),
+        ]
+
+        result = SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
+
+        assert result == {"sales": 2, "items": 3}
+        (stmt,) = statements_for(db, "orderdetail")
+        assert jumlah_baris(stmt) == 2
+        satu = baris(stmt, 0)
+        # Amount di-update saat konflik → terakhir; Comment tidak → pertama.
+        assert (satu["OrderDetailID"], satu["Amount"], satu["Comment"]) == (1, 5.0, "awal")
+
+    def test_payments_dari_kemunculan_terakhir_yang_membawa_key_payments(self):
+        db = RecordingSession()
+        sales = [
+            build_sale(transaction_id=1, payments=[build_payment(1, amount=100), build_payment(2, amount=50)]),
+            build_sale(transaction_id=1, payments=[build_payment(1, amount=150)]),
+            build_sale(transaction_id=1),
+        ]
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
+
+        hapus, tambah = statements_for(db, "orderpaydetail")
+        assert params_of(hapus)["TransactionID_1"] == [1]
+        assert jumlah_baris(tambah) == 1
+        assert baris(tambah)["Amount"] == Decimal("150")
+        # Sudah diketahui sejak kemunculan kedua — kemunculan ketiga tidak menghapusnya.
+        assert baris(sale_upsert(db))["payments_received_at"] is not None
+
+
+class TestPembayaranMassal:
+
+    def test_transaksi_tanpa_key_payments_tidak_ikut_dihapus(self):
+        db = RecordingSession()
+        sales = [
+            build_sale(transaction_id=1, payments=[build_payment()]),
+            build_sale(transaction_id=2),
+            build_sale(transaction_id=3, payments=[]),
+        ]
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
+
+        hapus, tambah = statements_for(db, "orderpaydetail")
+        assert params_of(hapus) == {"outlet_code_1": "OUTLET_001", "TransactionID_1": [1, 3]}
+        assert [baris(tambah, i)["TransactionID"] for i in range(jumlah_baris(tambah))] == [1]
+        header = sale_upsert(db)
+        assert [baris(header, i)["payments_received_at"] is not None for i in range(3)] == [True, False, True]
+
+    def test_semua_payments_kosong_hanya_delete(self):
+        db = RecordingSession()
+
+        SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=[build_sale(payments=[])])
+
+        (hapus,) = statements_for(db, "orderpaydetail")
+        assert sql_of(hapus).startswith("DELETE")
+
+    def test_log_sukses_menghitung_payments_seperti_dulu(self, caplog):
+        db = RecordingSession()
+        sales = [
+            build_sale(transaction_id=1, payments=[build_payment(1), build_payment(2)]),
+            build_sale(transaction_id=1, payments=[build_payment(1)]),
+            build_sale(transaction_id=2, items=[build_item(transaction_id=2)]),
+        ]
+
+        with caplog.at_level("INFO", logger="sync-api"):
+            SalesService.sync_sales(db=db, outlet="OUTLET_007", sales_list=sales)
+
+        assert "SYNC SUCCESS outlet=OUTLET_007 inserted_sales=3 inserted_items=1 inserted_payments=3" in caplog.text
+
+    def test_log_mismatch_per_kiriman_seperti_dulu(self, caplog):
+        db = RecordingSession()
+        sales = [
+            build_sale(transaction_id=7, receipt_id=5, payments=[build_payment(amount=1)]),
+            build_sale(transaction_id=8, receipt_id=6, payments=[build_payment(amount=150000)]),
+        ]
+
+        with caplog.at_level("WARNING", logger="sync-api"):
+            SalesService.sync_sales(db=db, outlet="OUTLET_001", sales_list=sales)
+
+        assert "SYNC PAYMENTS MISMATCH outlet=OUTLET_001 count=1 transaction_ids=[7]" in caplog.text

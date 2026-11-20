@@ -11,7 +11,7 @@ Sisa:
 - **Sebelum deploy:** ikuti [docs/deploy-fase7.md](docs/deploy-fase7.md) — termasuk
   query pemeriksaan produksi untuk migrasi 010 (0.5).
 - Ditunda atas keputusanmu (2026-10-05): Alembic (3.1), idempotensi publish (3.4),
-  bulk upsert (3.5), rate limit endpoint sync (3.8b).
+  rate limit endpoint sync (3.8b). Bulk upsert (3.5) selesai 2026-11-20, belum di-deploy.
 - **Fase 8 (kirim rekap closing ke API eksternal)** — backend selesai di kode
   sesuai [usulan kontrak](docs/usulan-kontrak-kirim-closing.md) (2026-10-13).
   Frontend selesai (sync-frontend Fase 12), test integrasi Postgres selesai.
@@ -297,9 +297,34 @@ produksi, sistem migrasi, atau butuh data/keputusan dari luar.
 - [ ] **3.4 Publish belum idempoten.** Memanggil `/publish` dua kali untuk tanggal
       yang sama masih mengirim event dobel. Butuh `message_id` + tabel jejak publish.
       Perlu dibahas dulu: apakah consumer di sisi sana sudah idempoten?
-- [ ] **3.5 Bulk upsert.** `sync_sales` masih `execute` per baris. Menyentuh jalur
-      sync produksi, jadi sengaja tidak digabung dengan perubahan lain — sebaiknya
-      dikerjakan sendiri setelah test integrasi pernah dijalankan sungguhan.
+- [x] **3.5 Bulk upsert.** (2026-11-20, = 9.11) `sync_sales` kini satu
+      `INSERT ... ON CONFLICT DO UPDATE` untuk semua header, satu untuk semua item,
+      lalu DELETE + INSERT massal `orderpaydetail` — dipotong per 500 baris
+      (`SalesService.UKURAN_POTONGAN`), tetap satu transaksi DB, satu commit.
+      Dipertahankan: kunci konflik `(TransactionID, outlet_code)` /
+      `(OrderDetailID, TransactionID, ProductID, outlet_code)`; daftar kolom
+      update persis sama (`KOLOM_UPDATE_HEADER` / `KOLOM_UPDATE_ITEM`, nilai dari
+      `excluded.*`); `payments_received_at = coalesce(excluded, lama)` sehingga
+      kiriman tanpa key `payments` tidak menghapus tandanya; pembayaran hanya
+      diganti untuk transaksi yang membawa key `payments`; return value & log
+      `SYNC SUCCESS` / `SYNC PAYMENTS MISMATCH` sama (tetap menghitung per
+      kiriman, termasuk duplikat).
+      **Duplikat dalam satu batch** (Postgres menolak ON CONFLICT yang menyentuh
+      baris sama dua kali) digabung supaya hasil akhirnya identik dengan versi
+      per baris: kolom update dari kemunculan terakhir, kolom insert-saja
+      (`ReferenceNo`, `Deleted`, ...) dari kemunculan pertama, item dari semua
+      kemunculan (kunci sama → terakhir), pembayaran dari kemunculan terakhir
+      yang membawa `payments`.
+      TDD: 11 test integrasi baru (`TestDuplikatDalamSatuBatch`,
+      `TestCampuranDanBatchBesar`) ditulis dan **lulus dulu dengan versi per
+      baris**, baru kode diubah; test unit statement-level disesuaikan ke
+      bentuk bulk + test potongan 500, duplikat, DELETE massal, log.
+      Di `sync_test`: 1.000 transaksi × 3 item 12,4 → 3,9 detik; 1.201 transaksi
+      + item + payments 15,4 → 4,5 detik. `test_sync_postgres.py` kini juga
+      menolak jalan kalau DB-nya bukan `sync_test`.
+      **Belum di-deploy.** Catatan, tidak diubah: `Deleted` tidak termasuk
+      kolom update saat konflik — transaksi yang di-void SETELAH sync pertama
+      tetap `Deleted=0` di sini (perilaku lama, perlu keputusan terpisah).
 - [ ] **3.8b Rate limiting endpoint sync.** Sengaja BELUM dipasang: mesin POS
       yang mengirim backlog besar setelah offline bisa tertahan sendiri.
       Perlu diukur dulu pola sync yang wajar sebelum menentukan batasnya.
@@ -968,7 +993,92 @@ di produksi** (lihat 9.0). Frontend: sync-frontend Fase 13.
       mematikannya untuk sesi migrasi.
 - [x] **9.10** Query kena `statement_timeout`, pool penuh, atau koneksi DB putus →
       503 JSON + `request_id` + `Retry-After` (`app/core/errors.py`), bukan 500 teks.
-- [ ] **9.11 (ditunda, = 3.5)** Bulk upsert `sync_sales`.
+- [x] **9.11 (= 3.5)** Bulk upsert `sync_sales` — selesai 2026-11-20, rincian di 3.5.
+- [x] **9.12** (2026-11-19) Cache TTL di memori proses untuk laporan dashboard:
+      `GET /api/sales/summary`, `/daily`, `/payments`, `/by-outlet`, `/top-products`,
+      `/by-group`, `/product-groups` — pola sama dengan 9.6, satu `TtlCache`
+      (`_cache_laporan` di `sales_routes.py`). TTL dari `REPORT_CACHE_TTL_SECONDS`
+      (default 60, `0` = mati; `app/config.py`, `.env.example`).
+      Kunci = nama endpoint + outlet **hasil `resolve_outlet_scope`** + semua
+      filter endpoint itu (`start_date`, `end_date`, `brand`, `product_group`,
+      `limit`). `include_deleted` bukan parameter di ketujuh endpoint ini
+      (hanya di `/api/closing-reports/comparison`), jadi tidak ada di kunci;
+      helper `_dari_cache(**filter)` otomatis memasukkannya kalau kelak
+      ditambahkan. Scope & rentang tanggal divalidasi sebelum cache, jadi
+      403/422 tidak terlewati. Error tidak disimpan. Isi response tidak berubah.
+      `/colorplate` dan `/publish` tidak di-cache.
+      `TtlCache` kini dibatasi `max_entries` (default 500): saat penuh, entri
+      basi dibuang dulu, lalu yang paling lama disimpan; kunci yang disimpan
+      ulang pindah ke ujung. `ttl <= 0` tidak menyimpan apa pun.
+      Test: `tests/unit/test_report_cache.py` (dipakai ulang per endpoint, filter
+      berbeda tidak berbagi, isolasi outlet: role outlet tidak menerima cache
+      "semua outlet" maupun outlet lain dan tetap 403 walau cache hangat, error
+      tidak disimpan, TTL 0, colorplate/publish tidak menyentuh cache) dan
+      `tests/unit/test_cache.py` (batas entri, urutan buang, TTL 0).
+      `tests/conftest.py` tetap memanggil `clear_all()` sebelum & sesudah tiap test.
+      Konsekuensi: transaksi baru dari POS muncul di dashboard paling lambat
+      60 detik; per worker gunicorn, jadi 4 worker bisa memberi hasil yang
+      berbeda sesaat.
+- [x] **9.13** (2026-11-20) Filter tanggal redundan di `orderdetail."SaleDate"`
+      (`SalesService._filter_tanggal_item`) untuk `get_top_products`,
+      `get_sales_by_product_groups`, `get_sales_by_product_ids`. Tanpa itu
+      tanggal hanya dibatasi di `ordertransaction`, jadi planner tidak bisa
+      memakai `ix_orderdetail_saledate_outlet` — `top_products` 30 hari
+      memindai seluruh `orderdetail`. `get_payment_summary` sengaja tidak
+      diubah (`orderpaydetail` 541 baris, query sudah ±17 ms).
+      Analisis read-only di salinan produksi `maharasa_pos` (restore 2026-11-20:
+      883 rb item, 128 rb transaksi) lewat `scripts/explain_laporan.py`
+      (`SET TRANSACTION READ ONLY` + rollback, hanya env `DATABASE_URL`).
+      **Syarat aman:** tanggal item = tanggal transaksinya — 0 selisih di
+      `orderdetail` & `orderpaydetail` (`migrations/checks/saledate_konsisten.sql`).
+      `SaleDate` item diisi dari payload item POS, bukan disalin dari
+      transaksi; kalau suatu saat berbeda, item itu tidak terhitung (juga di
+      publish colorplate). Jalankan cek itu berkala.
+      Hasil (median, angka identik di semua kasus):
+
+      | Query | 30 hari | 90 hari |
+      |---|---|---|
+      | `top_products` | 335 → 313 ms (buffer 16 rb → 3 rb) | 553 → 541 ms |
+      | `by_product_groups` | 165 → 94 ms | **225 → 356 ms** |
+      | `by_product_ids` | 215 → 54 ms | 300 → 273 ms |
+
+      **Diterima sadar (keputusan user, opsi 1):** `by_product_groups` 90 hari
+      melambat — dua filter tanggal dianggap independen oleh planner, estimasi
+      baris turun (50 rb vs 94 rb nyata), rencana jadi non-paralel dan sort
+      tumpah ke disk. Default dashboard 30 hari, dan hit berulang dilayani
+      cache 9.12. Kalau rentang panjang jadi sering dipakai: batasi filter ke
+      rentang ≤ 31 hari untuk fungsi itu, atau naikkan `work_mem`.
+      Test: `tests/unit/test_filter_tanggal_item.py`,
+      `tests/integration/test_filter_tanggal_item_postgres.py` (angka identik
+      dengan versi lama di 5 rentang × 5 variasi; planner memakai index tanggal,
+      versi lama tidak bisa).
+- [x] **9.14** (2026-11-20) `/api/outlets/sync-status` tidak lagi memindai
+      seluruh `ordertransaction`.
+      **Breaking change (keputusan user, opsi a):** `total_transactions` (COUNT
+      sepanjang masa) diganti `transactions_last_30_days` — hari ini WIB + 29
+      hari sebelumnya, termasuk transaksi terhapus. Frontend ikut diubah
+      (sync-frontend 13.8); **deploy keduanya bersamaan** — urutan mana pun
+      membuat kolom transaksi rusak selama selisih deploy.
+      Helper baru `app/core/time.hari_ini_wib()` (UTC+7 tetap, tanpa tzdata).
+      `SalesService.get_sync_status` ditulis ulang: daftar outlet lewat
+      recursive CTE (lompat per outlet di index), lalu MAX/COUNT lewat subquery
+      per outlet. Outlet tanpa transaksi 30 hari tetap muncul dengan 0.
+      Migrasi **022** (`-- migrate:no-transaction`, CONCURRENTLY IF NOT EXISTS):
+      hanya `ix_ordertransaction_outlet_updated (outlet_code, updated_at)`.
+      `(outlet_code, "SaleDate")` tidak dibuat ulang — sudah ada sejak 002
+      (`idx_ordertransaction_outlet_saledate`).
+      Diukur read-only di salinan produksi `maharasa_pos` (127 rb transaksi,
+      8 outlet; 022 **belum** terpasang di sana): angka MAX & COUNT 30 hari
+      identik dengan GROUP BY lama; MAX(SaleDate), daftar outlet, dan COUNT
+      30 hari sudah index-only (17–38 buffer). MAX(updated_at) masih 5.409
+      buffer sampai 022 terpasang, jadi waktunya belum turun (90 ms ≈ lama).
+      **Belum dijalankan di produksi.** 022 jalan otomatis saat container
+      start (migrate.py), sebelum gunicorn — index sudah ada saat kode baru jalan.
+      Test: `tests/unit/test_sales_service_reports.py::TestGetSyncStatus`,
+      `tests/unit/test_routes_reports.py::TestSyncStatus`,
+      `tests/integration/test_migrasi_022_postgres.py` (jalan sekali & idempoten,
+      baris tidak berubah, index valid, tidak ada index ganda, angka = GROUP BY
+      langsung, planner memakai kedua index tanpa Seq Scan).
 
 
 ---

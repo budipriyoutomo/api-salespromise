@@ -334,11 +334,21 @@ class TestSyncStatus:
         per_outlet = {row["outlet_code"]: row for row in data}
         assert per_outlet["OUTLET_001"]["last_sale_date"] == "2026-01-15"
 
-    def test_membawa_jumlah_transaksi(self, client, seeded, admin_headers):
+    def test_membawa_jumlah_transaksi_30_hari_terakhir(self, client, seeded, admin_headers, monkeypatch):
+        """Field diganti nama (breaking change, TODO 9.14): `total_transactions`
+        dulu COUNT seluruh tabel, sekarang hanya 30 hari terakhir."""
+        from app.services.sales_service import SalesService
+
+        asli = SalesService.get_sync_status
+        monkeypatch.setattr(
+            SalesService, "get_sync_status", staticmethod(lambda **kw: asli(**kw, hari_ini=date(2026, 2, 8)))
+        )
+
         data = client.get("/api/outlets/sync-status", headers=admin_headers).json()["data"]
 
         per_outlet = {row["outlet_code"]: row for row in data}
-        assert per_outlet["OUTLET_002"]["total_transactions"] == 1
+        assert per_outlet["OUTLET_002"]["transactions_last_30_days"] == 1
+        assert "total_transactions" not in per_outlet["OUTLET_002"]
 
     def test_di_scope_untuk_role_outlet(self, client, seeded, outlet_headers):
         data = client.get("/api/outlets/sync-status", headers=outlet_headers).json()["data"]

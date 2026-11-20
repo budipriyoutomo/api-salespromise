@@ -1,11 +1,12 @@
 import traceback
+from datetime import timedelta
 from decimal import Decimal
 
-from sqlalchemy import and_, delete, func, or_
+from sqlalchemy import and_, delete, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
-from app.core.time import utcnow
+from app.core.time import hari_ini_wib, utcnow
 from app.models.sales import Sales
 from app.models.sales_items import SalesItems
 from app.models.sales_payments import SalesPayments
@@ -46,151 +47,60 @@ class SalesService:
 
     @staticmethod
     def sync_sales(db: Session, outlet: str, sales_list):
+        """Upsert satu batch dari mesin POS dalam SATU transaksi DB.
 
+        Bulk (TODO 3.5): satu INSERT ... ON CONFLICT DO UPDATE untuk semua
+        header, satu untuk semua item, lalu DELETE + INSERT massal pembayaran —
+        masing-masing dipotong per `UKURAN_POTONGAN` baris. Satu baris gagal =
+        seluruh batch di-rollback, sama seperti versi per baris.
+
+        Duplikat dalam satu batch digabung lebih dulu, karena Postgres menolak
+        ON CONFLICT yang menyentuh baris yang sama dua kali dalam satu
+        statement. Hasil akhirnya dibuat SAMA dengan upsert per baris yang lama:
+        - header/item: kolom yang di-update saat konflik dari kemunculan
+          terakhir, kolom lain dari kemunculan pertama (yang dulu di-insert);
+        - pembayaran: dari kemunculan terakhir yang membawa key `payments`.
+        Hitungan hasil & log tetap per kiriman, termasuk duplikat.
+        """
         inserted_sales = 0
         inserted_items = 0
         inserted_payments = 0
         tidak_cocok: list[int] = []
 
         try:
+            sekarang = utcnow()
+            header: dict = {}
+            items: dict = {}
+            bayar: dict = {}
+
             for sale in sales_list:
-
-                # 🔥 SALES UPSERT
-                sales_stmt = insert(Sales).values(
-                    TransactionID=sale.transaction_id,
-                    outlet_code=outlet,
-                    ShopID=sale.shop_id,
-                    ReferenceNo=sale.reference_no,
-                    QueueName=sale.queue_name,
-
-                    SaleDate=sale.sale_date,
-                    PaidTime=sale.paid_time,
-                    CloseTime=sale.close_time,
-
-                    TransactionStatusID=sale.transaction_status_id,
-                    SaleMode=sale.sale_mode,
-                    Deleted=sale.deleted,
-                    NoCustomer=sale.no_customer,
-
-                    OtherPercentDiscount=sale.other_percent_discount,
-                    OtherAmountDiscount=sale.other_amount_discount,
-
-                    ReceiptID=sale.receipt_id,
-                    ReceiptMonth=sale.receipt_month,
-                    ReceiptYear=sale.receipt_year,
-
-                    ReceiptProductRetailPrice=sale.receipt_product_retail_price,
-                    ReceiptSalePrice=sale.receipt_sale_price,
-                    ReceiptPayPrice=sale.receipt_pay_price,
-                    ReceiptDiscount=sale.receipt_discount,
-                    ReceiptTotalAmount=sale.receipt_total_amount,
-
-                    VATPercent=sale.vat_percent,
-                    TransactionVAT=sale.transaction_vat,
-                    TransactionExcludeVAT=sale.transaction_exclude_vat,
-                    TransactionVATable=sale.transaction_vatable,
-
-                    ServiceChargePercent=sale.service_charge_percent,
-                    ServiceCharge=sale.service_charge,
-                    ServiceChargeVAT=sale.service_charge_vat,
-
-                    OtherIncome=sale.other_income,
-                    OtherIncomeVAT=sale.other_income_vat,
-
-                    VoidStaffID=sale.void_staff_id,
-                    VoidReason=sale.void_reason,
-                    VoidTime=sale.void_time,
-
-                    TransactionNote=sale.transaction_note,
-
-                    IsSplitTransaction=sale.is_split_transaction,
-                    IsFromOtherTransaction=sale.is_from_other_transaction,
-
-                    created_at=utcnow(),
-                    updated_at=utcnow(),
-                    payments_received_at=None if sale.payments is None else utcnow(),
+                SalesService._gabung(
+                    header,
+                    sale.transaction_id,
+                    SalesService._baris_header(outlet, sale, sekarang),
+                    SalesService.KOLOM_UPDATE_HEADER,
                 )
-
-                set_pembayaran = {} if sale.payments is None else {"payments_received_at": utcnow()}
-
-                # 🔥 UPSERT FIX (multi outlet safe)
-                sales_stmt = sales_stmt.on_conflict_do_update(
-                    index_elements=["TransactionID", "outlet_code"],
-                    set_={
-                        **set_pembayaran,
-                        "ShopID": sale.shop_id,
-                        "SaleDate": sale.sale_date,
-                        "PaidTime": sale.paid_time,
-                        "CloseTime": sale.close_time,
-                        "ReceiptID": sale.receipt_id,
-                        "ReceiptMonth": sale.receipt_month,
-                        "ReceiptYear": sale.receipt_year,
-                        "ReceiptTotalAmount": sale.receipt_total_amount,
-                        "ReceiptPayPrice": sale.receipt_pay_price,
-                        "ReceiptDiscount": sale.receipt_discount,
-                        "TransactionStatusID": sale.transaction_status_id,
-                        "VoidStaffID": sale.void_staff_id,
-                        "VoidReason": sale.void_reason,
-                        "VoidTime": sale.void_time,
-                        "updated_at": utcnow()
-                    }
-                )
-
-                db.execute(sales_stmt)
                 inserted_sales += 1
 
-                # 🔥 ITEMS
                 for item in sale.items:
-
-
-                    item_stmt = insert(SalesItems).values(
-                        OrderDetailID=item.order_detail_id,
-                        TransactionID=sale.transaction_id,
-                        outlet_code=outlet,
-
-                        # 🔥 NEW
-                        SaleDate=item.sale_date,
-
-                        ProductID=item.product_id,
-                        Group=item.product_group,
-                        Dept=item.product_dept,
-                        Name=item.product_name,
-
-                        ProductSetType=item.product_set_type,
-                        OrderStatusID=item.order_status_id,
-                        SaleMode=item.sale_mode,
-
-                        Amount=item.qty,
-                        Price=item.price,
-                        RetailPrice=item.retail_price,
-                        MinimumPrice=item.minimum_price,
-
-
-                        Comment=item.comment,
-                        OrderStaffID=item.order_staff_id,
-                        OrderTableID=item.order_table_id,
-                        VoidStaffID=item.void_staff_id
-                    )
-
-                    item_stmt = item_stmt.on_conflict_do_update(
-                        index_elements=["OrderDetailID", "TransactionID", "ProductID", "outlet_code"],
-                        set_={
-                            "Amount": item.qty,
-                            "Price": item.price,
-                            "RetailPrice": item.retail_price,
-                            "OrderStatusID": item.order_status_id,
-                            "VoidStaffID": item.void_staff_id
-                        }
-                    )
-
-                    db.execute(item_stmt)
+                    baris = SalesService._baris_item(outlet, sale, item)
+                    kunci = tuple(baris[k] for k in SalesService.KOLOM_KONFLIK_ITEM)
+                    SalesService._gabung(items, kunci, baris, SalesService.KOLOM_UPDATE_ITEM)
                     inserted_items += 1
 
-                # 🔥 PAYMENTS
                 if sale.payments is not None:
-                    inserted_payments += SalesService._ganti_pembayaran(db, outlet, sale)
+                    # Cukup satu kemunculan ber-payments untuk menandai "diketahui";
+                    # kemunculan sesudahnya tanpa key payments tidak menghapusnya.
+                    header[sale.transaction_id]["payments_received_at"] = sekarang
+                    bayar[sale.transaction_id] = sale
+                    inserted_payments += len(sale.payments)
                     if not pembayaran_cocok(sale):
                         tidak_cocok.append(sale.transaction_id)
+
+            # Urutan wajib: header dulu — FK orderdetail & orderpaydetail.
+            SalesService._upsert_header(db, list(header.values()))
+            SalesService._upsert_item(db, list(items.values()))
+            SalesService._ganti_pembayaran(db, outlet, list(bayar.values()), sekarang)
 
             db.commit()
 
@@ -212,58 +122,214 @@ class SalesService:
 
             db.rollback()
 
-
             logger.error(
                 f"SYNC ERROR outlet={outlet} error={str(e)}\n{traceback.format_exc()}"
             )
 
             raise
 
+    # Baris per INSERT/DELETE massal. Batas bind parameter Postgres 65.535;
+    # header ±40 kolom × 500 = ±20 rb — jauh di bawahnya.
+    UKURAN_POTONGAN = 500
+
+    # Kolom yang ditimpa saat (TransactionID, outlet_code) sudah ada. Kolom lain
+    # (ReferenceNo, Deleted, VAT, ...) hanya diisi saat insert pertama.
+    KOLOM_UPDATE_HEADER = (
+        "ShopID",
+        "SaleDate",
+        "PaidTime",
+        "CloseTime",
+        "ReceiptID",
+        "ReceiptMonth",
+        "ReceiptYear",
+        "ReceiptTotalAmount",
+        "ReceiptPayPrice",
+        "ReceiptDiscount",
+        "TransactionStatusID",
+        "VoidStaffID",
+        "VoidReason",
+        "VoidTime",
+        "updated_at",
+    )
+    KOLOM_KONFLIK_HEADER = ("TransactionID", "outlet_code")
+
+    KOLOM_UPDATE_ITEM = ("Amount", "Price", "RetailPrice", "OrderStatusID", "VoidStaffID")
+    KOLOM_KONFLIK_ITEM = ("OrderDetailID", "TransactionID", "ProductID", "outlet_code")
+
     @staticmethod
-    def _ganti_pembayaran(db: Session, outlet: str, sale) -> int:
-        """Ganti seluruh baris pembayaran satu transaksi dengan isi `sale.payments`.
+    def _gabung(tujuan: dict, kunci, baris: dict, kolom_update):
+        """Kemunculan pertama disimpan utuh; berikutnya hanya menimpa kolom update."""
+        ada = tujuan.get(kunci)
+        if ada is None:
+            tujuan[kunci] = baris
+        else:
+            ada.update({k: baris[k] for k in kolom_update})
+
+    @staticmethod
+    def _potong(baris: list):
+        n = SalesService.UKURAN_POTONGAN
+        for i in range(0, len(baris), n):
+            yield baris[i:i + n]
+
+    @staticmethod
+    def _baris_header(outlet: str, sale, sekarang) -> dict:
+        return dict(
+            TransactionID=sale.transaction_id,
+            outlet_code=outlet,
+            ShopID=sale.shop_id,
+            ReferenceNo=sale.reference_no,
+            QueueName=sale.queue_name,
+
+            SaleDate=sale.sale_date,
+            PaidTime=sale.paid_time,
+            CloseTime=sale.close_time,
+
+            TransactionStatusID=sale.transaction_status_id,
+            SaleMode=sale.sale_mode,
+            Deleted=sale.deleted,
+            NoCustomer=sale.no_customer,
+
+            OtherPercentDiscount=sale.other_percent_discount,
+            OtherAmountDiscount=sale.other_amount_discount,
+
+            ReceiptID=sale.receipt_id,
+            ReceiptMonth=sale.receipt_month,
+            ReceiptYear=sale.receipt_year,
+
+            ReceiptProductRetailPrice=sale.receipt_product_retail_price,
+            ReceiptSalePrice=sale.receipt_sale_price,
+            ReceiptPayPrice=sale.receipt_pay_price,
+            ReceiptDiscount=sale.receipt_discount,
+            ReceiptTotalAmount=sale.receipt_total_amount,
+
+            VATPercent=sale.vat_percent,
+            TransactionVAT=sale.transaction_vat,
+            TransactionExcludeVAT=sale.transaction_exclude_vat,
+            TransactionVATable=sale.transaction_vatable,
+
+            ServiceChargePercent=sale.service_charge_percent,
+            ServiceCharge=sale.service_charge,
+            ServiceChargeVAT=sale.service_charge_vat,
+
+            OtherIncome=sale.other_income,
+            OtherIncomeVAT=sale.other_income_vat,
+
+            VoidStaffID=sale.void_staff_id,
+            VoidReason=sale.void_reason,
+            VoidTime=sale.void_time,
+
+            TransactionNote=sale.transaction_note,
+
+            IsSplitTransaction=sale.is_split_transaction,
+            IsFromOtherTransaction=sale.is_from_other_transaction,
+
+            created_at=sekarang,
+            updated_at=sekarang,
+            # Diisi di sync_sales kalau ada kemunculan yang membawa key payments.
+            payments_received_at=None,
+        )
+
+    @staticmethod
+    def _baris_item(outlet: str, sale, item) -> dict:
+        return dict(
+            OrderDetailID=item.order_detail_id,
+            # Dari sale induk, bukan item.transaction_id — item tidak bisa nyasar.
+            TransactionID=sale.transaction_id,
+            outlet_code=outlet,
+
+            SaleDate=item.sale_date,
+
+            ProductID=item.product_id,
+            Group=item.product_group,
+            Dept=item.product_dept,
+            Name=item.product_name,
+
+            ProductSetType=item.product_set_type,
+            OrderStatusID=item.order_status_id,
+            SaleMode=item.sale_mode,
+
+            Amount=item.qty,
+            Price=item.price,
+            RetailPrice=item.retail_price,
+            MinimumPrice=item.minimum_price,
+
+            Comment=item.comment,
+            OrderStaffID=item.order_staff_id,
+            OrderTableID=item.order_table_id,
+            VoidStaffID=item.void_staff_id,
+        )
+
+    @staticmethod
+    def _upsert_header(db: Session, rows: list):
+        for potongan in SalesService._potong(rows):
+            stmt = insert(Sales).values(potongan)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=list(SalesService.KOLOM_KONFLIK_HEADER),
+                set_={
+                    # Satu SET untuk semua baris → nilai dari baris itu sendiri.
+                    **{k: stmt.excluded[k] for k in SalesService.KOLOM_UPDATE_HEADER},
+                    # NULL = kiriman tanpa key payments → tanda lama dipertahankan.
+                    "payments_received_at": func.coalesce(
+                        stmt.excluded.payments_received_at, Sales.__table__.c.payments_received_at
+                    ),
+                },
+            )
+            db.execute(stmt)
+
+    @staticmethod
+    def _upsert_item(db: Session, rows: list):
+        for potongan in SalesService._potong(rows):
+            stmt = insert(SalesItems).values(potongan)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=list(SalesService.KOLOM_KONFLIK_ITEM),
+                set_={k: stmt.excluded[k] for k in SalesService.KOLOM_UPDATE_ITEM},
+            )
+            db.execute(stmt)
+
+    @staticmethod
+    def _ganti_pembayaran(db: Session, outlet: str, sales: list, sekarang) -> None:
+        """Ganti seluruh baris pembayaran transaksi-transaksi ini dengan isi `payments`-nya.
 
         Upsert per baris tidak cukup: baris yang sudah hilang di POS (metode
         bayar diganti, jumlah baris berkurang) akan tertinggal. Jadi baris lama
-        transaksi ini dihapus dulu, di dalam transaksi DB yang sama dengan
-        upsert header. Dikunci (outlet, TransactionID) seperti header: baris
-        pembayaran selalu milik header yang sedang tersimpan.
+        dihapus dulu, di dalam transaksi DB yang sama dengan upsert header.
+        Hanya transaksi yang membawa key `payments` (termasuk `[]`) yang
+        disentuh. Dikunci (outlet, TransactionID) seperti header.
         """
-        db.execute(
-            delete(SalesPayments).where(
-                SalesPayments.outlet_code == outlet,
-                SalesPayments.transaction_id == sale.transaction_id,
-            )
-        )
-        if not sale.payments:
-            return 0
+        if not sales:
+            return
 
-        sekarang = utcnow()
-        db.execute(
-            insert(SalesPayments).values(
-                [
-                    dict(
-                        outlet_code=outlet,
-                        TransactionID=sale.transaction_id,
-                        ComputerID=p.computer_id,
-                        PayDetailID=p.pay_detail_id,
-                        SaleDate=sale.sale_date,
-                        PayTypeID=p.pay_type_id,
-                        PayTypeCode=p.pay_type_code,
-                        PayTypeName=p.pay_type_name,
-                        PayTypeDisplayName=p.pay_type_display_name,
-                        Amount=p.amount,
-                        CashChange=p.cash_change,
-                        IsFromEDC=p.is_from_edc,
-                        IsSale=p.is_sale,
-                        IsOtherReceipt=p.is_other_receipt,
-                        received_at=sekarang,
-                    )
-                    for p in sale.payments
-                ]
+        for potongan in SalesService._potong([s.transaction_id for s in sales]):
+            db.execute(
+                delete(SalesPayments).where(
+                    SalesPayments.outlet_code == outlet,
+                    SalesPayments.transaction_id.in_(potongan),
+                )
             )
-        )
-        return len(sale.payments)
+
+        rows = [
+            dict(
+                outlet_code=outlet,
+                TransactionID=sale.transaction_id,
+                ComputerID=p.computer_id,
+                PayDetailID=p.pay_detail_id,
+                SaleDate=sale.sale_date,
+                PayTypeID=p.pay_type_id,
+                PayTypeCode=p.pay_type_code,
+                PayTypeName=p.pay_type_name,
+                PayTypeDisplayName=p.pay_type_display_name,
+                Amount=p.amount,
+                CashChange=p.cash_change,
+                IsFromEDC=p.is_from_edc,
+                IsSale=p.is_sale,
+                IsOtherReceipt=p.is_other_receipt,
+                received_at=sekarang,
+            )
+            for sale in sales
+            for p in sale.payments
+        ]
+        for potongan in SalesService._potong(rows):
+            db.execute(insert(SalesPayments).values(potongan))
 
     # ------------------------------------------------------------------
     # Query baca
@@ -299,6 +365,28 @@ class SalesService:
 
         if end_date:
             query = query.filter(Sales.sale_date <= end_date)
+
+        return query
+
+    @staticmethod
+    def _filter_tanggal_item(query, start_date=None, end_date=None):
+        """Rentang yang sama di `orderdetail."SaleDate"` — redundan, untuk planner.
+
+        Query yang join item → transaksi memfilter tanggal di `ordertransaction`.
+        Tanpa kondisi di sisi `orderdetail`, Postgres tidak bisa memakai
+        `ix_orderdetail_saledate_outlet` (migrasi 017) dan membaca item jauh di
+        luar rentang — di salinan produksi 883 ribu baris, `top_products` 30
+        hari memindai seluruh tabel (TODO 9.13).
+
+        Hanya benar selama tanggal item = tanggal transaksinya: 0 selisih di
+        salinan produksi 2026-11-20 (`migrations/checks/saledate_konsisten.sql`).
+        Item yang tanggalnya berbeda dari transaksinya TIDAK ikut terhitung.
+        """
+        if start_date:
+            query = query.filter(SalesItems.sale_date >= start_date)
+
+        if end_date:
+            query = query.filter(SalesItems.sale_date <= end_date)
 
         return query
 
@@ -403,6 +491,7 @@ class SalesService:
             end_date=end_date,
             brand=brand
         )
+        query = SalesService._filter_tanggal_item(query, start_date=start_date, end_date=end_date)
         query = SalesService._active_sales(query)
 
         query = query.group_by(
@@ -459,6 +548,7 @@ class SalesService:
             start_date=start_date,
             end_date=end_date
         )
+        query = SalesService._filter_tanggal_item(query, start_date=start_date, end_date=end_date)
         query = SalesService._active_sales(query)
 
         return query.group_by(
@@ -551,6 +641,9 @@ class SalesService:
 
     TOP_PRODUCTS_DEFAULT_LIMIT = 10
     TOP_PRODUCTS_MAX_LIMIT = 100
+
+    # Jendela jumlah transaksi di status sync (hari ini WIB + 29 hari sebelumnya).
+    SYNC_STATUS_HARI = 30
 
     @staticmethod
     def _active_sales(query, include_deleted=False):
@@ -697,6 +790,7 @@ class SalesService:
             include_deleted=include_deleted,
             brand=brand
         )
+        query = SalesService._filter_tanggal_item(query, start_date=start_date, end_date=end_date)
 
         return (
             query.group_by(
@@ -829,24 +923,62 @@ class SalesService:
         }
 
     @staticmethod
-    def get_sync_status(db, outlet=None):
+    def get_sync_status(db, outlet=None, hari_ini=None):
         """Kapan tiap outlet terakhir mengirim data.
 
         Transaksi terhapus IKUT dihitung di sini — yang diukur adalah aktivitas
         sinkronisasi, bukan pendapatan. Outlet yang berhenti mengirim data akan
-        terlihat dari `last_synced_at` yang tertinggal jauh.
+        terlihat dari `last_synced_at` yang tertinggal jauh, dan tetap muncul
+        dengan `transactions_last_30_days` = 0.
+
+        Jumlah transaksi hanya `SYNC_STATUS_HARI` terakhir (hari ini WIB dan 29
+        hari sebelumnya), bukan sepanjang masa — COUNT seluruh tabel makin berat
+        seiring data bertambah (TODO 9.14).
+
+        Bentuk query sengaja bukan GROUP BY: Postgres tidak bisa melompat per
+        outlet di index untuk GROUP BY + MAX, jadi seluruh tabel dipindai.
+        Sebagai gantinya daftar outlet diambil dengan recursive CTE (satu lookup
+        index per outlet), lalu tiap angka dicari lewat subquery per outlet yang
+        memakai `idx_ordertransaction_outlet_saledate` (002) dan
+        `ix_ordertransaction_outlet_updated` (022). Biayanya mengikuti jumlah
+        outlet dan transaksi 30 hari, bukan ukuran tabel.
         """
-        query = db.query(
-            Sales.outlet_code.label("outlet_code"),
-            func.max(Sales.sale_date).label("last_sale_date"),
-            func.max(Sales.updated_at).label("last_synced_at"),
-            func.count(Sales.transaction_id).label("total_transactions"),
-        )
+        awal = (hari_ini or hari_ini_wib()) - timedelta(days=SalesService.SYNC_STATUS_HARI - 1)
 
         if outlet:
-            query = query.filter(Sales.outlet_code == outlet)
+            # Hanya outlet yang punya transaksi — outlet tanpa data tidak ada barisnya.
+            outlets = (
+                select(literal(outlet).label("kode"))
+                .where(select(Sales.transaction_id).where(Sales.outlet_code == outlet).exists())
+                .cte("outlets")
+            )
+        else:
+            # "Loose index scan": outlet berikutnya = MIN(outlet_code) > outlet sebelumnya.
+            berikut = aliased(Sales)
+            outlets = select(func.min(Sales.outlet_code).label("kode")).cte("outlets", recursive=True)
+            outlets = outlets.union_all(
+                select(
+                    select(func.min(berikut.outlet_code))
+                    .where(berikut.outlet_code > outlets.c.kode)
+                    .scalar_subquery()
+                ).where(outlets.c.kode.isnot(None))
+            )
 
-        return query.group_by(Sales.outlet_code).order_by(Sales.outlet_code).all()
+        def per_outlet(kolom, *syarat):
+            return select(kolom).where(Sales.outlet_code == outlets.c.kode, *syarat).scalar_subquery()
+
+        query = (
+            select(
+                outlets.c.kode.label("outlet_code"),
+                per_outlet(func.max(Sales.sale_date)).label("last_sale_date"),
+                per_outlet(func.max(Sales.updated_at)).label("last_synced_at"),
+                per_outlet(func.count(), Sales.sale_date >= awal).label("transactions_last_30_days"),
+            )
+            .where(outlets.c.kode.isnot(None))
+            .order_by(outlets.c.kode)
+        )
+
+        return db.execute(query).all()
 
     @staticmethod
     def get_sales_for_export(

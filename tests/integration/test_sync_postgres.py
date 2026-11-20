@@ -21,6 +21,7 @@ from datetime import date
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
@@ -32,6 +33,10 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL tidak diset"),
+    pytest.mark.skipif(
+        bool(TEST_DATABASE_URL) and make_url(TEST_DATABASE_URL).database != "sync_test",
+        reason="hanya boleh dijalankan ke database sync_test (drop_all/TRUNCATE)",
+    ),
 ]
 
 
@@ -435,3 +440,170 @@ class TestPembayaranSungguhan:
         self.sync(pg_session, payments=[bayar(1, 150001), bayar(2, -1, pay_type_id=168), bayar(3, 0, pay_type_id=10050)])
 
         assert pembayaran(pg_session) == [(1, 1, 150001.0), (2, 168, -1.0), (3, 10050, 0.0)]
+
+
+# ---------------------------------------------------------------------------
+# Bulk upsert (TODO 3.5 / 9.11)
+#
+# Test di bawah ditulis SEBELUM sync_sales diubah jadi bulk dan lulus dengan
+# versi per baris — jadi mereka menggambarkan perilaku lama yang wajib sama.
+# ---------------------------------------------------------------------------
+
+
+def baris_sale(session, transaction_id, outlet="OUTLET_001"):
+    return session.execute(
+        text(
+            'SELECT "ReferenceNo", "Deleted", "ReceiptPayPrice", "TransactionStatusID", payments_received_at '
+            'FROM ordertransaction WHERE "TransactionID" = :t AND outlet_code = :o'
+        ),
+        {"t": transaction_id, "o": outlet},
+    ).one()
+
+
+def item_tersimpan(session, transaction_id=1, outlet="OUTLET_001"):
+    return [
+        (r[0], r[1], float(r[2]))
+        for r in session.execute(
+            text(
+                'SELECT "OrderDetailID", "ProductID", "Amount" FROM orderdetail '
+                'WHERE "TransactionID" = :t AND outlet_code = :o ORDER BY 1, 2'
+            ),
+            {"t": transaction_id, "o": outlet},
+        )
+    ]
+
+
+class TestDuplikatDalamSatuBatch:
+    """Postgres menolak ON CONFLICT yang menyentuh baris sama dua kali dalam
+    satu statement. Versi per baris tidak pernah kena — versi bulk harus
+    menggabungkan duplikat dengan hasil akhir yang sama."""
+
+    def test_header_kolom_update_dari_terakhir_kolom_insert_dari_pertama(self, pg_session):
+        sales = [
+            build_sale(transaction_id=1, reference_no="PERTAMA", deleted=0, receipt_pay_price=100, transaction_status_id=1),
+            build_sale(transaction_id=1, reference_no="KEDUA", deleted=1, receipt_pay_price=200, transaction_status_id=2),
+        ]
+
+        result = SalesService.sync_sales(db=pg_session, outlet="OUTLET_001", sales_list=sales)
+
+        assert result == {"sales": 2, "items": 0}
+        assert count(pg_session, "ordertransaction") == 1
+        ref, deleted, bayar_, status, _ = baris_sale(pg_session, 1)
+        # ReferenceNo & Deleted tidak di-update saat konflik → nilai insert pertama.
+        assert (ref, deleted) == ("PERTAMA", 0)
+        assert (float(bayar_), status) == (200.0, 2)
+
+    def test_duplikat_header_untuk_baris_yang_sudah_ada(self, pg_session):
+        SalesService.sync_sales(db=pg_session, outlet="OUTLET_001", sales_list=[build_sale(transaction_id=1, reference_no="LAMA")])
+
+        SalesService.sync_sales(
+            db=pg_session,
+            outlet="OUTLET_001",
+            sales_list=[
+                build_sale(transaction_id=1, reference_no="X", receipt_pay_price=1),
+                build_sale(transaction_id=1, reference_no="Y", receipt_pay_price=2),
+            ],
+        )
+
+        ref, _, bayar_, _, _ = baris_sale(pg_session, 1)
+        assert (ref, float(bayar_)) == ("LAMA", 2.0)
+
+    def test_item_dari_semua_kemunculan_tersimpan_kunci_sama_yang_terakhir_menang(self, pg_session):
+        sales = [
+            build_sale(
+                transaction_id=1,
+                items=[build_item(order_detail_id=1, product_id=101, qty=1), build_item(order_detail_id=2, product_id=102, qty=1)],
+            ),
+            build_sale(transaction_id=1, items=[build_item(order_detail_id=1, product_id=101, qty=5)]),
+        ]
+
+        result = SalesService.sync_sales(db=pg_session, outlet="OUTLET_001", sales_list=sales)
+
+        assert result == {"sales": 2, "items": 3}
+        assert item_tersimpan(pg_session) == [(1, 101, 5.0), (2, 102, 1.0)]
+
+    def test_item_duplikat_dalam_satu_sale(self, pg_session):
+        sale = build_sale(
+            transaction_id=1,
+            items=[build_item(order_detail_id=1, product_id=101, qty=1), build_item(order_detail_id=1, product_id=101, qty=9)],
+        )
+
+        SalesService.sync_sales(db=pg_session, outlet="OUTLET_001", sales_list=[sale])
+
+        assert item_tersimpan(pg_session) == [(1, 101, 9.0)]
+
+    def test_payments_dari_kemunculan_terakhir_yang_membawa_payments(self, pg_session):
+        sales = [
+            build_sale(transaction_id=1, payments=[bayar(1, 100), bayar(2, 50)]),
+            build_sale(transaction_id=1, payments=[bayar(1, 150)]),
+            build_sale(transaction_id=1),  # agen lama: tanpa key payments
+        ]
+
+        SalesService.sync_sales(db=pg_session, outlet="OUTLET_001", sales_list=sales)
+
+        assert pembayaran(pg_session) == [(1, 1, 150.0)]
+        # Sudah diketahui sejak kemunculan kedua — yang ketiga tidak menghapusnya.
+        assert diketahui(pg_session) is not None
+
+    def test_duplikat_tanpa_payments_sama_sekali_tidak_menyentuh_pembayaran(self, pg_session):
+        SalesService.sync_sales(db=pg_session, outlet="OUTLET_001", sales_list=[build_sale(transaction_id=1, payments=[bayar(1, 9)])])
+        tanda = diketahui(pg_session)
+
+        SalesService.sync_sales(
+            db=pg_session, outlet="OUTLET_001", sales_list=[build_sale(transaction_id=1), build_sale(transaction_id=1)]
+        )
+
+        assert pembayaran(pg_session) == [(1, 1, 9.0)]
+        assert diketahui(pg_session) == tanda
+
+
+class TestCampuranDanBatchBesar:
+
+    def test_campuran_payments_none_dan_ada_dalam_satu_batch(self, pg_session):
+        SalesService.sync_sales(
+            db=pg_session,
+            outlet="OUTLET_001",
+            sales_list=[build_sale(transaction_id=1, payments=[bayar(1, 10)]), build_sale(transaction_id=2, payments=[bayar(1, 20)])],
+        )
+        tanda_1 = diketahui(pg_session, 1)
+
+        SalesService.sync_sales(
+            db=pg_session,
+            outlet="OUTLET_001",
+            sales_list=[build_sale(transaction_id=1), build_sale(transaction_id=2, payments=[bayar(1, 25), bayar(2, 5)])],
+        )
+
+        assert diketahui(pg_session, 1) == tanda_1
+        assert diketahui(pg_session, 2) > tanda_1
+        rows = pg_session.execute(
+            text('SELECT "TransactionID", "PayDetailID", "Amount" FROM orderpaydetail ORDER BY 1, 2')
+        ).all()
+        assert [(r[0], r[1], float(r[2])) for r in rows] == [(1, 1, 10.0), (2, 1, 25.0), (2, 2, 5.0)]
+
+    def test_batch_lebih_dari_500_baris_tersimpan_semua(self, pg_session):
+        sales = [
+            build_sale(
+                transaction_id=i,
+                items=[build_item(order_detail_id=j, transaction_id=i, product_id=100 + j) for j in range(1, 3)],
+                payments=[bayar(1, 150000)],
+            )
+            for i in range(1, 1202)
+        ]
+
+        result = SalesService.sync_sales(db=pg_session, outlet="OUTLET_001", sales_list=sales)
+
+        assert result == {"sales": 1201, "items": 2402}
+        assert count(pg_session, "ordertransaction") == 1201
+        assert count(pg_session, "orderdetail") == 2402
+        assert count(pg_session, "orderpaydetail") == 1201
+
+    def test_gagal_di_potongan_kedua_membatalkan_semua(self, pg_session):
+        sales = [build_sale(transaction_id=i, items=[build_item(transaction_id=i)]) for i in range(1, 701)]
+        sales[650] = build_sale(transaction_id=651, items=[build_item(transaction_id=651, product_id=2**40)])
+
+        with pytest.raises(Exception):
+            SalesService.sync_sales(db=pg_session, outlet="OUTLET_001", sales_list=sales)
+
+        pg_session.rollback()
+        assert count(pg_session, "ordertransaction") == 0
+        assert count(pg_session, "orderdetail") == 0
