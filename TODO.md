@@ -15,7 +15,8 @@ Sisa:
 - **Fase 8 (kirim rekap closing ke API eksternal)** — backend selesai di kode
   sesuai [usulan kontrak](docs/usulan-kontrak-kirim-closing.md) (2026-10-13).
   Frontend selesai (sync-frontend Fase 12), test integrasi Postgres selesai.
-  Sisa: deploy (migrasi 016, 018, 019 belum dijalankan) dan jawaban pemilik API.
+  Sisa: deploy (migrasi 016–022 belum dijalankan di produksi) dan jawaban
+  ERP Gateway (8.16). 8.15 `payments` selesai di kode 2026-11-18.
   8.12 (2026-11-04): colorplate tidak lagi terhitung dobel, syarat closing per
   brand — kontrak revisi 2 perlu dikirim ulang ke pemilik API.
 - Keputusan arsitektur yang masih terbuka — lihat bagian Keputusan di bawah.
@@ -942,18 +943,46 @@ RabbitMQ) dan publish colorplate (keluar lewat RabbitMQ).
         `warna_tidak_lengkap` (warna hanya di closing atau hanya di POS).
       Penjaga: `TestBagiColorplate`, `TestColorplateTidakDobel`, `TestPenjualan`,
       `TestWarnaPiringMenu`, `test_migrate.py`,
-      `tests/integration/test_migrasi_020_postgres.py` (**belum dijalankan**,
-      `TEST_DATABASE_URL` tidak diset). Migrasi 020 belum dijalankan ke
-      database mana pun. Surat ke ERP:
+      `tests/integration/test_migrasi_020_postgres.py` (lulus 2026-11-20 di
+      `sync_test`, bersama seluruh suite integrasi 101/101). Migrasi 020 belum
+      dijalankan di produksi. Surat ke ERP:
       [docs/status-pekerjaan-kirim-closing.md](docs/status-pekerjaan-kirim-closing.md).
-- [ ] **8.15 `payments`** — menunggu agen POS (project terpisah) mengirim
-      baris `orderpaydetail`. Di sini: skema `SalesSchema.payments`, tabel baru
-      (migrasi, **minta izin**), `payments` per tujuan kunjungan + metode,
-      blokir kalau Σ `payments` ≠ `grandTotal`. `coaNo` / MDR tidak dikirim.
+- [x] **8.15 `payments`** (2026-11-18, `54941e6`; laporan 2026-11-19, `dae80b5`) —
+      agen POS mengirim key `payments` per transaksi
+      ([docs/handoff-sync-api-payments.md](docs/handoff-sync-api-payments.md)).
+      - Migrasi **021** `021_orderpaydetail.sql` (CREATE TABLE + ADD COLUMN saja):
+        tabel `orderpaydetail`, kunci `(outlet_code, TransactionID, ComputerID,
+        PayDetailID)`; kolom `ordertransaction.payments_received_at`
+        (NULL = pembayaran belum diketahui).
+      - Sync: key `payments` ada → baris pembayaran transaksi itu diganti utuh;
+        key tidak ada → tidak disentuh. Selisih terhadap `ReceiptPayPrice`
+        hanya dicatat di log (`SYNC PAYMENTS MISMATCH`), data tetap disimpan.
+        Respons ke agen tidak berubah.
+      - Rekap closing: `payments` per `visitPurposeName` + `PayTypeID` outlet;
+        `paymentAmount` = `fullPaymentAmount` sampai ERP menjawab artinya;
+        jenis bayar bertotal 0 tidak dikirim; `paymentTotal` = Σ pembayaran.
+        `coaNo` / MDR tidak dikirim.
+      - Blokir baru: `transaksi_tanpa_pembayaran`, `pembayaran_tidak_sama`
+        (toleransi `TOLERANSI_PEMBAYARAN` 0,5, menunggu jawaban ERP soal
+        pembulatan).
+      - Laporan: `GET /api/sales/payments` (ringkasan per jenis bayar,
+        ikut cache 9.12) dan `payments` di `GET /api/sales/{transaction_id}`.
+      - Jenis sistem POS (Promise/Vtec) tidak disimpan — `outlet_code` dari
+        API key dianggap cukup, karena satu outlet = satu sistem POS.
+        **Pastikan asumsi ini benar** (handoff bagian 1: jenis bayar tidak
+        boleh digabung antar sistem POS).
+      Penjaga: `test_closing_export_pembayaran.py`, `test_routes_sales_payments.py`,
+      `test_sales_service_sync.py`, `test_schemas.py`,
+      `tests/integration/test_migrasi_021_postgres.py`. Frontend: sync-frontend
+      12.9 & 13.9. Migrasi 021 belum dijalankan di produksi.
 - [ ] **8.16 Menunggu ERP Gateway** — daftar `visitPurposeName` (isi
       `NAMA_TUJUAN_KUNJUNGAN`), field `OtherIncome`, rekap kosong
       (`items: []`), `sales: []`, arti `fullPaymentAmount`, pembulatan kasir,
       endpoint + token uji.
+      Khusus `payments`: persetujuan `coaNo`/MDR diatur di ERP per
+      `paymentMethod`, arti `paymentAmount` vs `fullPaymentAmount`, dan
+      apakah selisih pembulatan kasir dikirim sebagai `roundingTotal`
+      (penentu nilai `TOLERANSI_PEMBAYARAN`).
 
 ## Fase 9 — Performa & error saat data besar (2026-10-23)
 

@@ -4,7 +4,7 @@
 |---|---|
 | Repo | `api-salespromise` (`935a62b`), `frontendsales` (`b9ebbc2`) |
 | Tanggal | 4 November 2026 |
-| Status | Backend langkah 1–9 dan frontend selesai di kode (belum commit, belum deploy). Aturan A/B/C disetujui. Kontrak revisi 2 belum dikirim ke pemilik API. |
+| Status | Backend langkah 1–9 dan frontend selesai dan sudah di-commit (`ab6a5d7` / `2f8001d`), belum deploy. Aturan A/B/C disetujui. Kontrak sudah berlanjut ke revisi 3 (TODO 8.13–8.15). |
 | Pembaruan TODO | Backend Fase 8 (usul item 8.12), frontend Fase 12 (usul item 12.8) |
 
 ## 1. Ringkasan

@@ -2,12 +2,15 @@
 
 Untuk: tim ERP Gateway
 Dari: tim sync-api Maharasa
-Tanggal: 17 November 2026
+Tanggal: 20 November 2026
 
 Menyusul surat kami tanggal 12 November (jawaban atas balasan kontrak), berikut
 status pekerjaan di sisi kami. Sebagian besar revisi 3 sudah selesai dibuat.
 Beberapa hal **sengaja belum kami kerjakan**. Di bawah ini alasannya dan apa
 yang kami tunggu.
+
+Pembaruan 20 November: data pembayaran dari POS sudah tersedia, sehingga
+`payments` kini terisi (lihat bagian 1).
 
 ---
 
@@ -25,6 +28,12 @@ yang kami tunggu.
 - **Zona waktu** (surat 12 November, bagian 1 nomor 4, kini final): semua
   outlet berada di zona **WIB**. `productionDate` adalah tanggal bisnis outlet
   seperti di POS, sama dengan tanggal Asia/Jakarta.
+- **`payments`**: diisi dari data pembayaran POS, dijumlah per
+  `visitPurposeName` + jenis bayar. Isinya `paymentMethod` (nama jenis bayar
+  di POS), `paymentAmount`, `fullPaymentAmount` (sementara bernilai sama),
+  dan `notes` (kosong). `paymentTotal` = jumlah `payments`. Rekap yang
+  pembayarannya belum lengkap, atau totalnya tidak sama dengan `grandTotal`,
+  kami tahan di sisi kami dan tidak dikirim.
 
 Belum ada data yang kami kirim ke sistem Anda karena alamat endpoint dan token
 belum kami terima (lihat bagian 3).
@@ -55,9 +64,8 @@ di dokumen usulan kontrak revisi 3 (pembaruan 17 November), bagian 2.4.
 |---|---|---|---|
 | 1 | **Mengosongkan rekap** (kiriman dengan `items: []` dan `sales: []`) | Saat ini sistem kami menolak mengirim rekap kosong. Kami baru mau mengubahnya kalau Anda setuju menerima `items` kosong. Tanpa persetujuan itu, kiriman seperti ini akan ditolak validasi di sisi Anda. | Persetujuan Anda atas usulan kami di surat 12 November, bagian 1 nomor 3. |
 | 2 | **Nama tujuan kunjungan** (`visitPurposeName`) | POS mencatat tujuan kunjungan sebagai kode angka (1, 2, 6, 8). Kami belum tahu nama yang harus dipakai. Sementara ini kami kirim `"SALEMODE 1"`, `"SALEMODE 2"`, dst. Kalau ERP mencocokkan nama ini dengan daftarnya, nama sementara itu akan gagal dicocokkan. | Daftar resmi `visitPurposeName` dari ERP (surat 12 November, bagian 3 nomor 3). Setelah daftarnya ada, kami pasangkan ke kode POS. |
-| 3 | **`payments`** | Data metode pembayaran belum ditarik dari POS ke sistem kami. Untuk menariknya, agen POS di setiap outlet perlu diubah dan sistem kami perlu tempat simpan baru. Sementara ini `payments: []`, dengan `paymentTotal` = `grandTotal`. Nanti isinya hanya `paymentMethod` (nama jenis bayar di POS), `paymentAmount`, `fullPaymentAmount`, dan `notes`. `coaNo` dan `merchantDiscountRate` tidak kami kirim; mohon diatur di ERP Gateway per `paymentMethod`. | Tidak menunggu Anda. Perubahan agen POS sedang kami kerjakan. Begitu selesai, tanggal yang terdampak kami kirim ulang dengan `sequence` baru. |
-| 4 | **Pendapatan lain** (`OtherIncome` POS) | Belum jelas field mana yang tepat. Sementara ini kami isikan ke `orderFee`. Kalau ternyata salah, hanya pemetaan yang berubah dan kami kirim ulang tanggal yang terdampak. | Jawaban Anda atas surat 12 November, bagian 3 nomor 1: `orderFee`, `deliveryFee`, atau field lain. |
-| 5 | **`sales: []`** untuk outlet + tanggal yang hanya punya waste/adjustment | Sistem kami sudah bisa menyusunnya, tetapi belum kami pastikan validasi Anda menerimanya. | Jawaban Anda atas surat 12 November, bagian 3 nomor 2. |
+| 3 | **Pendapatan lain** (`OtherIncome` POS) | Belum jelas field mana yang tepat. Sementara ini kami isikan ke `orderFee`. Kalau ternyata salah, hanya pemetaan yang berubah dan kami kirim ulang tanggal yang terdampak. | Jawaban Anda atas surat 12 November, bagian 3 nomor 1: `orderFee`, `deliveryFee`, atau field lain. |
+| 4 | **`sales: []`** untuk outlet + tanggal yang hanya punya waste/adjustment | Sistem kami sudah bisa menyusunnya, tetapi belum kami pastikan validasi Anda menerimanya. | Jawaban Anda atas surat 12 November, bagian 3 nomor 2. |
 
 ---
 
@@ -79,8 +87,10 @@ di dokumen usulan kontrak revisi 3 (pembaruan 17 November), bagian 2.4.
    `roundingTotal`?
 
 Butir 1, 2, dan 4 menentukan apakah kiriman pertama kami lolos validasi Anda.
-Butir 6–8 kami perlukan sebelum `payments` mulai diisi. Mohon dijawab lebih
-dulu kalau memungkinkan.
+`payments` sudah kami isi dengan asumsi sementara: `paymentAmount` =
+`fullPaymentAmount`, dan selisih sampai Rp0,50 terhadap `grandTotal` masih
+kami terima. Jawaban butir 6–8 menentukan apakah asumsi itu perlu diubah;
+kalau berubah, tanggal yang terdampak kami kirim ulang dengan `sequence` baru.
 
 ---
 
