@@ -401,6 +401,33 @@ def test_migrasi_020_hanya_menambah_kolom_warna_piring_di_closing_menus():
         assert terlarang not in sql, terlarang
 
 
+def test_migrasi_023_hanya_menambah_kolom_harga_di_closing_report_items():
+    """Harga v3 per item (TODO 7.10): tambah kolom nullable saja, jadi item v1/v2
+    yang sudah ada tetap tanpa harga dan tidak ada baris yang berubah."""
+    sql = _tanpa_komentar((migrate.MIGRATIONS_DIR / "023_closing_report_item_prices.sql").read_text(encoding="utf-8"))
+
+    for kolom in ("UNIT_PRICE", "SOLD_AMOUNT", "WASTE_AMOUNT", "ADJUSTMENT_AMOUNT", "COMPENSATION_AMOUNT"):
+        harus = f"ALTER TABLE CLOSING_REPORT_ITEMS ADD COLUMN IF NOT EXISTS {kolom} NUMERIC(14,2) DEFAULT NULL"
+        assert harus in " ".join(sql.split()), harus
+    assert sql.count("ALTER TABLE") == 5
+    for terlarang in [
+        "INSERT",
+        "UPDATE ",
+        "DROP",
+        "DELETE",
+        "TRUNCATE",
+        "CREATE",
+        "NOT NULL",
+        "CLOSING_REPORTS ",
+        "CLOSING_REPORT_REVISIONS",
+        "CLOSING_MENUS",
+        "API_KEYS",
+        "ORDERTRANSACTION",
+        "ORDERDETAIL",
+    ]:
+        assert terlarang not in sql, terlarang
+
+
 def test_statement_timeout_dimatikan_sebelum_lock_dan_migrasi(folder):
     """Engine aplikasi memasang statement_timeout; migrasi (bangun index) dan
     menunggu advisory lock bisa jauh lebih lama dari itu."""

@@ -43,11 +43,12 @@ def kirim_closing(
     sent_at="2026-10-02T22:15:00+07:00",
     tanggal=HARI_INI,
     message_id=None,
+    version=1,
 ):
     report_id = report_id or str(uuid.uuid4())
     raw = {
         "event": "closingreport.submitted",
-        "version": 1,
+        "version": version,
         "messageId": message_id or report_id,
         "sentAt": sent_at,
         "data": {
@@ -556,6 +557,44 @@ class TestDetailLaporan:
 
         assert res.status_code == 200
         assert [i["menu_name"] for i in res.json()["data"]["items"]] == ["Tuna", "Ebi", "Salmon"]
+
+    def test_harga_v3_ikut_di_item_dan_null_untuk_v1(self, client, app_db, admin_headers):
+        """TODO 7.10: harga satuan & nilai rupiah dari kolom item, string desimal 2 angka."""
+        harga = {
+            "wasteByCategory": [{"categoryCode": "DEFAULT_WASTE", "categoryName": "Default Waste", "quantity": 3}],
+            "unitPrice": 12500.5,
+            "soldAmount": 25001,
+            "wasteAmount": 37501.5,
+            "adjustmentAmount": 0,
+            "compensationAmount": 0,
+        }
+        rid = kirim_closing(app_db, items=[item(sold=10)])
+        kirim_closing(
+            app_db,
+            report_id=rid,
+            items=[item(sold=2, **harga)],
+            sent_at="2026-11-23T10:00:00+07:00",
+            message_id=f"{rid}.v3",
+            version=3,
+        )
+
+        data = client.get(f"/api/closing-reports/{rid}", headers=admin_headers).json()["data"]
+
+        [baris] = data["items"]
+        assert (baris["sold"], baris["unit_price"], baris["sold_amount"], baris["waste_amount"]) == (
+            2,
+            "12500.50",
+            "25001.00",
+            "37501.50",
+        )
+        assert (baris["adjustment_amount"], baris["compensation_amount"]) == ("0.00", "0.00")
+        assert [(r["message_id"], r["is_current"]) for r in data["revisions"]] == [(f"{rid}.v3", True), (rid, False)]
+
+    def test_item_v1_tanpa_harga(self, client, app_db, admin_headers):
+        rid = kirim_closing(app_db)
+
+        [baris] = client.get(f"/api/closing-reports/{rid}", headers=admin_headers).json()["data"]["items"]
+        assert [baris[k] for k in ("unit_price", "sold_amount", "waste_amount")] == [None, None, None]
 
     def test_outlet_lain_404(self, client, app_db, outlet_headers):
         rid = kirim_closing(app_db, outlet="OUTLET_002")

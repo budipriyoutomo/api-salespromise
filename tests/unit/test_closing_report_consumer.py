@@ -136,6 +136,22 @@ class TestProsesPesan:
         assert terlihat == [REPORT_ID]
         assert get_request_id() is None
 
+    def test_message_id_kiriman_ulang_v3_tetap_jadi_request_id(self, factory, monkeypatch):
+        """TODO 7.10: format `<closingReportId>.v3` lolos sanitize, jadi log bisa dikaitkan ke pesan."""
+        terlihat = []
+
+        def catat(db, event, raw):
+            terlihat.append(get_request_id())
+            return HasilSimpan(StatusSimpan.REVISI, 1, 2, True)
+
+        monkeypatch.setattr(consumer, "simpan_closing_report", catat)
+        pesan = copy.deepcopy(PAYLOAD)
+        pesan["messageId"] = f"{REPORT_ID}.v3"
+
+        proses_pesan(json.dumps(pesan).encode(), factory)
+
+        assert terlihat == [f"{REPORT_ID}.v3"]
+
 
 class TestCallback:
 
@@ -303,6 +319,16 @@ class TestTungguSkema:
 
         assert consumer.skema_siap(factory) is False
 
+    def test_skema_belum_siap_kalau_kolom_harga_023_belum_ada(self, db_session, factory):
+        """Image baru bisa start sebelum API selesai migrasi 023. Tanpa menunggu,
+        INSERT item gagal (kolom harga belum ada) dan pesan valid masuk DLQ."""
+        from sqlalchemy import text
+
+        db_session.execute(text("ALTER TABLE closing_report_items DROP COLUMN unit_price"))
+        db_session.commit()
+
+        assert consumer.skema_siap(factory) is False
+
     def test_database_mati_dianggap_belum_siap(self):
         def mati():
             raise OperationalError("SELECT 1", {}, Exception("connection refused"))
@@ -437,6 +463,24 @@ class TestHargaV3:
         assert db_session.query(ClosingMessageLog).one().warnings == [
             "outlet belum terdaftar di api_keys",
             "nilai rupiah tidak sama dengan qty × unitPrice: 1 menu",
+        ]
+
+    def test_kirim_ulang_v3_dengan_message_id_baru_menjadi_revisi(self, db_session, factory):
+        """TODO 7.10: laporan v1 dikirim ulang sebagai v3 dengan messageId `<closingReportId>.v3`."""
+        assert proses_pesan(json.dumps(PAYLOAD).encode(), factory) is Keputusan.ACK
+        pesan = json.loads(self._v3())
+        pesan["messageId"] = f"{PAYLOAD['data']['closingReportId']}.v3"
+        pesan["sentAt"] = "2026-11-23T10:00:00+07:00"
+
+        assert proses_pesan(json.dumps(pesan).encode(), factory) is Keputusan.ACK
+
+        aktif = db_session.query(ClosingReportRevision).filter(ClosingReportRevision.is_current.is_(True)).one()
+        assert (aktif.message_id, aktif.version) == (pesan["messageId"], 3)
+        assert [i.unit_price for i in aktif.items] == [15000]
+        logs = db_session.query(ClosingMessageLog).order_by(ClosingMessageLog.id).all()
+        assert [(log.status, log.message_id) for log in logs] == [
+            ("baru", PAYLOAD["messageId"]),
+            ("revisi", pesan["messageId"]),
         ]
 
     def test_v3_tanpa_harga_ke_dlq(self, db_session, factory):

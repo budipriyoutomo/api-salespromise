@@ -6,6 +6,7 @@ dimatikan lewat `is_current`.
 
 import copy
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 import pytest
@@ -208,6 +209,122 @@ class TestKirimUlang:
         assert [i.sold for i in revisi_aktif(db_session).items] == [40]
         # Pesan pertama (messageId = closingReportId) ikut tersimpan sebagai revisi lama.
         assert db_session.query(ClosingReportRevision).count() == 2
+
+
+def item_v1(menu_id=MENU_ID, menu_code="SU-001", menu_name="Salmon Nigiri", sold=42, waste=3):
+    return {
+        "menuId": menu_id,
+        "menuCode": menu_code,
+        "menuName": menu_name,
+        "productionDate": "2026-10-02",
+        "sold": sold,
+        "waste": waste,
+        "adjustment": 1,
+        "compensation": 0,
+    }
+
+
+def item_v3(harga=15000, **ubah):
+    item = item_v1(**ubah)
+    waste = item["waste"]
+    harga = Decimal(str(harga))
+    item.update(
+        wasteByCategory=[{"categoryCode": "DEFAULT_WASTE", "categoryName": "Default Waste", "quantity": waste}]
+        if waste
+        else [],
+        unitPrice=str(harga),
+        soldAmount=str(item["sold"] * harga),
+        wasteAmount=str(waste * harga),
+        adjustmentAmount=str(item["adjustment"] * harga),
+        compensationAmount=0,
+    )
+    return item
+
+
+def kirim_ulang_v3(db, items, sent_at="2026-11-23T10:00:00+07:00"):
+    """Kiriman ulang historis (TODO 7.10): messageId `<closingReportId>.v3`."""
+    event, raw = pesan(message_id=f"{REPORT_ID}.v3", sent_at=sent_at, items=items)
+    raw["version"] = 3
+    event = ClosingReportSubmitted.model_validate(raw)
+    return simpan_closing_report(db, event, raw)
+
+
+class TestKirimUlangHistorisV3:
+    """TODO 7.10: laporan lama dikirim ulang sebagai v3 dengan messageId baru.
+
+    Revisi v3 menggantikan seluruh item revisi v1; angka tidak dijumlah dua kali.
+    """
+
+    def test_v3_menjadi_revisi_aktif_dan_menggantikan_seluruh_item(self, db_session):
+        # v1: Salmon + Tuna. v3: Salmon (angka baru) + Ebi; Tuna hilang.
+        pertama = simpan(db_session, items=[item_v1(), item_v1(menu_id=MENU_ID_2, menu_code="SU-002", menu_name="Tuna")])
+        ebi = "2c3d4e5f-6a7b-4c9d-8e1f-2a3b4c5d6e7f"
+        hasil = kirim_ulang_v3(db_session, [item_v3(sold=40), item_v3(menu_id=ebi, menu_code="SU-003", menu_name="Ebi")])
+
+        assert hasil.status is StatusSimpan.REVISI
+        assert hasil.report_id == pertama.report_id
+        aktif = revisi_aktif(db_session)
+        assert (aktif.id, aktif.message_id, aktif.version) == (hasil.revision_id, f"{REPORT_ID}.v3", 3)
+        assert sorted((str(i.menu_id), i.sold) for i in aktif.items) == sorted([(MENU_ID, 40), (ebi, 42)])
+        # Revisi v1 tetap tersimpan, hanya tidak aktif.
+        assert db_session.get(ClosingReportRevision, pertama.revision_id).is_current is False
+        assert db_session.query(ClosingReportItem).count() == 4
+
+    def test_harga_v3_tersimpan_di_item(self, db_session):
+        simpan(db_session)
+        kirim_ulang_v3(db_session, [item_v3(harga="12500.5", sold=2, waste=1)])
+
+        [item] = revisi_aktif(db_session).items
+        assert item.unit_price == Decimal("12500.50")
+        assert (item.sold_amount, item.waste_amount) == (Decimal("25001.00"), Decimal("12500.50"))
+        assert (item.adjustment_amount, item.compensation_amount) == (Decimal("12500.50"), Decimal("0"))
+
+    def test_item_v1_tanpa_harga(self, db_session):
+        simpan(db_session)
+
+        [item] = revisi_aktif(db_session).items
+        assert item.unit_price is None
+        assert item.sold_amount is None
+
+    def test_detail_dan_perbandingan_memakai_angka_v3_saja(self, db_session):
+        simpan(db_session, items=[item_v1(), item_v1(menu_id=MENU_ID_2, menu_code="SU-002", menu_name="Tuna")])
+        kirim_ulang_v3(db_session, [item_v3(sold=40)])
+
+        detail = closing_report_service.get_report(db_session, UUID(REPORT_ID))
+        assert [(i.menu_name, i.sold, i.unit_price) for i in detail["items"]] == [
+            ("Salmon Nigiri", 40, Decimal("15000.00"))
+        ]
+        assert detail["item_count"] == 1
+
+        baris = closing_report_service.compare_with_pos(db_session)
+        assert [(b.menu_id, b.sold) for b in baris] == [(UUID(MENU_ID), 40)]
+
+    def test_kiriman_ulang_dua_kali_tetap_duplikat(self, db_session):
+        """Skrip kirim ulang yang dijalankan dua kali tidak membuat revisi baru."""
+        simpan(db_session)
+        pertama = kirim_ulang_v3(db_session, [item_v3()])
+        kedua = kirim_ulang_v3(db_session, [item_v3(sold=1)], sent_at="2026-11-24T10:00:00+07:00")
+
+        assert kedua.status is StatusSimpan.DUPLIKAT
+        assert kedua.revision_id == pertama.revision_id
+        assert [i.sold for i in revisi_aktif(db_session).items] == [42]
+
+    def test_pesan_v1_tertunda_yang_tiba_belakangan_tidak_menimpa_v3(self, db_session):
+        kirim_ulang_v3(db_session, [item_v3(sold=40)])
+        lama = simpan(db_session, sold=99)
+
+        assert lama.status is StatusSimpan.REVISI_LAMA
+        assert [i.sold for i in revisi_aktif(db_session).items] == [40]
+
+    def test_messageid_sama_dengan_versi_lebih_tinggi_tetap_duplikat(self, db_session):
+        """Opsi B tidak dipakai: v3 dengan messageId lama dibuang tanpa efek."""
+        simpan(db_session)
+        event, raw = pesan(sent_at="2026-11-23T10:00:00+07:00", items=[item_v3(sold=40)])
+        raw["version"] = 3
+        hasil = simpan_closing_report(db_session, ClosingReportSubmitted.model_validate(raw), raw)
+
+        assert hasil.status is StatusSimpan.DUPLIKAT
+        assert [i.sold for i in revisi_aktif(db_session).items] == [42]
 
 
 class TestMenu:

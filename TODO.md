@@ -782,6 +782,113 @@ Sumber: [docs/jawaban-pengirim-closing.md](docs/jawaban-pengirim-closing.md)
       `/closing-menu` (admin: mapping). Lewat catch-all BFF, tanpa route baru.
       E2E Playwright belum ada (sync-frontend TODO 11.6).
 
+### 7.10 Kiriman ulang closing report historis dalam v3 (2026-11-23, a–c selesai)
+
+Konteks: pengirim ingin mengirim ulang semua closing report **sejak
+2026-10-01** dalam format v3 (harga satuan + nilai rupiah), lihat
+[docs/bi-closing-report-v3-historis.md](docs/bi-closing-report-v3-historis.md).
+Consumer sudah menerima `version: 3` (skema + warning nilai rupiah).
+
+**Temuan (read-only, dari kode):**
+
+- Penyimpanan tidak memakai upsert. Setiap pesan menjadi satu baris
+  `closing_report_revisions` dengan item-nya sendiri. Yang dibaca dashboard dan
+  `compare_with_pos` hanya revisi `is_current`.
+- `messageId` yang sudah ada untuk laporan itu → **DUPLIKAT**, apa pun
+  `version`-nya. Dikunci DB: `UNIQUE (report_id, message_id)` (migrasi 012).
+  Jadi kalau dikirim ulang dengan `messageId` yang sama, pesannya dibuang tanpa
+  efek apa pun.
+- `messageId` **baru** dengan `closingReportId` sama dan `sentAt` ≥ revisi
+  aktif → **REVISI**. Revisi lama jadi `is_current = FALSE` (tetap tersimpan
+  untuk audit), dan seluruh item revisi baru menggantikan item lama. Angkanya
+  **tidak dobel**, karena laporan dikunci `closingReportId`, bukan `messageId`.
+  Draf dokumen salah di bagian ini (baris "messageId baru → dobel").
+- Harga v3 (`unitPrice`, `xxxAmount`) **hanya tersimpan di `raw_payload`
+  (JSONB)**. `closing_report_items` belum punya kolom harga, dan API/dashboard
+  belum menampilkannya.
+
+**Keputusan (2026-11-23, dijawab pengguna):**
+
+1. **Opsi A**: kiriman ulang memakai `messageId` baru. Aturan dedup dan
+   constraint DB tidak diubah. Opsi B (`messageId` sama, versi lebih tinggi
+   menimpa) tidak dipakai, dan perilakunya dikunci test (tetap DUPLIKAT).
+2. Format `messageId`: **`<closingReportId>.v3`**, deterministik.
+3. Harga mendapat **kolom sendiri** di `closing_report_items` dan tampil di
+   API & dashboard.
+
+**Rencana kerja:**
+
+- [x] **7.10a Test penjaga** (`TestKirimUlangHistorisV3` di
+      `test_closing_report_service.py`, plus satu test di consumer). Hasil RED:
+      semua skenario revisi **sudah lulus tanpa perubahan kode**. Yang gagal
+      hanya bagian kolom harga.
+      - v1 (Salmon + Tuna) → v3 (Salmon + Ebi) → `REVISI`. Item aktif = item v3
+        saja, revisi v1 tetap tersimpan tidak aktif.
+      - Detail laporan & `compare_with_pos` memakai angka v3, tidak dijumlah
+        dengan v1.
+      - Kiriman ulang dua kali → `DUPLIKAT`. v1 tertunda yang tiba belakangan →
+        `REVISI_LAMA`. `messageId` lama + `version: 3` → `DUPLIKAT`.
+      - Laporan yang dulu dikirim dengan `items: []` tidak pernah tersimpan
+        (skema menolak `items` kosong → DLQ), jadi kiriman ulangnya akan
+        berstatus `baru`, bukan `revisi`. Cukup dicatat, tidak perlu test baru.
+- [x] **7.10b Kolom harga.** Migrasi **`023_closing_report_item_prices.sql`**:
+      hanya `ADD COLUMN IF NOT EXISTS` lima kolom `NUMERIC(14,2)` nullable
+      (`unit_price`, `sold_amount`, `waste_amount`, `adjustment_amount`,
+      `compensation_amount`). Tanpa backfill; v1/v2 tetap NULL. Service mengisinya
+      dari pesan.
+      - Skema pesan: `max_digits=14` di harga & rupiah, supaya nilai yang
+        melebihi kolom ditolak validasi (DLQ "gagal validasi"), bukan gagal saat
+        INSERT.
+      - Consumer menunggu **kolom** 023 juga (`KOLOM_WAJIB` di `skema_siap`),
+        bukan hanya tabel. Tanpa itu, image baru yang start sebelum API selesai
+        migrasi membuang pesan valid ke DLQ.
+      - Penjaga: `test_migrate.py::test_migrasi_023_...` dan
+        `tests/integration/test_migrasi_023_postgres.py`. **Diuji di
+        `sync_test`** (localhost:5433): kolom sama dengan model, item lama tidak
+        berubah, idempoten.
+- [x] **7.10c API & frontend.** `GET /api/closing-reports/{id}`: item membawa
+      `unit_price` & `*_amount` (string desimal, null untuk v1/v2).
+      sync-frontend: `src/types/api.ts` di-generate ulang dari OpenAPI. Dialog
+      detail menampilkan kolom Harga / Nilai terjual / Nilai waste **hanya kalau
+      ada item ber-harga**, dengan `formatRupiahItem` (pecahan tidak dibulatkan).
+      Perbandingan POS (`/comparison`) belum membawa harga. Ini sengaja: satu
+      baris bisa menjumlah beberapa closing dengan campuran v1 dan v3.
+- [ ] **7.10d Dokumen.**
+      - [x] `docs/bi-closing-report-v3-historis.md` ditulis ulang ke opsi A.
+      - [x] `docs/bi-closing-report-v3-harga.md` merujuk dokumen historis.
+      - [ ] Placeholder volume (±[jumlah] laporan dari [jumlah] outlet). Harus
+        dihitung dari data **pengirim** atau DB produksi. `.env` lokal sekarang
+        `DB_HOST=localhost`, jadi angkanya tidak mewakili produksi.
+- [ ] **7.10e Uji coba & pelaksanaan (sisi pengirim, dipantau di sini).**
+      0. Deploy: `docker compose up -d --build`. API menjalankan migrasi 023;
+         consumer menunggu kolomnya (log `CLOSING CONSUMER MENUNGGU: kolom
+         belum ada` sampai migrasi selesai).
+      1. Pengirim kirim **satu** laporan lama. Cek di `/api/closing-messages`
+         statusnya `revisi`, lalu cek detail laporan menampilkan item v3 dan
+         harga.
+      2. Kirim sisanya bertahap. Pantau `counts` per status: yang diharapkan
+         `revisi` (atau `baru` untuk laporan yang dulu `items: []`), bukan
+         `duplikat` (berarti `messageId` lama terpakai) atau `ditolak`.
+      3. Cocokkan daftar laporan + jumlah item dari pengirim dengan revisi
+         aktif di DB (read-only).
+
+**Catatan risiko:**
+
+- Pesan v1/v2 lama yang masih antre lalu tiba *setelah* kiriman ulang punya
+  `sentAt` lebih tua → `REVISI_LAMA`, tidak menimpa v3. Aman.
+- Kalau `sentAt` kiriman ulang ternyata lebih tua dari revisi aktif (jam
+  pengirim salah), pesannya jadi `REVISI_LAMA` dan diam-diam tidak aktif.
+  Langkah 7.10e.1 harus mengecek status ini.
+- Harga memakai master saat kiriman ulang, bukan harga asli hari itu
+  (keterbatasan pengirim, dicatat di dokumen).
+- Format awalnya `<closingReportId>:v3`, diganti ke **`.v3`** (2026-11-23):
+  `:` tidak lolos `sanitize_request_id` (`[A-Za-z0-9._-]`), sehingga log
+  kiriman ulang akan memakai `request_id` acak, bukan `messageId`. Dikunci
+  test `test_message_id_kiriman_ulang_v3_tetap_jadi_request_id`.
+- Kirim rekap ke ERP (Fase 8) membaca revisi aktif lewat `compare_with_pos`.
+  Selama qty v3 sama dengan v1, status kirim tidak berubah. Laporan yang dulu
+  `items: []` akan muncul sebagai closing baru untuk tanggalnya.
+
 ---
 
 ## Fase 8 — Kirim rekap closing ke API eksternal (dari `/closing`)

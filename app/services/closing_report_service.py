@@ -16,7 +16,11 @@ praktis hanya BARU / DUPLIKAT yang terjadi. Jalur revisi dipertahankan untuk
 yang sama seperti pesan v1 dianggap DUPLIKAT.
 
 Rincian `wasteByCategory` (version 2) belum punya tabel sendiri; tersimpan
-di `raw_payload`.
+di `raw_payload`. Harga version 3 disimpan di kolom item (migrasi 023).
+
+Kiriman ulang historis v3 (TODO 7.10) memakai messageId baru
+`<closingReportId>.v3`, jadi menjadi REVISI yang menggantikan seluruh item
+revisi lama. messageId lama dengan version lebih tinggi tetap DUPLIKAT.
 
 Menu yang belum pernah terlihat otomatis masuk `closing_menus` — kuncinya
 menuId; menuCode hanya atribut (bisa berubah, unik per brand, bisa null).
@@ -176,6 +180,11 @@ def _simpan(db, event: ClosingReportSubmitted, raw_payload: dict) -> HasilSimpan
             waste=item.waste,
             adjustment=item.adjustment,
             compensation=item.compensation,
+            unit_price=item.unit_price,
+            sold_amount=item.sold_amount,
+            waste_amount=item.waste_amount,
+            adjustment_amount=item.adjustment_amount,
+            compensation_amount=item.compensation_amount,
         )
         for item in data.items
     )

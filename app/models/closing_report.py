@@ -1,7 +1,8 @@
 """Closing report dari RabbitMQ (`closingreport.submitted`) — TODO Fase 7.
 
 Skema produksi ada di migrations/011_closing_reports.sql, 012_closing_menu_id.sql,
-013_closing_message_logs.sql, dan 018_closing_menu_not_in_pos.sql; constraint di sini harus sama supaya test
+013_closing_message_logs.sql, 018_closing_menu_not_in_pos.sql, dan
+023_closing_report_item_prices.sql; constraint di sini harus sama supaya test
 SQLite mewakili Postgres.
 
 Tidak ada yang dihapus: revisi baru mendapat baris revisi + item sendiri,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     SmallInteger,
     String,
     Text,
@@ -129,6 +131,13 @@ class ClosingReportItem(Base):
     # Koreksi, boleh negatif.
     adjustment = Column(Integer, nullable=False)
     compensation = Column(Integer, nullable=False)
+
+    # Harga v3 (migrasi 023). NULL untuk item dari pesan v1 / v2.
+    unit_price = Column(Numeric(14, 2), nullable=True)
+    sold_amount = Column(Numeric(14, 2), nullable=True)
+    waste_amount = Column(Numeric(14, 2), nullable=True)
+    adjustment_amount = Column(Numeric(14, 2), nullable=True)
+    compensation_amount = Column(Numeric(14, 2), nullable=True)
 
 
 class ClosingMenu(Base):

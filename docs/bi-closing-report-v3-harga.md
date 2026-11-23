@@ -96,7 +96,7 @@ Semua nilai rupiah dibulatkan ke 2 desimal. Saat ini harga di master kami berupa
 
 - Pesan yang sudah terkirim atau sudah antre sebelum deploy **tetap dengan versinya semula** (v1 atau v2). Pesan tidak disusun ulang otomatis.
 - Kiriman ulang dengan "susun ulang" (`--rebuild`) menyusun pesan dengan **harga master saat itu**, bukan harga pada hari laporan. Kalau harga warna sudah berubah, nilai rupiahnya ikut berubah.
-- Mengikuti aturan dedup BI, pesan v3 dengan `messageId` yang sudah pernah diterima akan dibuang sebagai duplikat. Jadi laporan sebelum peluncuran **tidak** akan mendapat harga, kecuali BI mengubah aturan dedup. Kami tidak berencana mengirim ulang data historis.
+- Mengikuti aturan dedup BI, pesan v3 dengan `messageId` yang sudah pernah diterima akan dibuang sebagai duplikat. Laporan sebelum peluncuran hanya mendapat harga lewat kiriman ulang dengan `messageId` baru (`<closingReportId>.v3`), yang di BI menjadi revisi baru. Rencananya untuk laporan sejak 1 Oktober 2026 ada di [dokumen kiriman ulang historis](bi-closing-report-v3-historis.md).
 
 ## Yang perlu dijawab BI
 

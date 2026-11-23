@@ -469,6 +469,22 @@ class TestHarga:
 
         assert field in str(exc.value)
 
+    @pytest.mark.parametrize("field", FIELD_HARGA)
+    def test_v3_nilai_melebihi_kolom_numeric_14_2_ditolak(self, field):
+        """Kolom item NUMERIC(14,2) (migrasi 023): ditolak validasi, bukan gagal saat INSERT."""
+        data = payload_v3(**{field: 1_000_000_000_000})
+
+        with pytest.raises(ValidationError) as exc:
+            ClosingReportSubmitted.model_validate(data)
+
+        assert field in str(exc.value)
+
+    def test_v3_nilai_terbesar_numeric_14_2_diterima(self):
+        data = payload_v3(soldAmount="999999999999.99")
+
+        item = ClosingReportSubmitted.model_validate(data).data.items[0]
+        assert item.sold_amount == Decimal("999999999999.99")
+
     def test_v3_tetap_wajib_waste_by_category(self):
         data = payload_v3()
         data["data"]["items"][0].pop("wasteByCategory")

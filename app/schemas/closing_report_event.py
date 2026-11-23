@@ -61,8 +61,10 @@ Qty = Annotated[int, Field(ge=0)]
 
 # Rupiah, paling banyak 2 desimal (docs/bi-closing-report-v3-harga.md).
 # Float JSON diubah lewat str, jadi 12500.5 tetap Decimal("12500.5").
-Rupiah = Annotated[Decimal, Field(decimal_places=2, allow_inf_nan=False)]
-HargaSatuan = Annotated[Decimal, Field(ge=0, decimal_places=2, allow_inf_nan=False)]
+# max_digits = kolom NUMERIC(14,2) (migrasi 023): nilai yang lebih besar
+# ditolak validasi (DLQ "gagal validasi"), bukan gagal saat disimpan.
+Rupiah = Annotated[Decimal, Field(max_digits=14, decimal_places=2, allow_inf_nan=False)]
+HargaSatuan = Annotated[Decimal, Field(ge=0, max_digits=14, decimal_places=2, allow_inf_nan=False)]
 DUA_DESIMAL = Decimal("0.01")
 FIELD_HARGA = ("unit_price", "sold_amount", "waste_amount", "adjustment_amount", "compensation_amount")
 

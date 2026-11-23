@@ -1,6 +1,7 @@
 """Schema endpoint closing report (TODO Fase 7.6)."""
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
@@ -148,6 +149,12 @@ class ClosingReportItemResponse(BaseModel):
     waste: int
     adjustment: int
     compensation: int
+    # Harga v3 (TODO 7.10), string desimal 2 angka. Null untuk item v1 / v2.
+    unit_price: Optional[Decimal] = None
+    sold_amount: Optional[Decimal] = None
+    waste_amount: Optional[Decimal] = None
+    adjustment_amount: Optional[Decimal] = None
+    compensation_amount: Optional[Decimal] = None
 
 
 class ClosingRevisionResponse(BaseModel):

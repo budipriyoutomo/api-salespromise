@@ -57,6 +57,19 @@ TABEL_WAJIB = (
     "closing_message_logs",
 )
 
+# Kolom dari migrasi setelah tabelnya dibuat. Image baru bisa start sebelum API
+# selesai migrasi; tanpa menunggu, INSERT gagal dan pesan valid masuk DLQ.
+KOLOM_WAJIB = {
+    # Migrasi 023: harga v3 (TODO 7.10).
+    "closing_report_items": (
+        "unit_price",
+        "sold_amount",
+        "waste_amount",
+        "adjustment_amount",
+        "compensation_amount",
+    ),
+}
+
 # Error database yang biasanya sembuh sendiri (server restart, koneksi putus).
 ERROR_SEMENTARA = (OperationalError, DisconnectionError)
 
@@ -274,14 +287,25 @@ def _proses(db, body: bytes) -> Keputusan:
 
 
 def skema_siap(session_factory=SessionLocal) -> bool:
-    """Tabel closing report sudah dibuat migrasi dan database bisa dihubungi."""
+    """Tabel & kolom closing report sudah dibuat migrasi dan database bisa dihubungi."""
     try:
         db = session_factory()
     except ERROR_SEMENTARA:
         return False
     try:
         inspektor = inspect(db.get_bind())
-        return all(inspektor.has_table(tabel) for tabel in TABEL_WAJIB)
+        if not all(inspektor.has_table(tabel) for tabel in TABEL_WAJIB):
+            return False
+        for tabel, kolom in KOLOM_WAJIB.items():
+            ada = {k["name"] for k in inspektor.get_columns(tabel)}
+            kurang = [k for k in kolom if k not in ada]
+            if kurang:
+                logger.warning(
+                    "CLOSING CONSUMER MENUNGGU: kolom belum ada",
+                    extra={"tabel": tabel, "kolom": kurang},
+                )
+                return False
+        return True
     except ERROR_SEMENTARA:
         return False
     finally:
@@ -338,7 +362,7 @@ class Worker:
         )
 
     def tunggu_skema(self) -> bool:
-        """Tunggu migrasi 011. Tanpa ini pesan pertama gagal disimpan dan masuk DLQ."""
+        """Tunggu migrasi 011–023. Tanpa ini pesan pertama gagal disimpan dan masuk DLQ."""
         while not self.berhenti:
             if skema_siap():
                 return True
