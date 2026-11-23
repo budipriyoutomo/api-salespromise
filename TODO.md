@@ -916,9 +916,9 @@ dengan pembayaran.
       `TestWarnaPiringV3`, `TestPlateColor`.
 - [ ] **7.11b Pengirim.** Colorplate menambah `plateColor` di setiap item v3
       ([jawaban v3](docs/jawaban-bi-closing-report-v3.md) bagian 6). Belum dijawab.
-- [ ] **7.11c Frontend (opsional).** Dialog warna di `/closing-menu` bisa
-      menandai warna yang berasal dari Colorplate (`platecolor_by`) dan
-      mengingatkan bahwa isian manual akan tertimpa pesan berikutnya.
+- [x] **7.11c Frontend** (sync-frontend 12.10). `/closing-menu` menandai warna
+      _dari Colorplate_ (`platecolor_by`); dialog mapping mengingatkan bahwa
+      isian manual tertimpa laporan Colorplate berikutnya.
 
 ---
 
