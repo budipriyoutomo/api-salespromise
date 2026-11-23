@@ -251,6 +251,15 @@ def _proses(db, body: bytes) -> Keputusan:
                 extra={"closing_report_id": str(event.data.closing_report_id), "menu_ids": selisih},
             )
             peringatan.append(f"wasteByCategory tidak sama dengan waste: {len(selisih)} menu")
+        rupiah = {str(i.menu_id): i.nilai_rupiah_selisih for i in event.data.items if i.nilai_rupiah_selisih}
+        if rupiah:
+            # Pengirim menjamin xxxAmount = xxx × unitPrice. Kalau tidak, laporan
+            # tetap disimpan — qty-nya sendiri tidak terpengaruh.
+            logger.warning(
+                "CLOSING REPORT: nilai rupiah tidak sama dengan qty × unitPrice",
+                extra={"closing_report_id": str(event.data.closing_report_id), "menu_fields": rupiah},
+            )
+            peringatan.append(f"nilai rupiah tidak sama dengan qty × unitPrice: {len(rupiah)} menu")
 
         _catat(
             db,

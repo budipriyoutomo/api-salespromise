@@ -403,6 +403,50 @@ class TestWasteByCategorySelisih:
         ]
 
 
+class TestHargaV3:
+    """Versi 3 membawa harga per item; untuk sementara tersimpan di raw_payload."""
+
+    def _v3(self, sold_amount=630000):
+        pesan = copy.deepcopy(PAYLOAD)
+        pesan["version"] = 3
+        pesan["data"]["items"][0].update(
+            wasteByCategory=[{"categoryCode": "DEFAULT_WASTE", "categoryName": "Default Waste", "quantity": 3}],
+            unitPrice=15000,
+            soldAmount=sold_amount,
+            wasteAmount=45000,
+            adjustmentAmount=15000,
+            compensationAmount=0,
+        )
+        return json.dumps(pesan).encode()
+
+    def test_v3_disimpan_tanpa_peringatan_harga(self, db_session, factory):
+        assert proses_pesan(self._v3(), factory) is Keputusan.ACK
+
+        revisi = db_session.query(ClosingReportRevision).one()
+        assert revisi.version == 3
+        assert revisi.raw_payload["data"]["items"][0]["unitPrice"] == 15000
+        assert db_session.query(ClosingMessageLog).one().warnings == ["outlet belum terdaftar di api_keys"]
+
+    def test_v3_nilai_rupiah_selisih_disimpan_dan_dicatat(self, db_session, factory, caplog):
+        with caplog.at_level("WARNING", logger="sync-api"):
+            assert proses_pesan(self._v3(sold_amount=1), factory) is Keputusan.ACK
+
+        assert db_session.query(ClosingReport).count() == 1
+        [peringatan] = [r for r in caplog.records if "unitPrice" in r.getMessage()]
+        assert peringatan.menu_fields == {"0a1b2c3d-4e5f-4a7b-8c9d-0e1f2a3b4c5d": ["soldAmount"]}
+        assert db_session.query(ClosingMessageLog).one().warnings == [
+            "outlet belum terdaftar di api_keys",
+            "nilai rupiah tidak sama dengan qty × unitPrice: 1 menu",
+        ]
+
+    def test_v3_tanpa_harga_ke_dlq(self, db_session, factory):
+        pesan = json.loads(self._v3())
+        pesan["data"]["items"][0].pop("unitPrice")
+
+        assert proses_pesan(json.dumps(pesan).encode(), factory) is Keputusan.DLQ
+        assert db_session.query(ClosingReport).count() == 0
+
+
 class TestLogPesan:
     """Setiap pesan yang diputuskan (ack / DLQ) tercatat di `closing_message_logs`
     supaya admin bisa melihat isi pesan dan alasan penolakan dari dashboard."""
@@ -479,7 +523,7 @@ class TestLogPesan:
 
     def test_gagal_validasi_menyimpan_error_dan_identitas_dari_payload(self, db_session, factory):
         rusak = copy.deepcopy(PAYLOAD)
-        rusak["version"] = 3
+        rusak["version"] = 4
 
         proses_pesan(json.dumps(rusak).encode(), factory)
 

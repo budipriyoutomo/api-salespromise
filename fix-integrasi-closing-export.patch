@@ -1,0 +1,14 @@
+diff --git a/tests/integration/test_closing_export_postgres.py b/tests/integration/test_closing_export_postgres.py
+index 51d6d28..3098fcf 100644
+--- a/tests/integration/test_closing_export_postgres.py
++++ b/tests/integration/test_closing_export_postgres.py
+@@ -25,7 +25,8 @@ from app.database import Base
+ from app.models.closing_report import ClosingExportLog
+ from app.services import closing_export_client, closing_export_service
+ from app.services.closing_export_client import HasilKirim
+-from tests.unit.test_routes_closing import HARI_INI, item, jual, kirim_closing, petakan
++from tests.unit.test_closing_export_service import kirim_closing_siap as kirim_closing
++from tests.unit.test_routes_closing import HARI_INI, item, jual, petakan
+ 
+ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+ MIGRASI_016 = Path(__file__).resolve().parents[2] / "migrations" / "016_closing_export_logs.sql"

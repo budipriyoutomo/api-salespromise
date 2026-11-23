@@ -8,6 +8,7 @@ mengarahkannya ke DLQ.
 """
 
 import datetime as dt
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, List, Literal, Optional
 from uuid import UUID
 
@@ -57,6 +58,13 @@ def _kosong_jadi_none(value):
 
 
 Qty = Annotated[int, Field(ge=0)]
+
+# Rupiah, paling banyak 2 desimal (docs/bi-closing-report-v3-harga.md).
+# Float JSON diubah lewat str, jadi 12500.5 tetap Decimal("12500.5").
+Rupiah = Annotated[Decimal, Field(decimal_places=2, allow_inf_nan=False)]
+HargaSatuan = Annotated[Decimal, Field(ge=0, decimal_places=2, allow_inf_nan=False)]
+DUA_DESIMAL = Decimal("0.01")
+FIELD_HARGA = ("unit_price", "sold_amount", "waste_amount", "adjustment_amount", "compensation_amount")
 
 MAX_CATEGORY_CODE_LENGTH = 50
 
@@ -110,6 +118,15 @@ class ClosingReportItem(_Kontrak):
     # Wajib di versi 2, tidak ada di versi 1. Kosong kalau waste = 0.
     waste_by_category: Optional[List[ClosingWasteCategory]] = None
 
+    # Wajib di versi 3, tidak ada di versi 1–2. Harga satu piring (harga warna
+    # piring, bukan harga menu), dibekukan pengirim saat closing disubmit.
+    unit_price: Optional[HargaSatuan] = None
+    # xxx × unitPrice, dibulatkan 2 desimal. adjustment / compensation bisa negatif.
+    sold_amount: Optional[Rupiah] = None
+    waste_amount: Optional[Rupiah] = None
+    adjustment_amount: Optional[Rupiah] = None
+    compensation_amount: Optional[Rupiah] = None
+
     @model_validator(mode="after")
     def _kategori_tidak_dobel(self):
         kode = [k.category_code for k in self.waste_by_category or []]
@@ -126,6 +143,22 @@ class ClosingReportItem(_Kontrak):
         if self.waste_by_category is None:
             return False
         return sum(k.quantity for k in self.waste_by_category) != self.waste
+
+    @property
+    def nilai_rupiah_selisih(self) -> list[str]:
+        """Nilai rupiah yang tidak sama dengan qty × unitPrice (2 desimal).
+
+        Pengirim menjaminnya sama; kalau tidak, laporan tetap disimpan dan
+        consumer mencatat warning — qty-nya sendiri tetap dipakai."""
+        if self.unit_price is None:
+            return []
+        selisih = []
+        for qty_field in ("sold", "waste", "adjustment", "compensation"):
+            nilai = getattr(self, f"{qty_field}_amount")
+            harus = (getattr(self, qty_field) * self.unit_price).quantize(DUA_DESIMAL, rounding=ROUND_HALF_UP)
+            if nilai is not None and nilai != harus:
+                selisih.append(f"{qty_field}Amount")
+        return selisih
 
 
 class ClosingReportData(_Kontrak):
@@ -151,7 +184,8 @@ class ClosingReportData(_Kontrak):
 class ClosingReportSubmitted(_Kontrak):
     event: Literal["closingreport.submitted"]
     # Versi 2 menambah `items[].wasteByCategory` (docs/bi-closing-report-v2-waste-category.md).
-    version: Literal[1, 2]
+    # Versi 3 = v2 + harga satuan & nilai rupiah per item (docs/bi-closing-report-v3-harga.md).
+    version: Literal[1, 2, 3]
     message_id: _wajib_isi(MAX_MESSAGE_ID_LENGTH)
     # Wajib ber-offset: tanpa itu tidak bisa diketahui WIB atau UTC.
     sent_at: Annotated[AwareDatetime, AfterValidator(_ke_utc_naive)]
@@ -163,4 +197,15 @@ class ClosingReportSubmitted(_Kontrak):
             tanpa = [str(i.menu_id) for i in self.data.items if i.waste_by_category is None]
             if tanpa:
                 raise ValueError(f"version {self.version}: wasteByCategory wajib ada di setiap item ({', '.join(tanpa)})")
+        return self
+
+    @model_validator(mode="after")
+    def _v3_wajib_harga(self):
+        if self.version >= 3:
+            for item in self.data.items:
+                kosong = [to_camel(f) for f in FIELD_HARGA if getattr(item, f) is None]
+                if kosong:
+                    raise ValueError(
+                        f"version {self.version}: {', '.join(kosong)} wajib ada di setiap item ({item.menu_id})"
+                    )
         return self

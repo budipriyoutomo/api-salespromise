@@ -5,7 +5,9 @@ tidak boleh menyentuh database — consumer mengarahkannya ke DLQ.
 """
 
 import copy
+import json
 from datetime import date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 import pytest
@@ -101,7 +103,7 @@ class TestEnvelope:
         with pytest.raises(ValidationError):
             ClosingReportSubmitted.model_validate(dict(PAYLOAD, event="closingreport.deleted"))
 
-    @pytest.mark.parametrize("version", [0, 3, "2"])
+    @pytest.mark.parametrize("version", [0, 4, "2"])
     def test_versi_tidak_dikenal_ditolak(self, version):
         with pytest.raises(ValidationError):
             ClosingReportSubmitted.model_validate(dict(PAYLOAD, version=version))
@@ -381,3 +383,127 @@ class TestWasteByCategory:
         item = ClosingReportSubmitted.model_validate(payload_v2((" Default_Waste ", 3))).data.items[0]
 
         assert item.waste_by_category[0].category_code == "Default_Waste"
+
+
+def payload_v3(**ubah_item):
+    """Contoh v3 dari docs/bi-closing-report-v3-harga.md (dua item); argumen mengganti field item pertama."""
+    hasil = copy.deepcopy(PAYLOAD)
+    hasil["version"] = 3
+    hasil["data"]["items"] = [
+        {
+            "menuId": MENU_ID,
+            "menuCode": "SU-001",
+            "menuName": "Salmon Nigiri",
+            "productionDate": "2026-10-02",
+            "sold": 42,
+            "waste": 3,
+            "adjustment": 1,
+            "compensation": 2,
+            "wasteByCategory": [{"categoryCode": "DEFAULT_WASTE", "categoryName": "Default Waste", "quantity": 3}],
+            "unitPrice": 15000,
+            "soldAmount": 630000,
+            "wasteAmount": 45000,
+            "adjustmentAmount": 15000,
+            "compensationAmount": 30000,
+        },
+        {
+            "menuId": MENU_ID_2,
+            "menuCode": "SU-002",
+            "menuName": "Tamago",
+            "productionDate": "2026-10-02",
+            "sold": 30,
+            "waste": 0,
+            "adjustment": -1,
+            "compensation": 0,
+            "wasteByCategory": [],
+            "unitPrice": 12500.5,
+            "soldAmount": 375015,
+            "wasteAmount": 0,
+            "adjustmentAmount": -12500.5,
+            "compensationAmount": 0,
+        },
+    ]
+    hasil["data"]["items"][0].update(ubah_item)
+    return hasil
+
+
+FIELD_HARGA = ["unitPrice", "soldAmount", "wasteAmount", "adjustmentAmount", "compensationAmount"]
+
+
+class TestHarga:
+    """Versi 3: harga satuan & nilai rupiah per item (docs/bi-closing-report-v3-harga.md)."""
+
+    def test_contoh_v3_diterima(self):
+        event = ClosingReportSubmitted.model_validate(payload_v3())
+
+        assert event.version == 3
+        salmon, tamago = event.data.items
+        assert (salmon.unit_price, salmon.sold_amount, salmon.waste_amount) == (15000, 630000, 45000)
+        assert (salmon.adjustment_amount, salmon.compensation_amount) == (15000, 30000)
+        assert tamago.unit_price == Decimal("12500.5")
+        assert tamago.adjustment_amount == Decimal("-12500.5")
+        assert salmon.nilai_rupiah_selisih == []
+        assert tamago.nilai_rupiah_selisih == []
+
+    def test_float_json_tetap_decimal_tepat(self):
+        data = payload_v3(
+            sold=3, unitPrice=0.1, soldAmount=0.3, wasteAmount=0.3, adjustmentAmount=0.1, compensationAmount=0.2
+        )
+
+        item = ClosingReportSubmitted.model_validate_json(json.dumps(data)).data.items[0]
+
+        assert item.unit_price == Decimal("0.1")
+        assert item.nilai_rupiah_selisih == []
+
+    @pytest.mark.parametrize("field", FIELD_HARGA)
+    @pytest.mark.parametrize("isi", ["hilang", None])
+    def test_v3_tanpa_harga_ditolak(self, field, isi):
+        data = payload_v3()
+        if isi == "hilang":
+            data["data"]["items"][0].pop(field)
+        else:
+            data["data"]["items"][0][field] = None
+
+        with pytest.raises(ValidationError) as exc:
+            ClosingReportSubmitted.model_validate(data)
+
+        assert field in str(exc.value)
+
+    def test_v3_tetap_wajib_waste_by_category(self):
+        data = payload_v3()
+        data["data"]["items"][0].pop("wasteByCategory")
+
+        with pytest.raises(ValidationError):
+            ClosingReportSubmitted.model_validate(data)
+
+    def test_unit_price_negatif_ditolak(self):
+        with pytest.raises(ValidationError):
+            ClosingReportSubmitted.model_validate(payload_v3(unitPrice=-1))
+
+    @pytest.mark.parametrize("field", FIELD_HARGA)
+    def test_lebih_dari_dua_desimal_ditolak(self, field):
+        with pytest.raises(ValidationError):
+            ClosingReportSubmitted.model_validate(payload_v3(**{field: 1.005}))
+
+    @pytest.mark.parametrize("nilai", ["abc", float("nan")])
+    def test_harga_bukan_angka_ditolak(self, nilai):
+        with pytest.raises(ValidationError):
+            ClosingReportSubmitted.model_validate(payload_v3(unitPrice=nilai))
+
+    def test_nilai_rupiah_negatif_diterima(self):
+        item = ClosingReportSubmitted.model_validate(payload_v3(compensation=-1, compensationAmount=-15000)).data.items[0]
+
+        assert item.compensation_amount == -15000
+        assert item.nilai_rupiah_selisih == []
+
+    def test_nilai_rupiah_selisih_tetap_diterima(self):
+        """Laporan tidak dibuang; consumer mencatat warning."""
+        item = ClosingReportSubmitted.model_validate(payload_v3(soldAmount=1, wasteAmount=2)).data.items[0]
+
+        assert item.nilai_rupiah_selisih == ["soldAmount", "wasteAmount"]
+
+    def test_v2_tanpa_harga_tetap_diterima(self):
+        item = ClosingReportSubmitted.model_validate(payload_v2(("DEFAULT_WASTE", 3))).data.items[0]
+
+        assert item.unit_price is None
+        assert item.nilai_rupiah_selisih == []
