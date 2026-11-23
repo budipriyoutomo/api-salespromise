@@ -650,3 +650,35 @@ class TestLogPesan:
 
         harapan = Keputusan.ACK if body == BODY else Keputusan.DLQ
         assert proses_pesan(body, factory) is harapan
+
+
+class TestWarnaPiringV3:
+    """`items[].plateColor` mengisi warna menu; warna di luar data POS hanya dicatat."""
+
+    def _pesan(self, warna):
+        pesan = copy.deepcopy(PAYLOAD)
+        pesan["data"]["items"][0]["plateColor"] = warna
+        return json.dumps(pesan).encode()
+
+    def test_warna_dikenal_tanpa_peringatan(self, db_session, factory, monkeypatch):
+        from app.services import product_menu_service
+
+        monkeypatch.setattr(product_menu_service, "list_colors", lambda db: ["Red"])
+        assert proses_pesan(self._pesan("RED"), factory) is Keputusan.ACK
+
+        assert db_session.query(ClosingMessageLog).one().warnings == ["outlet belum terdaftar di api_keys"]
+
+    def test_warna_tidak_dikenal_disimpan_dan_dicatat(self, db_session, factory, monkeypatch, caplog):
+        from app.services import product_menu_service
+
+        monkeypatch.setattr(product_menu_service, "list_colors", lambda db: ["Red"])
+        with caplog.at_level("WARNING", logger="sync-api"):
+            assert proses_pesan(self._pesan("Ungu"), factory) is Keputusan.ACK
+
+        assert db_session.query(ClosingReport).count() == 1
+        [peringatan] = [r for r in caplog.records if "plateColor" in r.getMessage()]
+        assert peringatan.warna == ["Ungu"]
+        assert db_session.query(ClosingMessageLog).one().warnings == [
+            "outlet belum terdaftar di api_keys",
+            "plateColor tidak dikenal: Ungu",
+        ]

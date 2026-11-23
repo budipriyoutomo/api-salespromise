@@ -20,6 +20,7 @@ Halo tim Colorplate, terima kasih atas kedua usulannya. Jawaban di bawah sudah k
 | Data historis | **Ya, kirim ulang sejak 1 Oktober 2026**, dengan `messageId` baru **`<closingReportId>.v3`**. Aturan dedup kami tidak berubah |
 | Harga historis | Harga master saat pengiriman ulang **bisa kami terima** |
 | Jadwal dan laju | Mulai setelah kami konfirmasi deploy. **Tidak wajib bertahap**, tapi kirim satu contoh dulu |
+| Permintaan tambahan | Mohon tambahkan **`plateColor`** (nama warna piring) di setiap item v3. Lihat bagian 6 |
 
 ## 1. Versi dan urutan deploy
 
@@ -77,6 +78,29 @@ Harga master saat pengiriman ulang **bisa kami terima** untuk periode Oktober–
 - Setelah itu sisanya boleh dikirim sekaligus. Consumer kami memproses pesan satu per satu dari antrean, jadi kami tidak butuh jeda. Kalau Anda lebih nyaman mengirim per outlet atau per minggu, itu juga tidak masalah.
 - Setelah selesai, mohon kirim daftar laporan yang terkirim beserta jumlah item per laporan. Kami akan mencocokkannya dengan revisi aktif di tempat kami.
 
+## 6. Permintaan tambahan: `plateColor` per item
+
+Mohon kirim juga nama warna piring yang menjadi dasar `unitPrice`, di setiap item v3:
+
+```json
+{
+  "menuId": "<uuid>",
+  "menuName": "Salmon Nigiri",
+  "sold": 42,
+  "unitPrice": 15000,
+  "plateColor": "RED"
+}
+```
+
+| | |
+|---|---|
+| Tipe | string, paling banyak 255 karakter |
+| Isi | Nama warna **sama seperti nama produk piring di POS** (mis. `RED`, `Blue`). Huruf besar/kecil dan spasi di ujung tidak masalah |
+| Wajib? | Tidak. Pesan v3 tanpa `plateColor` tetap kami terima, tetapi kami sangat membutuhkannya |
+| Kiriman ulang historis | Mohon ikut diisi. Warna dari laporan lama tidak akan menimpa warna dari laporan yang lebih baru |
+
+**Kenapa kami butuh warnanya, bukan hanya harganya.** Rekap closing yang kami teruskan ke ERP harus sama dengan uang di kasir. Harga piring di rekap itu kami ambil dari baris piring POS per warna, karena baris itu membawa tujuan kunjungan, harga asli, serta diskon, service charge, dan PPN per transaksi. Untuk itu kami harus tahu warna piring setiap menu. Sekarang warna itu diisi manual oleh admin kami. Dengan `plateColor`, warna terisi otomatis dari data Anda, yang memang sumber warnanya. `unitPrice` tetap kami simpan untuk laporan dan sebagai pembanding.
+
 ## Cara consumer kami memvalidasi v3
 
 Supaya Anda tahu pesan seperti apa yang kami tolak:
@@ -90,6 +114,8 @@ Supaya Anda tahu pesan seperti apa yang kami tolak:
 | `NaN` / `Infinity` | **Ditolak** → DLQ (bukan JSON standar) |
 | `adjustmentAmount` / `compensationAmount` negatif | Diterima |
 | `xxxAmount` ≠ `xxx × unitPrice` (dibulatkan 2 desimal) | **Diterima dengan peringatan.** Laporan tetap kami simpan, dan selisihnya kami catat untuk ditindaklanjuti bersama Anda |
+| `plateColor` tidak ada atau kosong | Diterima. Warna menu di tempat kami tidak diubah |
+| `plateColor` tidak ada di data piring POS | **Diterima dengan peringatan.** Warna menu tidak diubah |
 | `version: 1` atau `2` tanpa harga | Diterima seperti sekarang |
 | Versi selain 1, 2, dan 3 | **Ditolak** → DLQ |
 

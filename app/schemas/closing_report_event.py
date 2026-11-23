@@ -128,6 +128,13 @@ class ClosingReportItem(_Kontrak):
     waste_amount: Optional[Rupiah] = None
     adjustment_amount: Optional[Rupiah] = None
     compensation_amount: Optional[Rupiah] = None
+    # Opsional (v3+): nama warna piring menu, ejaan POS. Mengisi warna menu
+    # di `closing_menus` supaya admin tidak perlu memetakannya manual.
+    # Tidak wajib supaya pesan v3 tanpa field ini tetap diterima.
+    plate_color: Annotated[
+        Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=MAX_NAME_LENGTH)]],
+        BeforeValidator(_kosong_jadi_none),
+    ] = None
 
     @model_validator(mode="after")
     def _kategori_tidak_dobel(self):

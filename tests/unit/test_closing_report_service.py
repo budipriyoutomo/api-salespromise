@@ -432,3 +432,97 @@ class TestBalapan:
         with pytest.raises(IntegrityError):
             simpan(db_session)
         assert db_session.query(ClosingReport).count() == 0
+
+
+class TestWarnaPiringDariPesan:
+    """`items[].plateColor` mengisi `closing_menus.platecolor` (Opsi A, kirim rekap ke ERP).
+
+    Colorplate sumber kebenaran: warna pesan menimpa isian admin, kecuali menu
+    itu sudah punya laporan aktif bertanggal lebih baru (kiriman ulang historis).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _warna_pos(self, monkeypatch):
+        from app.services import product_menu_service
+
+        self.dibaca = 0
+
+        def list_colors(db):
+            self.dibaca += 1
+            return ["Blue", "Red"]
+
+        monkeypatch.setattr(product_menu_service, "list_colors", list_colors)
+
+    def kirim(self, db, warna, tanggal="2026-10-02", report_id=REPORT_ID, sent_at=None, menu_id=MENU_ID):
+        item = item_v1(menu_id=menu_id)
+        if warna is not None:
+            item["plateColor"] = warna
+        event, raw = pesan(items=[item], sent_at=sent_at)
+        raw["messageId"] = raw["data"]["closingReportId"] = report_id
+        raw["data"]["date"] = tanggal
+        event = ClosingReportSubmitted.model_validate(raw)
+        return simpan_closing_report(db, event, raw)
+
+    def warna(self, db, menu_id=MENU_ID):
+        menu = db.query(ClosingMenu).filter(ClosingMenu.menu_id == UUID(menu_id)).one()
+        return menu.platecolor, menu.platecolor_by
+
+    def test_menu_baru_langsung_berwarna_dengan_ejaan_pos(self, db_session):
+        hasil = self.kirim(db_session, "red")
+
+        assert self.warna(db_session) == ("Red", closing_report_service.WARNA_DARI_PESAN)
+        assert hasil.warna_tidak_dikenal == []
+
+    def test_warna_pesan_menimpa_isian_admin(self, db_session):
+        self.kirim(db_session, None)
+        menu = db_session.query(ClosingMenu).one()
+        menu.platecolor, menu.platecolor_by = "Blue", "admin@maharasa.id"
+        db_session.commit()
+
+        self.kirim(db_session, "Red", sent_at="2026-10-03T08:00:00+07:00", report_id="7a1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b")
+
+        assert self.warna(db_session) == ("Red", closing_report_service.WARNA_DARI_PESAN)
+
+    def test_tanpa_plate_color_warna_admin_tetap(self, db_session):
+        self.kirim(db_session, None)
+        menu = db_session.query(ClosingMenu).one()
+        menu.platecolor, menu.platecolor_by = "Blue", "admin@maharasa.id"
+        db_session.commit()
+
+        self.kirim(db_session, None, report_id="7a1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b")
+
+        assert self.warna(db_session) == ("Blue", "admin@maharasa.id")
+
+    def test_warna_tidak_dikenal_tidak_mengubah_menu(self, db_session):
+        hasil = self.kirim(db_session, "Ungu")
+
+        assert self.warna(db_session) == (None, None)
+        assert hasil.warna_tidak_dikenal == ["Ungu"]
+
+    def test_kiriman_ulang_tanggal_lama_tidak_menimpa_warna_baru(self, db_session):
+        self.kirim(db_session, "Red", tanggal="2026-11-20")
+
+        # Kiriman ulang historis: laporan Oktober tiba belakangan dengan warna lama.
+        self.kirim(db_session, "Blue", tanggal="2026-10-02", report_id="7a1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b")
+
+        assert self.warna(db_session)[0] == "Red"
+
+    def test_laporan_tanggal_lebih_baru_mengganti_warna(self, db_session):
+        self.kirim(db_session, "Blue", tanggal="2026-10-02")
+        self.kirim(db_session, "Red", tanggal="2026-11-20", report_id="7a1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b")
+
+        assert self.warna(db_session)[0] == "Red"
+
+    def test_revisi_lama_tidak_mengubah_warna(self, db_session):
+        self.kirim(db_session, "Red", sent_at="2026-10-03T08:00:00+07:00")
+        event, raw = pesan(items=[{**item_v1(), "plateColor": "Blue"}], message_id="lama", sent_at="2026-10-02T08:00:00+07:00")
+        event = ClosingReportSubmitted.model_validate(raw)
+
+        assert simpan_closing_report(db_session, event, raw).status is StatusSimpan.REVISI_LAMA
+        assert self.warna(db_session)[0] == "Red"
+
+    def test_daftar_warna_pos_tidak_dibaca_kalau_warna_sama(self, db_session):
+        self.kirim(db_session, "Red")
+        self.kirim(db_session, "RED", report_id="7a1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b")
+
+        assert self.dibaca == 1

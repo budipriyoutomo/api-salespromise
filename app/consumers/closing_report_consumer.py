@@ -273,6 +273,14 @@ def _proses(db, body: bytes) -> Keputusan:
                 extra={"closing_report_id": str(event.data.closing_report_id), "menu_fields": rupiah},
             )
             peringatan.append(f"nilai rupiah tidak sama dengan qty × unitPrice: {len(rupiah)} menu")
+        if hasil.warna_tidak_dikenal:
+            # Laporan tetap disimpan; warna menu tidak diubah karena harga
+            # piringnya tidak bisa dicari di data COLORPLATE POS.
+            logger.warning(
+                "CLOSING REPORT: plateColor tidak ada di data COLORPLATE POS",
+                extra={"closing_report_id": str(event.data.closing_report_id), "warna": hasil.warna_tidak_dikenal},
+            )
+            peringatan.append(f"plateColor tidak dikenal: {', '.join(hasil.warna_tidak_dikenal)}")
 
         _catat(
             db,

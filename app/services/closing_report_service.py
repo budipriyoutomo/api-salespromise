@@ -31,7 +31,7 @@ dengan penjualan cukup mencocokkan persis.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 
@@ -52,7 +52,7 @@ from app.models.sales import Sales
 from app.models.sales_items import SalesItems
 from app.schemas.closing_report_event import ClosingReportSubmitted
 from app.services import closing_menu_service, colorplate_publish_service, product_menu_service
-from app.services.sales_service import SalesService, item_join
+from app.services.sales_service import SalesService, color_key, item_join
 
 # Dua consumer bisa menyimpan laporan / menu yang sama bersamaan; yang kalah
 # kena unique constraint dan cukup mengulang sekali — percobaan kedua melihat
@@ -74,6 +74,9 @@ class HasilSimpan:
     revision_id: int
     # Outlet belum ada di api_keys — tetap disimpan, hanya untuk log.
     outlet_dikenal: bool
+    # `plateColor` pesan yang tidak ada di data COLORPLATE POS; warna menu
+    # tidak diubah. Hanya untuk log.
+    warna_tidak_dikenal: list[str] = field(default_factory=list)
 
 
 def simpan_closing_report(db, event: ClosingReportSubmitted, raw_payload: dict) -> HasilSimpan:
@@ -192,7 +195,11 @@ def _simpan(db, event: ClosingReportSubmitted, raw_payload: dict) -> HasilSimpan
     _catat_menu(db, event, perbarui_nama=status is not StatusSimpan.REVISI_LAMA)
     db.flush()
 
-    return HasilSimpan(status, laporan.id, revisi.id, outlet_dikenal)
+    warna_tidak_dikenal = []
+    if status is not StatusSimpan.REVISI_LAMA:
+        warna_tidak_dikenal = _perbarui_warna_menu(db, event, laporan.id)
+
+    return HasilSimpan(status, laporan.id, revisi.id, outlet_dikenal, warna_tidak_dikenal)
 
 
 def _isi_header(laporan: ClosingReport, event: ClosingReportSubmitted, kode_outlet: str):
@@ -238,6 +245,66 @@ def _catat_menu(db, event: ClosingReportSubmitted, perbarui_nama: bool):
             menu.menu_code = item.menu_code
             menu.menu_name = item.menu_name
             menu.brand_code = brand
+
+
+# Penanda `closing_menus.platecolor_by` untuk warna yang diisi dari pesan.
+WARNA_DARI_PESAN = "colorplate"
+
+
+def _perbarui_warna_menu(db, event: ClosingReportSubmitted, report_id: int) -> list[str]:
+    """Isi `closing_menus.platecolor` dari `items[].plateColor` (v3).
+
+    Colorplate sumber kebenaran warna: warna dari pesan menimpa isian admin.
+    Supaya kiriman ulang historis tidak mengembalikan warna lama, menu yang
+    punya laporan aktif bertanggal lebih baru tidak disentuh. Warna yang tidak
+    ada di data COLORPLATE POS diabaikan (harga piringnya tidak bisa dicari)
+    dan dikembalikan untuk log. Daftar warna POS hanya dibaca kalau ada menu
+    yang warnanya berubah — query itu memindai seluruh item penjualan.
+    """
+    per_id = {i.menu_id: i.plate_color for i in event.data.items if i.plate_color}
+    if not per_id:
+        return []
+
+    menus = {m.menu_id: m for m in db.query(ClosingMenu).filter(ClosingMenu.menu_id.in_(per_id)).all()}
+    berubah = {
+        menu_id: warna
+        for menu_id, warna in per_id.items()
+        if menu_id in menus and color_key(warna) != color_key(menus[menu_id].platecolor or "")
+    }
+    if not berubah:
+        return []
+
+    lebih_baru = {
+        menu_id
+        for (menu_id,) in db.query(ClosingReportItem.menu_id)
+        .join(ClosingReportRevision, ClosingReportRevision.id == ClosingReportItem.revision_id)
+        .join(ClosingReport, ClosingReport.id == ClosingReportRevision.report_id)
+        .filter(
+            ClosingReportItem.menu_id.in_(berubah),
+            ClosingReportRevision.is_current.is_(True),
+            ClosingReport.id != report_id,
+            ClosingReport.report_date > event.data.date,
+        )
+        .distinct()
+    }
+    berubah = {m: w for m, w in berubah.items() if m not in lebih_baru}
+    if not berubah:
+        return []
+
+    ejaan_pos = {color_key(w): w for w in product_menu_service.list_colors(db)}
+    tidak_dikenal = set()
+    sekarang = utcnow()
+    for menu_id, warna in berubah.items():
+        ejaan = ejaan_pos.get(color_key(warna))
+        if ejaan is None:
+            tidak_dikenal.add(warna)
+            continue
+        menu = menus[menu_id]
+        if ejaan != menu.platecolor:
+            menu.platecolor = ejaan
+            menu.platecolor_by = WARNA_DARI_PESAN
+            menu.platecolor_at = sekarang
+    return sorted(tidak_dikenal)
 
 
 # ---------------------------------------------------------------------------

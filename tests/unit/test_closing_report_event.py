@@ -523,3 +523,23 @@ class TestHarga:
 
         assert item.unit_price is None
         assert item.nilai_rupiah_selisih == []
+
+
+class TestPlateColor:
+    """`items[].plateColor` opsional; mengisi warna menu closing."""
+
+    def _item(self, **ubah):
+        raw = copy.deepcopy(PAYLOAD)
+        raw["data"]["items"][0].update(ubah)
+        return raw
+
+    def test_tidak_ada_jadi_none(self):
+        assert ClosingReportSubmitted.model_validate(PAYLOAD).data.items[0].plate_color is None
+
+    def test_spasi_dibuang_dan_kosong_jadi_none(self):
+        assert ClosingReportSubmitted.model_validate(self._item(plateColor=" Red ")).data.items[0].plate_color == "Red"
+        assert ClosingReportSubmitted.model_validate(self._item(plateColor="  ")).data.items[0].plate_color is None
+
+    def test_terlalu_panjang_ditolak(self):
+        with pytest.raises(ValidationError):
+            ClosingReportSubmitted.model_validate(self._item(plateColor="x" * 256))

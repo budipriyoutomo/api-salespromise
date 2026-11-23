@@ -889,6 +889,37 @@ Consumer sudah menerima `version: 3` (skema + warning nilai rupiah).
   Selama qty v3 sama dengan v1, status kirim tidak berubah. Laporan yang dulu
   `items: []` akan muncul sebagai closing baru untuk tanggalnya.
 
+### 7.11 Warna piring menu dari pesan (`plateColor`, 2026-11-23)
+
+Kirim rekap ke ERP (8.14) memblokir `menu_tanpa_warna` selama
+`closing_menus.platecolor` kosong, dan admin harus mengisinya satu per satu.
+Data lokal 2026-11-23: 85/85 menu tanpa warna, jadi 131/131 rekap 30 hari
+terakhir diblokir. Colorplate sudah punya warna setiap menu (dasar
+`unitPrice` v3), jadi warna itu ikut dikirim di pesan. `unitPrice` sendiri
+**tidak** dipakai sebagai harga kirim ke ERP: harga diambil dari baris
+piring POS (SaleMode, harga asli, diskon/SC/PPN), supaya `grandTotal` sama
+dengan pembayaran.
+
+- [x] **7.11a Penerima.** `items[].plateColor` opsional (string ≤ 255, kosong
+      = tidak ada). `closing_report_service._perbarui_warna_menu`:
+      - Colorplate sumber kebenaran: warna pesan **menimpa isian admin**
+        (`platecolor_by = "colorplate"`). Tanpa `plateColor`, warna tidak disentuh.
+      - Disimpan dengan ejaan data COLORPLATE POS (`list_colors`). Warna yang
+        tidak ada di sana tidak mengubah menu; consumer mencatat warning
+        `plateColor tidak dikenal` di log pesan. Laporan tetap disimpan.
+      - Menu yang punya laporan aktif bertanggal lebih baru tidak disentuh,
+        supaya kiriman ulang historis 7.10 tidak mengembalikan warna lama.
+        `REVISI_LAMA` juga tidak mengubah warna.
+      - `list_colors` (memindai item penjualan) hanya dibaca kalau ada warna
+        yang berubah.
+      Tanpa migrasi (kolom 020 sudah ada). Penjaga: `TestWarnaPiringDariPesan`,
+      `TestWarnaPiringV3`, `TestPlateColor`.
+- [ ] **7.11b Pengirim.** Colorplate menambah `plateColor` di setiap item v3
+      ([jawaban v3](docs/jawaban-bi-closing-report-v3.md) bagian 6). Belum dijawab.
+- [ ] **7.11c Frontend (opsional).** Dialog warna di `/closing-menu` bisa
+      menandai warna yang berasal dari Colorplate (`platecolor_by`) dan
+      mengingatkan bahwa isian manual akan tertimpa pesan berikutnya.
+
 ---
 
 ## Fase 8 — Kirim rekap closing ke API eksternal (dari `/closing`)
